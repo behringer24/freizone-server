@@ -28,6 +28,17 @@ func (w *statusWriter) WriteHeader(code int) {
 	w.ResponseWriter.WriteHeader(code)
 }
 
+// Flush implements http.Flusher by delegating to the underlying
+// ResponseWriter, if it supports it. Without this, wrapping
+// http.ResponseWriter in statusWriter would silently break a
+// `w.(http.Flusher)` type assertion in handlers -- e.g. the SSE message
+// stream -- even when the real underlying writer supports flushing.
+func (w *statusWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // withRecover recovers from panics in next, logging them and returning a
 // generic 500 instead of crashing the process.
 func withRecover(next http.Handler, logger *slog.Logger) http.Handler {

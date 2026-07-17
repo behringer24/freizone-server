@@ -21,7 +21,10 @@ import (
 	"github.com/behringer24/freizone-server/internal/store"
 )
 
-const nonceCleanupInterval = 10 * time.Minute
+const (
+	nonceCleanupInterval   = 10 * time.Minute
+	messageCleanupInterval = 1 * time.Hour
+)
 
 func main() {
 	if err := run(); err != nil {
@@ -87,7 +90,8 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cleanupDone := runNonceCleanup(ctx, db, logger)
+	nonceCleanupDone := runNonceCleanup(ctx, db, logger)
+	messageCleanupDone := runMessageCleanup(ctx, db, logger)
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.ListenAndServe() }()
@@ -109,7 +113,8 @@ func run() error {
 		return fmt.Errorf("shutting down server: %w", err)
 	}
 
-	<-cleanupDone
+	<-nonceCleanupDone
+	<-messageCleanupDone
 	return nil
 }
 
@@ -157,6 +162,34 @@ func runNonceCleanup(ctx context.Context, db *sql.DB, logger *slog.Logger) <-cha
 				}
 				if n > 0 {
 					logger.Info("purged expired nonces", "count", n)
+				}
+			}
+		}
+	}()
+	return done
+}
+
+// runMessageCleanup starts a background goroutine that periodically purges
+// message-queue entries past their retention window, until ctx is
+// cancelled. The returned channel is closed once the goroutine has exited.
+func runMessageCleanup(ctx context.Context, db *sql.DB, logger *slog.Logger) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(messageCleanupInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				n, err := store.PurgeExpiredMessages(db, time.Now())
+				if err != nil {
+					logger.Warn("message cleanup failed", "error", err)
+					continue
+				}
+				if n > 0 {
+					logger.Info("purged expired messages", "count", n)
 				}
 			}
 		}

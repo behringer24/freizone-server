@@ -1,13 +1,15 @@
-# Freizone Wire Protocol — Identity & Auth (v1)
+# Freizone Wire Protocol — Identity, Auth & E2E Messaging (v2)
 
 This document is the cross-repo contract between the server (this repo) and
-any client (mobile app) implementation. It covers only what's implemented in
-this milestone: addressing, device certificates/revocations, per-request
-signature authentication, and the identity/bootstrap REST surface.
+any client (mobile app, or `cmd/devclient` — a reference implementation in
+this repo) implementation. It covers: addressing, device
+certificates/revocations, per-request signature authentication, the
+identity/bootstrap REST surface, X3DH + Double Ratchet end-to-end
+encryption, and the prekey/message REST surface that carries it.
 
-Out of scope here (future milestones): X3DH/Double Ratchet message
-encryption, federation, groups/broadcast, message queue/history, push
-notifications, and the QR device-linking handshake itself (only its
+Out of scope here (future milestones): federation (server-to-server
+delivery — everything below is single-server, 1:1 only), groups/broadcast,
+push notifications, and the QR device-linking handshake itself (only its
 *result* — a signed device certificate — is consumed by this API).
 
 ## 1. Addressing
@@ -50,12 +52,22 @@ Root Key (Ed25519, per account, generated once)
    │  signs
    ▼
 Device Certificate ──► Device Identity Key (Ed25519, per device)
-                            │  (not covered by this milestone: signs
-                            │   Signed/One-Time Prekeys for X3DH)
+                            │  signs (see §5)
+                            ▼
+                       DH Identity Certificate ──► DH Identity Key (X25519, per device)
+                            │  signs
+                            ▼
+                       Signed Prekey Certificate ──► Signed Prekey (X25519, rotatable)
+                                                      + One-Time Prekeys (X25519, single-use, unsigned)
 ```
 
 The root key never leaves the primary device and is never used to encrypt
 or to sign requests — only to sign device certificates and revocations.
+The device identity key is Ed25519 and is used for HTTP request signatures
+and for signing the device's own X3DH key material below — it is
+deliberately **not** reused as an X3DH Diffie-Hellman key (no XEdDSA-style
+conversion): a device holds a second, separate X25519 keypair for that,
+authenticated by its own certificate (§5).
 
 ### Device Certificate
 
@@ -190,14 +202,20 @@ No auth — a public key directory, analogous to a keyserver. `200`:
       "device_id": "16hexchars",
       "device_pubkey": "base64...",
       "issued_at": "2026-07-17T12:00:00Z",
+      "signature": "base64...",
       "status": "active",
       "revoked_at": null
     }
   ]
 }
 ```
-Both active and revoked devices are listed (with their status). `404` if
-`{id}` is unknown or fails address normalization.
+`signature` is the device certificate's signature (§2) — include it so a
+client can verify the **full** self-certifying chain itself
+(`hash(root_pubkey) == id`, then `Ed25519.Verify(root_pubkey, device
+signing bytes, signature)`) instead of trusting the server's word for which
+devices belong to an account. Both active and revoked devices are listed
+(with their status). `404` if `{id}` is unknown or fails address
+normalization.
 
 ### `POST /v1/devices` (signed)
 Adds a device to an account. Must be signed by a device already active on
@@ -243,3 +261,192 @@ typically rendered by the app as a QR code for the admin to hand out.
 { "code": "...", "expires_at": "optional" }
 ```
 `403` if the caller isn't an admin.
+
+### `POST /v1/devices/{device_id}/prekeys` (signed, caller must be that device)
+Uploads/replaces a device's X3DH key material. `dh_identity_cert` is
+required on the very first upload (to establish the device's long-term DH
+identity key), optional afterwards (include it again only to rotate that
+key). `signed_prekey` is always required and replaces the previous one.
+`one_time_prekeys` appends to the pool (existing, unclaimed ones aren't
+touched — this is how a device replenishes its supply).
+```json
+{
+  "dh_identity_cert": {
+    "dh_pubkey": "base64 X25519, 32 bytes",
+    "issued_at": "2026-07-17T12:00:00Z",
+    "signature": "base64 Ed25519, by the device's own signing key"
+  },
+  "signed_prekey": {
+    "key_id": 1,
+    "dh_identity_pubkey": "base64, must match the device's dh identity key",
+    "pubkey": "base64 X25519, 32 bytes",
+    "issued_at": "2026-07-17T12:00:00Z",
+    "signature": "base64 Ed25519, by the device's own signing key"
+  },
+  "one_time_prekeys": [
+    { "key_id": 101, "pubkey": "base64 X25519, 32 bytes" }
+  ]
+}
+```
+`200 {"status":"ok"}` · `403` wrong device · `400` invalid/mismatched
+certificate, or no `dh_identity_cert` on a device's first-ever upload ·
+`404` unknown device.
+
+### `POST /v1/devices/{device_id}/prekey-bundle`
+No auth — a public claim endpoint, like the account directory: no trust in
+the server is required, only in the certificate chain the caller verifies
+itself. **Atomically** removes one one-time prekey from the pool (if any
+remain) and returns it — each one-time prekey is handed out at most once.
+```json
+{
+  "device_id": "16hexchars",
+  "dh_identity_pubkey": "base64...",
+  "dh_identity_cert": { "dh_pubkey": "base64...", "issued_at": "...", "signature": "base64..." },
+  "signed_prekey": { "key_id": 1, "dh_identity_pubkey": "base64...", "pubkey": "base64...", "issued_at": "...", "signature": "base64..." },
+  "one_time_prekey": { "key_id": 101, "pubkey": "base64..." }
+}
+```
+`one_time_prekey` is omitted (`null`) once the pool is empty — X3DH
+proceeds without it (§5), with reduced forward secrecy for that first
+message only. `404` if the device is unknown, inactive, or has never
+uploaded prekeys.
+
+## 5. X3DH + Double Ratchet
+
+### DH Identity Certificate & Signed Prekey Certificate
+
+Same deterministic length-prefixed binary signing pattern as the Device
+Certificate (§2), but signed with the **device's own Ed25519 private key**
+(not the root key) — a device already certified by the root is vouching
+for its own X3DH material.
+
+DH Identity Certificate, over `(account_id, device_id, dh_pubkey, issued_at)`:
+```
+uint16BE(len(account_id)) || account_id
+|| device_id (8 raw bytes)
+|| dh_pubkey (32 raw bytes, X25519)
+|| uint16BE(len(issued_at_str)) || issued_at_str
+```
+
+Signed Prekey Certificate, over `(account_id, device_id, key_id, dh_identity_pubkey, prekey_pubkey, issued_at)`
+— binding the prekey to a specific DH identity key is what stops the
+signature being replayed against a substituted identity key:
+```
+uint16BE(len(account_id)) || account_id
+|| device_id (8 raw bytes)
+|| uint32BE(key_id)
+|| dh_identity_pubkey (32 raw bytes)
+|| prekey_pubkey (32 raw bytes)
+|| uint16BE(len(issued_at_str)) || issued_at_str
+```
+
+One-time prekeys are **not** individually signed (matches the X3DH spec —
+their authenticity comes from being fetched as part of the same
+server-side bundle tied to an already-verified device).
+
+Client-side only — the server never sees plaintext, key material beyond
+public keys/certificates, or ratchet state. Implemented in
+`internal/ratchet`, following
+[the X3DH spec](https://www.signal.org/docs/specifications/x3dh/) and
+[the Double Ratchet spec](https://www.signal.org/docs/specifications/doubleratchet/)
+with these concrete choices:
+
+- **Curve:** X25519 throughout (`crypto/ecdh` in Go).
+- **X3DH SK derivation:** HKDF-SHA256, `IKM = 0xFF×32 || DH1 || DH2 || DH3 [|| DH4]`,
+  salt = 32 zero bytes, info = `"Freizone-X3DH-v1"` → 32-byte SK.
+- **Session AD:** `Encode(initiator's DH identity pubkey) || Encode(responder's)`,
+  fixed for the life of the session by **role** (whoever sent the first
+  "prekey" message is the initiator) — never swapped based on who's
+  currently sending.
+- **Double Ratchet KDF_RK:** HKDF-SHA256(salt=current RK, ikm=DH output,
+  info=`"Freizone-DR-RK-v1"`) → 64 bytes → new RK (32) + new chain key (32).
+- **Double Ratchet KDF_CK:** HMAC-SHA256(key=chain key, msg=`0x01`) →
+  message key; HMAC-SHA256(key=chain key, msg=`0x02`) → next chain key.
+- **Message encryption:** AES-256-GCM. Per message,
+  HKDF-SHA256(ikm=message key, info=`"Freizone-DR-msg-v1"`, 44 bytes) → a
+  32-byte AES key + 12-byte nonce (safe here specifically because each
+  message key is used exactly once). AEAD associated data = session AD ||
+  header bytes (`dh_pub(32) || pn(uint32BE) || n(uint32BE)`).
+- **Bootstrap:** the initiator generates a **fresh** X25519 keypair for its
+  first ratchet step (never reuses its X3DH ephemeral key) and ratchets
+  forward immediately using the responder's signed-prekey public key. The
+  responder reuses its signed-prekey keypair as its initial ratchet
+  keypair and only generates a fresh one once it processes the initiator's
+  first message.
+
+**Known limitation, accepted for now:** `prekey-bundle` claims are
+unauthenticated, so anyone can exhaust a device's one-time-prekey pool —
+degrades forward secrecy for that session's first message, not
+confidentiality. Revisit before any real deployment.
+
+## 6. Message envelope & queue
+
+A message's `payload` (§7) is an opaque JSON blob the server never parses —
+defined here purely as a client-to-client contract, implemented in
+`internal/wire`:
+
+```json
+{
+  "prekey": {
+    "sender_dh_identity_pub": "base64 X25519, 32 bytes",
+    "sender_ephemeral_pub": "base64 X25519, 32 bytes",
+    "signed_prekey_id": 1,
+    "one_time_prekey_id": 101
+  },
+  "header": {
+    "dh_pub": "base64 X25519, 32 bytes",
+    "pn": 0,
+    "n": 0
+  },
+  "ciphertext": "base64..."
+}
+```
+
+`prekey` is present **only** on the first message of a new session (Signal
+calls this shape a "PreKeySignalMessage" vs. a plain "SignalMessage" for
+everything after); `one_time_prekey_id` is omitted if none was used.
+`header` is the Double Ratchet header (§5) and is always present.
+
+## 7. Message REST endpoints
+
+### `POST /v1/messages` (signed)
+Enqueues a message envelope (§6) for a recipient device.
+```json
+{
+  "message_id": "client-generated, e.g. a random hex/UUID string",
+  "recipient_device_id": "16hexchars",
+  "payload": { "...the envelope from §6..." }
+}
+```
+`202 {"status":"queued"}` — durably queued, not yet necessarily delivered ·
+`404` unknown/inactive recipient device · `409` `message_id` already used.
+
+### `GET /v1/messages` (signed)
+Polls for messages queued for the caller's device. `200`, an array of:
+```json
+{
+  "message_id": "...",
+  "sender_account_id": "...",
+  "sender_device_id": "...",
+  "sent_at": "2026-07-17T12:00:00Z",
+  "payload": { "...the envelope from §6..." }
+}
+```
+
+### `DELETE /v1/messages/{message_id}` (signed)
+Acknowledges a message, removing it from the queue once durably processed.
+`200 {"status":"deleted"}` · `404` unknown message, or it doesn't belong to
+the caller's device.
+
+### `GET /v1/messages/stream` (signed, SSE)
+`Content-Type: text/event-stream`. On connect, flushes every currently
+pending message (same shape as the `GET /v1/messages` poll, one per SSE
+`event: message` / `data: ...` pair), then pushes newly-arrived messages
+live for as long as the client stays connected. A `: heartbeat` comment is
+sent roughly every 25s to keep the connection alive through proxies. This
+is process-local (no cross-instance fan-out) — fine for a single server,
+revisit for horizontal scaling.
+
+Messages are never stored long-term: each is deleted immediately on
+acknowledgment, or automatically after `FREIZONE_MESSAGE_RETENTION_DAYS`
+(default 14) if never acknowledged.

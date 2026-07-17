@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -57,11 +58,74 @@ type accountResponse struct {
 }
 
 type deviceResponse struct {
-	DeviceID     string  `json:"device_id"`
-	DevicePubKey string  `json:"device_pubkey"`
-	IssuedAt     string  `json:"issued_at"`
-	Status       string  `json:"status"`
-	RevokedAt    *string `json:"revoked_at,omitempty"`
+	DeviceID     string `json:"device_id"`
+	DevicePubKey string `json:"device_pubkey"`
+	IssuedAt     string `json:"issued_at"`
+	// Signature is the device certificate's signature (by the account's
+	// root key) -- required so a client can verify the full self-certifying
+	// chain (root_pubkey -> this signature -> device_pubkey) itself,
+	// without trusting the server's word for it.
+	Signature string  `json:"signature"`
+	Status    string  `json:"status"`
+	RevokedAt *string `json:"revoked_at,omitempty"`
+}
+
+type dhIdentityCertDTO struct {
+	DHPubKey  string `json:"dh_pubkey"`
+	IssuedAt  string `json:"issued_at"`
+	Signature string `json:"signature"`
+}
+
+type signedPrekeyDTO struct {
+	KeyID            uint32 `json:"key_id"`
+	DHIdentityPubKey string `json:"dh_identity_pubkey"`
+	PubKey           string `json:"pubkey"`
+	IssuedAt         string `json:"issued_at"`
+	Signature        string `json:"signature"`
+}
+
+type oneTimePrekeyDTO struct {
+	KeyID  uint32 `json:"key_id"`
+	PubKey string `json:"pubkey"`
+}
+
+type uploadPrekeysRequest struct {
+	DHIdentityCert *dhIdentityCertDTO `json:"dh_identity_cert,omitempty"`
+	SignedPrekey   signedPrekeyDTO    `json:"signed_prekey"`
+	OneTimePrekeys []oneTimePrekeyDTO `json:"one_time_prekeys,omitempty"`
+}
+
+type prekeyBundleResponse struct {
+	DeviceID         string            `json:"device_id"`
+	DHIdentityPubKey string            `json:"dh_identity_pubkey"`
+	DHIdentityCert   dhIdentityCertDTO `json:"dh_identity_cert"`
+	SignedPrekey     signedPrekeyDTO   `json:"signed_prekey"`
+	OneTimePrekey    *oneTimePrekeyDTO `json:"one_time_prekey,omitempty"`
+}
+
+type sendMessageRequest struct {
+	MessageID          string          `json:"message_id"`
+	RecipientAccountID string          `json:"recipient_account_id"`
+	RecipientDeviceID  string          `json:"recipient_device_id"`
+	Payload            json.RawMessage `json:"payload"`
+}
+
+type messageResponse struct {
+	MessageID       string          `json:"message_id"`
+	SenderAccountID string          `json:"sender_account_id"`
+	SenderDeviceID  string          `json:"sender_device_id"`
+	SentAt          string          `json:"sent_at"`
+	Payload         json.RawMessage `json:"payload"`
+}
+
+func messageResponseFrom(m store.Message) messageResponse {
+	return messageResponse{
+		MessageID:       m.MessageID,
+		SenderAccountID: m.SenderAccountID,
+		SenderDeviceID:  m.SenderDeviceID,
+		SentAt:          m.SentAt.UTC().Format(time.RFC3339),
+		Payload:         json.RawMessage(m.Payload),
+	}
 }
 
 func decodeBase64Key(s string, expectedLen int) ([]byte, error) {
@@ -80,6 +144,7 @@ func deviceResponseFrom(d store.Device) deviceResponse {
 		DeviceID:     d.DeviceID,
 		DevicePubKey: base64.StdEncoding.EncodeToString(d.DevicePubKey),
 		IssuedAt:     d.CertIssuedAt.UTC().Format(time.RFC3339),
+		Signature:    base64.StdEncoding.EncodeToString(d.CertSignature),
 		Status:       d.Status,
 	}
 	if d.RevokedAt != nil {

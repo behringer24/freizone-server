@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"path/filepath"
+	"strconv"
 )
 
 // TLSMode selects how the server terminates TLS.
@@ -26,28 +27,32 @@ const (
 
 // Config holds all server configuration.
 type Config struct {
-	Domain             string
-	HTTPAddr           string
-	HTTPSAddr          string
-	TLSMode            TLSMode
-	TLSCertFile        string
-	TLSKeyFile         string
-	DataDir            string
-	DBPath             string
-	RegistrationPolicy RegistrationPolicy
+	Domain               string
+	HTTPAddr             string
+	HTTPSAddr            string
+	TLSMode              TLSMode
+	TLSCertFile          string
+	TLSKeyFile           string
+	DataDir              string
+	DBPath               string
+	RegistrationPolicy   RegistrationPolicy
+	MessageRetentionDays int
 }
 
 const (
-	envDomain             = "FREIZONE_DOMAIN"
-	envHTTPAddr           = "FREIZONE_HTTP_ADDR"
-	envHTTPSAddr          = "FREIZONE_HTTPS_ADDR"
-	envTLSMode            = "FREIZONE_TLS_MODE"
-	envTLSCertFile        = "FREIZONE_TLS_CERT_FILE"
-	envTLSKeyFile         = "FREIZONE_TLS_KEY_FILE"
-	envDataDir            = "FREIZONE_DATA_DIR"
-	envDBPath             = "FREIZONE_DB_PATH"
-	envRegistrationPolicy = "FREIZONE_REGISTRATION_POLICY"
+	envDomain               = "FREIZONE_DOMAIN"
+	envHTTPAddr             = "FREIZONE_HTTP_ADDR"
+	envHTTPSAddr            = "FREIZONE_HTTPS_ADDR"
+	envTLSMode              = "FREIZONE_TLS_MODE"
+	envTLSCertFile          = "FREIZONE_TLS_CERT_FILE"
+	envTLSKeyFile           = "FREIZONE_TLS_KEY_FILE"
+	envDataDir              = "FREIZONE_DATA_DIR"
+	envDBPath               = "FREIZONE_DB_PATH"
+	envRegistrationPolicy   = "FREIZONE_REGISTRATION_POLICY"
+	envMessageRetentionDays = "FREIZONE_MESSAGE_RETENTION_DAYS"
 )
+
+const defaultMessageRetentionDays = 14
 
 // Load reads configuration from the process environment.
 func Load(getenv func(string) string) (*Config, error) {
@@ -67,6 +72,16 @@ func Load(getenv func(string) string) (*Config, error) {
 		dbPath = filepath.Join(cfg.DataDir, "freizone.db")
 	}
 	cfg.DBPath = dbPath
+
+	retentionDays := defaultMessageRetentionDays
+	if v := getenv(envMessageRetentionDays); v != "" {
+		parsed, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: invalid value %q (must be a whole number of days): %w", envMessageRetentionDays, v, err)
+		}
+		retentionDays = parsed
+	}
+	cfg.MessageRetentionDays = retentionDays
 
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -93,6 +108,10 @@ func (c *Config) validate() error {
 
 	if c.TLSMode == TLSModeManual && (c.TLSCertFile == "" || c.TLSKeyFile == "") {
 		return fmt.Errorf("%s and %s are required when %s=%s", envTLSCertFile, envTLSKeyFile, envTLSMode, TLSModeManual)
+	}
+
+	if c.MessageRetentionDays <= 0 {
+		return fmt.Errorf("%s must be a positive number of days, got %d", envMessageRetentionDays, c.MessageRetentionDays)
 	}
 
 	return nil

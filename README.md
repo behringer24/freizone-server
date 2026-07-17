@@ -2,7 +2,7 @@
 
 A self-hostable, federated, end-to-end encrypted chat server (Go + SQLite) — modeled on email: you run your own small server under your own domain, and servers deliver messages to each other directly. No central provider, no server ever sees plaintext.
 
-**Status:** the foundation is implemented — identity, per-request signature authentication, account/device management, bootstrap, and invites. Message encryption (X3DH/Double Ratchet), federation, groups, and push notifications are future work. The full wire protocol is documented in [docs/PROTOCOL.md](docs/PROTOCOL.md).
+**Status:** identity, per-request signature authentication, account/device management, bootstrap, invites, and full X3DH + Double Ratchet end-to-end encrypted 1:1 messaging are implemented (single server only — no federation yet). Groups/broadcast, federation, and push notifications are future work. The full wire protocol is documented in [docs/PROTOCOL.md](docs/PROTOCOL.md). A minimal reference client, [`cmd/devclient`](cmd/devclient), lets you try real encrypted chat locally — see [below](#trying-it-out-a-local-encrypted-chat).
 
 This guide assumes no prior experience running a server. If you just want the quick reference, jump to [Configuration reference](#configuration-reference).
 
@@ -80,7 +80,14 @@ This is the easiest way to run a real, internet-facing server. It uses [Let's En
 
 ### Claiming the admin account
 
-The setup token proves *you* are allowed to create the first (admin) account — but actually creating one requires generating a cryptographic key pair and signing a certificate with it, which is the companion app's job, not something you type into a terminal. **Until the Freizone mobile/desktop app is available, this last step needs a small companion tool**; the exact request shape it needs to send is documented in [docs/PROTOCOL.md](docs/PROTOCOL.md) under `POST /v1/bootstrap/claim`, for anyone who wants to script it in the meantime.
+The setup token proves *you* are allowed to create the first (admin) account — but actually creating one requires generating a cryptographic key pair and signing a certificate with it, which is a client's job, not something you type into a terminal by hand. **Until the Freizone mobile/desktop app exists**, use the bundled reference client to do this:
+
+```sh
+go build -o devclient ./cmd/devclient
+./devclient bootstrap -server https://chat.example.org -datadir ./admin-identity -token YOUR_SETUP_TOKEN
+```
+
+This generates the admin's keys locally (under `-datadir`, on this machine only — nothing sensitive is ever sent to the server) and claims the account. See [Trying it out](#trying-it-out-a-local-encrypted-chat) below for the full rundown of what `devclient` can do, including actually exchanging encrypted messages.
 
 Once your account is claimed, you (the admin) can issue invite codes for other people via `POST /v1/admin/invites` — the app will be able to turn a code into a scannable QR code. This is how new users join a server whose registration policy is `closed` or `invite`.
 
@@ -99,6 +106,41 @@ FREIZONE_REGISTRATION_POLICY=closed \
 ```
 
 Then check `curl http://127.0.0.1:8080/healthz`. Do **not** use `FREIZONE_TLS_MODE=off` for anything reachable from the internet — it serves plain, unencrypted HTTP.
+
+## Trying it out: a local encrypted chat
+
+With the server above running locally, `cmd/devclient` lets you simulate two people chatting — with real X3DH + Double Ratchet end-to-end encryption, not a mock. Open two more terminals (one per "person"):
+
+```sh
+go build -o devclient ./cmd/devclient
+```
+
+**Terminal 1 (server):** already running from the [local trial run](#local-trial-run-no-domain-needed) above, with `FREIZONE_REGISTRATION_POLICY=open` so the second step below doesn't need an invite code.
+
+**Terminal 2 ("Alice" — the admin):**
+```sh
+./devclient bootstrap -server http://127.0.0.1:8080 -datadir ./alice -token PASTE_THE_TOKEN_FROM_THE_SERVER_LOG
+```
+Note the account id it prints (a 21-character string).
+
+**Terminal 3 ("Bob"):**
+```sh
+./devclient register -server http://127.0.0.1:8080 -datadir ./bob
+```
+Note Bob's account id too.
+
+**Back in terminal 2, start chatting with Bob:**
+```sh
+./devclient chat -datadir ./alice -to BOBS_ACCOUNT_ID
+```
+**In terminal 3, chat back with Alice:**
+```sh
+./devclient chat -datadir ./bob -to ALICES_ACCOUNT_ID
+```
+
+Type a line and press enter in either terminal — it's encrypted on your machine, sent to the server as ciphertext the server can't read, and decrypted live in the other terminal over a Server-Sent Events stream. Each identity's keys and conversation state live under its own `-datadir` (`./alice`, `./bob`), so you can stop and restart either side without losing the session.
+
+`devclient` also has an `upload-prekeys` subcommand (run automatically the first time `chat` needs it) and doubles as the reference implementation for anyone building a real client — see [docs/PROTOCOL.md](docs/PROTOCOL.md) for the exact wire format it speaks.
 
 ## Registration policy: who can create an account
 
@@ -123,6 +165,7 @@ All configuration is via environment variables (there is no config file):
 | `FREIZONE_DATA_DIR` | `./data` | Directory holding the SQLite database and the Let's Encrypt certificate cache. Back this up; losing it means losing every account. |
 | `FREIZONE_DB_PATH` | `<DATA_DIR>/freizone.db` | Override the exact SQLite file path, if you need it somewhere other than inside `FREIZONE_DATA_DIR`. |
 | `FREIZONE_REGISTRATION_POLICY` | `closed` | `open` · `invite` · `closed` — see [above](#registration-policy-who-can-create-an-account). |
+| `FREIZONE_MESSAGE_RETENTION_DAYS` | `14` | How long an undelivered message stays queued before being permanently discarded. There is no server-side message history beyond this — by design. |
 
 There is also one command-line flag: `--reset-setup-token` (see below).
 

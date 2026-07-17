@@ -10,7 +10,7 @@ func TestMigrateCreatesExpectedTables(t *testing.T) {
 
 	wantTables := []string{
 		"schema_migrations", "accounts", "devices", "used_nonces",
-		"setup_tokens", "invite_codes",
+		"setup_tokens", "invite_codes", "signed_prekeys", "one_time_prekeys", "messages",
 	}
 	for _, name := range wantTables {
 		var found string
@@ -40,8 +40,9 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("counting schema_migrations rows: %v", err)
 	}
-	if count != 1 {
-		t.Errorf("schema_migrations has %d rows after two Migrate() calls, want 1", count)
+	const wantMigrations = 3
+	if count != wantMigrations {
+		t.Errorf("schema_migrations has %d rows after two Migrate() calls, want %d", count, wantMigrations)
 	}
 }
 

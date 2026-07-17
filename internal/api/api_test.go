@@ -24,7 +24,7 @@ func newTestAPI(t *testing.T, policy config.RegistrationPolicy) (*API, *sql.DB) 
 		t.Fatalf("store.Migrate() error = %v", err)
 	}
 
-	cfg := &config.Config{RegistrationPolicy: policy}
+	cfg := &config.Config{RegistrationPolicy: policy, MessageRetentionDays: 14}
 	authMW := auth.NewMiddleware(db, nil)
 	a := New(db, cfg, authMW, nil)
 	a.Now = func() time.Time { return time.Now() }

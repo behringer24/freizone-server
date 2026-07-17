@@ -23,6 +23,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.DBPath != "data/freizone.db" && cfg.DBPath != "data\\freizone.db" {
 		t.Errorf("unexpected default DBPath: %q", cfg.DBPath)
 	}
+	if cfg.MessageRetentionDays != defaultMessageRetentionDays {
+		t.Errorf("MessageRetentionDays = %d, want %d", cfg.MessageRetentionDays, defaultMessageRetentionDays)
+	}
 }
 
 func TestLoadInvalidTLSMode(t *testing.T) {
@@ -85,5 +88,30 @@ func TestLoadExplicitDBPath(t *testing.T) {
 	}
 	if cfg.DBPath != "/custom/path.db" {
 		t.Errorf("DBPath = %q, want /custom/path.db", cfg.DBPath)
+	}
+}
+
+func TestLoadExplicitMessageRetentionDays(t *testing.T) {
+	cfg, err := Load(envMap(map[string]string{envMessageRetentionDays: "30"}))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.MessageRetentionDays != 30 {
+		t.Errorf("MessageRetentionDays = %d, want 30", cfg.MessageRetentionDays)
+	}
+}
+
+func TestLoadRejectsNonNumericMessageRetentionDays(t *testing.T) {
+	if _, err := Load(envMap(map[string]string{envMessageRetentionDays: "not-a-number"})); err == nil {
+		t.Error("expected error for non-numeric message retention days")
+	}
+}
+
+func TestLoadRejectsNonPositiveMessageRetentionDays(t *testing.T) {
+	if _, err := Load(envMap(map[string]string{envMessageRetentionDays: "0"})); err == nil {
+		t.Error("expected error for zero message retention days")
+	}
+	if _, err := Load(envMap(map[string]string{envMessageRetentionDays: "-5"})); err == nil {
+		t.Error("expected error for negative message retention days")
 	}
 }

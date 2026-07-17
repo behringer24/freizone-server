@@ -50,6 +50,34 @@ func TestWithLoggingDefaultsStatusOK(t *testing.T) {
 	}
 }
 
+func TestWithLoggingPreservesFlusher(t *testing.T) {
+	// statusWriter wraps http.ResponseWriter in a struct; without an
+	// explicit Flush() method, a `w.(http.Flusher)` assertion inside a
+	// handler would silently fail even though the real underlying writer
+	// (e.g. from the actual net/http server) supports flushing -- exactly
+	// the bug that broke the SSE message stream end to end.
+	var sawFlusher bool
+	handler := withLogging(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f, ok := w.(http.Flusher)
+		sawFlusher = ok
+		if ok {
+			f.Flush()
+		}
+		w.WriteHeader(http.StatusOK)
+	}), nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/foo", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if !sawFlusher {
+		t.Error("handler could not type-assert http.Flusher through withLogging's wrapper")
+	}
+	if !rec.Flushed {
+		t.Error("expected the underlying ResponseRecorder to have been flushed")
+	}
+}
+
 func TestWithRecoverCatchesPanic(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
