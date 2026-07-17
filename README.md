@@ -62,13 +62,16 @@ This is the easiest way to run a real, internet-facing server. It uses [Let's En
    ================================================================
     Freizone setup token (save this now -- it will not be shown again):
 
-    272235184eaa3b28b6d6751cc6871c261b8dcd7dd402f626d47ee8331c8424f4
+    QWDX-7K2M
 
     Use it to claim the first admin account via POST /v1/bootstrap/claim.
+    (Dashes are cosmetic -- enter it with or without them.)
    ================================================================
    ```
 
    **Copy this token somewhere safe right now.** It is only ever shown this one time — the server stores only a cryptographic fingerprint of it, not the token itself, so it cannot be recovered or displayed again later. If you lose it before using it, see [Lost your setup token?](#lost-your-setup-token) below.
+
+   The token is short by design (8 characters, easy to type into a phone) — its safety against online guessing comes from a lockout (10 failed attempts permanently reject it) rather than raw length, since this endpoint deliberately has no other rate limiting.
 
 5. Confirm the server is healthy:
 

@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -69,6 +70,72 @@ func TestClaimSetupTokenRejectsWrongToken(t *testing.T) {
 
 	if err := ClaimSetupToken(db, "wrong-token", "admin1", now); !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("ClaimSetupToken() error = %v, want ErrInvalidToken", err)
+	}
+}
+
+func TestGenerateSetupTokenFormat(t *testing.T) {
+	token, err := generateSetupToken()
+	if err != nil {
+		t.Fatalf("generateSetupToken() error = %v", err)
+	}
+	if len(token) != setupTokenSymbols {
+		t.Errorf("len(token) = %d, want %d", len(token), setupTokenSymbols)
+	}
+	for _, c := range token {
+		if !strings.ContainsRune(setupTokenAlphabet, c) {
+			t.Errorf("token %q contains character %q outside setupTokenAlphabet", token, c)
+		}
+	}
+}
+
+func TestClaimSetupTokenToleratesDashesAndLowercase(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now()
+
+	token, _, err := InitSetupToken(db, now)
+	if err != nil {
+		t.Fatalf("InitSetupToken() error = %v", err)
+	}
+	if err := CreateAccount(db, testAccount("admin1", true)); err != nil {
+		t.Fatalf("CreateAccount() error = %v", err)
+	}
+
+	mid := len(token) / 2
+	dashed := strings.ToLower(token[:mid] + "-" + token[mid:])
+	if err := ClaimSetupToken(db, dashed, "admin1", now); err != nil {
+		t.Fatalf("ClaimSetupToken(%q) error = %v, want nil", dashed, err)
+	}
+}
+
+func TestClaimSetupTokenLocksOutAfterMaxAttempts(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now()
+
+	token, _, err := InitSetupToken(db, now)
+	if err != nil {
+		t.Fatalf("InitSetupToken() error = %v", err)
+	}
+	if err := CreateAccount(db, testAccount("admin1", true)); err != nil {
+		t.Fatalf("CreateAccount() error = %v", err)
+	}
+
+	for i := 0; i < MaxSetupTokenAttempts; i++ {
+		if err := ClaimSetupToken(db, "wrong-token", "admin1", now); !errors.Is(err, ErrInvalidToken) {
+			t.Fatalf("attempt %d: ClaimSetupToken() error = %v, want ErrInvalidToken", i, err)
+		}
+		// ClaimSetupToken deliberately doesn't record the failed attempt
+		// itself (see its doc comment) -- callers sharing a transaction
+		// with other work must do this separately, against a DBTX that
+		// commits independently of that transaction.
+		if err := RecordFailedSetupTokenAttempt(db); err != nil {
+			t.Fatalf("attempt %d: RecordFailedSetupTokenAttempt() error = %v", i, err)
+		}
+	}
+
+	// The lockout threshold is now reached -- even the correct token must
+	// be rejected, and the operator must reset instead.
+	if err := ClaimSetupToken(db, token, "admin1", now); !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("ClaimSetupToken() with correct token after lockout error = %v, want ErrInvalidToken", err)
 	}
 }
 

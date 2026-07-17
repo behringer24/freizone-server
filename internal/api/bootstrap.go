@@ -114,6 +114,24 @@ func (a *API) handleBootstrapClaim(w http.ResponseWriter, r *http.Request) {
 
 	if err := store.ClaimSetupToken(tx, req.SetupToken, accountID, now); err != nil {
 		if errors.Is(err, store.ErrInvalidToken) {
+			// tx must be rolled back -- and released -- before recording
+			// against a.DB below: both hold a write lock on the same
+			// SQLite database, so recording while tx is still open would
+			// just block until busy_timeout, then fail silently. Rolling
+			// back here (rather than relying on the deferred Rollback,
+			// which becomes a safe no-op after this) is what makes the
+			// failed-attempt count survive tx's rollback instead of
+			// racing it -- that count is what keeps a short token safe
+			// against online guessing on this rate-limit-free endpoint.
+			if rbErr := tx.Rollback(); rbErr != nil && a.Logger != nil {
+				a.Logger.Error("rolling back failed bootstrap claim", "error", rbErr)
+			}
+			if recErr := store.RecordFailedSetupTokenAttempt(a.DB); recErr != nil && a.Logger != nil {
+				a.Logger.Error("recording failed setup token attempt", "error", recErr)
+			}
+			if a.Logger != nil {
+				a.Logger.Warn("bootstrap claim rejected: invalid, already-used, or locked-out setup token")
+			}
 			writeError(w, http.StatusUnauthorized, "invalid_token", "invalid or already-used setup token")
 			return
 		}

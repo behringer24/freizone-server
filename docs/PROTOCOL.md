@@ -159,6 +159,20 @@ No auth. `200 {"status":"ok"}`, or `503` if the database is unavailable.
 No auth (gated by the one-time setup token printed to the server's log on
 first boot). Claims the first admin account.
 
+The setup token is 8 symbols from Crockford's Base32 alphabet
+(`0123456789ABCDEFGHJKMNPQRSTVWXYZ` -- excludes I, L, O, U to avoid
+transcription errors), 40 bits, printed dash-grouped (`ABCD-1234`) for
+readability. Dashes and case are cosmetic: the server strips
+separators/whitespace and uppercases before comparing, so `abcd-1234` and
+`ABCD1234` are equivalent. Deliberately short enough to type by hand into a
+phone without needing a QR code.
+
+Unlike per-request signatures, this endpoint has no other rate limiting, so
+the token's safety against online guessing comes from a **lockout, not raw
+entropy**: after 10 failed claim attempts the token is permanently rejected
+(even a subsequently-correct guess), and the operator must restart the
+server with `--reset-setup-token` to generate a fresh one.
+
 Request:
 ```json
 {
@@ -171,7 +185,7 @@ Request:
 }
 ```
 `201` with an account response (see below) on success.
-`401` invalid/already-used token · `400` invalid certificate · `409` an
+`401` invalid, already-used, or locked-out token · `400` invalid certificate · `409` an
 admin already exists.
 
 ### `POST /v1/accounts`

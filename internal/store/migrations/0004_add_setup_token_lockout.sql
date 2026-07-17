@@ -1,0 +1,1 @@
+ALTER TABLE setup_tokens ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0;

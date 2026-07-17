@@ -134,11 +134,20 @@ func printSetupTokenIfNew(db *sql.DB, logger *slog.Logger) error {
 	fmt.Println("================================================================")
 	fmt.Println(" Freizone setup token (save this now -- it will not be shown again):")
 	fmt.Println()
-	fmt.Println(" " + token)
+	fmt.Println(" " + formatSetupTokenForDisplay(token))
 	fmt.Println()
 	fmt.Println(" Use it to claim the first admin account via POST /v1/bootstrap/claim.")
+	fmt.Println(" (Dashes are cosmetic -- enter it with or without them.)")
 	fmt.Println("================================================================")
 	return nil
+}
+
+// formatSetupTokenForDisplay inserts a hyphen halfway through the token for
+// readability (e.g. "ABCD-1234"). Purely cosmetic: store.ClaimSetupToken
+// normalizes separators/case away before comparing.
+func formatSetupTokenForDisplay(token string) string {
+	mid := len(token) / 2
+	return token[:mid] + "-" + token[mid:]
 }
 
 // runNonceCleanup starts a background goroutine that periodically purges
