@@ -45,7 +45,7 @@ func TestEndToEndIdentityFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAccount(admin) error = %v", err)
 	}
-	if !adminAccount.IsAdmin {
+	if adminAccount.Role != store.RoleAdmin {
 		t.Fatal("bootstrapped account is not admin")
 	}
 

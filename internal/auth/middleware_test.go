@@ -46,7 +46,7 @@ func setupAccountAndDevice(t *testing.T, db store.DBTX, deviceStatus string) (ac
 		RootPubKey:    rootPub,
 		VersionMarker: 0,
 		Status:        store.AccountStatusActive,
-		IsAdmin:       false,
+		Role:          store.RoleUser,
 		CreatedAt:     time.Now(),
 	}); err != nil {
 		t.Fatalf("CreateAccount() error = %v", err)
@@ -141,6 +141,27 @@ func TestRequireRejectsUnknownDevice(t *testing.T) {
 func TestRequireRejectsRevokedDevice(t *testing.T) {
 	db := newTestDB(t)
 	_, deviceID, priv := setupAccountAndDevice(t, db, store.DeviceStatusRevoked)
+	mw := NewMiddleware(db, nil)
+	handler := mw.Require(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be called")
+	}))
+
+	req := newSignedRequest(http.MethodPost, "/v1/devices", []byte(`{}`), deviceID, priv, time.Now(), "nonce-1")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", rec.Code)
+	}
+}
+
+func TestRequireRejectsDisabledAccount(t *testing.T) {
+	db := newTestDB(t)
+	accountID, deviceID, priv := setupAccountAndDevice(t, db, store.DeviceStatusActive)
+	if err := store.SetAccountStatus(db, accountID, store.AccountStatusDisabled); err != nil {
+		t.Fatalf("SetAccountStatus() error = %v", err)
+	}
+
 	mw := NewMiddleware(db, nil)
 	handler := mw.Require(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("handler should not be called")

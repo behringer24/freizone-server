@@ -102,6 +102,9 @@ func (m *Middleware) authenticate(r *http.Request) (Identity, error) {
 	if err != nil {
 		return Identity{}, fmt.Errorf("auth: loading account: %w", err)
 	}
+	if account.Status != store.AccountStatusActive {
+		return Identity{}, errors.New("auth: account is not active")
+	}
 
-	return Identity{AccountID: device.AccountID, DeviceID: device.DeviceID, IsAdmin: account.IsAdmin}, nil
+	return Identity{AccountID: device.AccountID, DeviceID: device.DeviceID, Role: account.Role}, nil
 }

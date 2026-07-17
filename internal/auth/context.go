@@ -1,13 +1,17 @@
 package auth
 
-import "context"
+import (
+	"context"
+
+	"github.com/behringer24/freizone-server/internal/store"
+)
 
 // Identity is the authenticated caller of a signed request, injected into
 // the request context by Middleware.Require.
 type Identity struct {
 	AccountID string
 	DeviceID  string
-	IsAdmin   bool
+	Role      store.Role
 }
 
 type contextKey int

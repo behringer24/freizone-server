@@ -35,6 +35,7 @@ func main() {
 
 func run() error {
 	resetSetupToken := flag.Bool("reset-setup-token", false, "delete any existing (possibly lost or already-claimed) setup token, forcing a fresh one to be generated on this start")
+	resetAdmin := flag.Bool("reset-admin", false, "recover a lost admin (device/root key gone): does the exact same thing as --reset-setup-token, under a name for this specific scenario -- claiming with the fresh token creates an additional/replacement admin, it does not remove the old one")
 	flag.Parse()
 
 	cfg, err := config.Load(os.Getenv)
@@ -63,6 +64,16 @@ func run() error {
 			return fmt.Errorf("resetting setup token: %w", err)
 		}
 		logger.Info("setup token reset; a fresh one will be generated")
+	}
+	if *resetAdmin {
+		if err := store.ResetSetupToken(db); err != nil {
+			return fmt.Errorf("resetting admin: %w", err)
+		}
+		logger.Info("admin reset requested; a fresh setup token will be generated to claim a replacement or additional admin")
+	}
+
+	if err := store.InitRegistrationPolicy(db, string(cfg.RegistrationPolicy)); err != nil {
+		return fmt.Errorf("initializing registration policy: %w", err)
 	}
 
 	if err := printSetupTokenIfNew(db, logger); err != nil {

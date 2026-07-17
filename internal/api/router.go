@@ -43,6 +43,14 @@ func (a *API) Router() http.Handler {
 	mux.Handle("POST /v1/devices/{device_id}/revoke", a.Auth.Require(http.HandlerFunc(a.handleRevokeDevice)))
 	mux.Handle("POST /v1/admin/invites", a.Auth.Require(http.HandlerFunc(a.handleCreateInvite)))
 
+	mux.Handle("GET /v1/admin/accounts", a.Auth.Require(http.HandlerFunc(a.handleListAccounts)))
+	mux.Handle("POST /v1/admin/accounts/{id}/role", a.Auth.Require(http.HandlerFunc(a.handleSetAccountRole)))
+	mux.Handle("POST /v1/admin/accounts/{id}/block", a.Auth.Require(http.HandlerFunc(a.handleBlockAccount)))
+	mux.Handle("POST /v1/admin/accounts/{id}/unblock", a.Auth.Require(http.HandlerFunc(a.handleUnblockAccount)))
+	mux.Handle("DELETE /v1/admin/accounts/{id}", a.Auth.Require(http.HandlerFunc(a.handleDeleteAccount)))
+	mux.Handle("GET /v1/admin/registration-policy", a.Auth.Require(http.HandlerFunc(a.handleGetRegistrationPolicy)))
+	mux.Handle("PUT /v1/admin/registration-policy", a.Auth.Require(http.HandlerFunc(a.handleSetRegistrationPolicy)))
+
 	mux.Handle("POST /v1/devices/{device_id}/prekeys", a.Auth.Require(http.HandlerFunc(a.handleUploadPrekeys)))
 	mux.HandleFunc("POST /v1/devices/{device_id}/prekey-bundle", a.handleClaimPrekeyBundle)
 

@@ -23,6 +23,9 @@ func newTestAPI(t *testing.T, policy config.RegistrationPolicy) (*API, *sql.DB) 
 	if err := store.Migrate(db); err != nil {
 		t.Fatalf("store.Migrate() error = %v", err)
 	}
+	if err := store.InitRegistrationPolicy(db, string(policy)); err != nil {
+		t.Fatalf("InitRegistrationPolicy() error = %v", err)
+	}
 
 	cfg := &config.Config{RegistrationPolicy: policy, MessageRetentionDays: 14}
 	authMW := auth.NewMiddleware(db, nil)

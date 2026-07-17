@@ -16,8 +16,8 @@ import (
 // is "invite".
 func (a *API) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 	identity, ok := auth.IdentityFromContext(r.Context())
-	if !ok || !identity.IsAdmin {
-		writeError(w, http.StatusForbidden, "forbidden", "admin privileges required")
+	if !ok || (identity.Role != store.RoleAdmin && identity.Role != store.RoleModerator) {
+		writeError(w, http.StatusForbidden, "forbidden", "admin or moderator privileges required")
 		return
 	}
 
