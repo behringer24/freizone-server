@@ -67,23 +67,18 @@ func (a *API) handleBootstrapClaim(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op after a successful Commit
 
-	exists, err := store.AnyAdminExists(tx)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
-		return
-	}
-	if exists {
-		writeError(w, http.StatusConflict, "admin_exists", "an admin account already exists")
-		return
-	}
-
+	// No "an admin already exists" pre-check here: ClaimSetupToken's own
+	// used_at IS NULL reuse-protection already blocks re-claiming with a
+	// spent token, and a fresh token (via --reset-admin/--reset-setup-token)
+	// is deliberately allowed to claim an additional or replacement admin
+	// -- that's the recovery path for a lost admin device/key.
 	now := a.Now()
 	if err := store.CreateAccount(tx, store.Account{
 		ID:            accountID,
 		RootPubKey:    rootPub,
 		VersionMarker: address.CurrentVersion,
 		Status:        store.AccountStatusActive,
-		IsAdmin:       true,
+		Role:          store.RoleAdmin,
 		CreatedAt:     now,
 	}); err != nil {
 		if errors.Is(err, store.ErrConflict) {
@@ -144,6 +139,6 @@ func (a *API) handleBootstrapClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	acc := &store.Account{ID: accountID, RootPubKey: rootPub, IsAdmin: true, CreatedAt: now}
+	acc := &store.Account{ID: accountID, RootPubKey: rootPub, Role: store.RoleAdmin, CreatedAt: now}
 	writeJSON(w, http.StatusCreated, accountResponseFrom(acc, []store.Device{device}))
 }

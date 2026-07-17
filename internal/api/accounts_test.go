@@ -46,7 +46,7 @@ func TestHandleRegisterAccountOpenPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAccount() error = %v", err)
 	}
-	if acc.IsAdmin {
+	if acc.Role == store.RoleAdmin {
 		t.Error("self-registered account should not be admin")
 	}
 }
@@ -80,7 +80,7 @@ func TestHandleRegisterAccountInvitePolicy(t *testing.T) {
 	a, db := newTestAPI(t, config.PolicyInvite)
 
 	admin := newIdentityKeys(t)
-	if err := store.CreateAccount(db, store.Account{ID: admin.accountID, RootPubKey: admin.rootPub, IsAdmin: true, Status: store.AccountStatusActive, CreatedAt: time.Now()}); err != nil {
+	if err := store.CreateAccount(db, store.Account{ID: admin.accountID, RootPubKey: admin.rootPub, Role: store.RoleAdmin, Status: store.AccountStatusActive, CreatedAt: time.Now()}); err != nil {
 		t.Fatalf("CreateAccount() error = %v", err)
 	}
 

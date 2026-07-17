@@ -61,7 +61,12 @@ func (a *API) handleRegisterAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch a.Config.RegistrationPolicy {
+	policy, err := store.GetRegistrationPolicy(a.DB)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+		return
+	}
+	switch config.RegistrationPolicy(policy) {
 	case config.PolicyClosed:
 		writeError(w, http.StatusForbidden, "registration_closed", "registration is closed on this server")
 		return
@@ -85,7 +90,7 @@ func (a *API) handleRegisterAccount(w http.ResponseWriter, r *http.Request) {
 		RootPubKey:    rootPub,
 		VersionMarker: address.CurrentVersion,
 		Status:        store.AccountStatusActive,
-		IsAdmin:       false,
+		Role:          store.RoleUser,
 		CreatedAt:     now,
 	}); err != nil {
 		if errors.Is(err, store.ErrConflict) {
@@ -114,7 +119,7 @@ func (a *API) handleRegisterAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if a.Config.RegistrationPolicy == config.PolicyInvite {
+	if config.RegistrationPolicy(policy) == config.PolicyInvite {
 		if err := store.ConsumeInviteCode(tx, *req.InviteCode, accountID, now); err != nil {
 			switch {
 			case errors.Is(err, store.ErrNotFound):

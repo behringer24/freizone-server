@@ -24,7 +24,7 @@ func TestHandleCreateInviteAsAdmin(t *testing.T) {
 	a, db := newTestAPI(t, config.PolicyInvite)
 
 	admin := newIdentityKeys(t)
-	if err := store.CreateAccount(db, store.Account{ID: admin.accountID, RootPubKey: admin.rootPub, IsAdmin: true, Status: store.AccountStatusActive, CreatedAt: time.Now()}); err != nil {
+	if err := store.CreateAccount(db, store.Account{ID: admin.accountID, RootPubKey: admin.rootPub, Role: store.RoleAdmin, Status: store.AccountStatusActive, CreatedAt: time.Now()}); err != nil {
 		t.Fatalf("CreateAccount() error = %v", err)
 	}
 	if err := store.CreateDevice(db, store.Device{
@@ -58,7 +58,7 @@ func TestHandleCreateInviteWithExpiry(t *testing.T) {
 	a, db := newTestAPI(t, config.PolicyInvite)
 
 	admin := newIdentityKeys(t)
-	if err := store.CreateAccount(db, store.Account{ID: admin.accountID, RootPubKey: admin.rootPub, IsAdmin: true, Status: store.AccountStatusActive, CreatedAt: time.Now()}); err != nil {
+	if err := store.CreateAccount(db, store.Account{ID: admin.accountID, RootPubKey: admin.rootPub, Role: store.RoleAdmin, Status: store.AccountStatusActive, CreatedAt: time.Now()}); err != nil {
 		t.Fatalf("CreateAccount() error = %v", err)
 	}
 	if err := store.CreateDevice(db, store.Device{

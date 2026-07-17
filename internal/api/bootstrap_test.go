@@ -51,7 +51,7 @@ func TestHandleBootstrapClaimSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAccount() error = %v", err)
 	}
-	if !acc.IsAdmin {
+	if acc.Role != store.RoleAdmin {
 		t.Error("bootstrapped account is not marked as admin")
 	}
 }
@@ -102,7 +102,13 @@ func TestHandleBootstrapClaimLocksOutAfterMaxAttempts(t *testing.T) {
 	}
 }
 
-func TestHandleBootstrapClaimAdminAlreadyExists(t *testing.T) {
+// TestHandleBootstrapClaimAllowsAdditionalAdminAfterReset covers the "lost
+// admin device/key" recovery path: --reset-admin (== --reset-setup-token
+// under the hood) regenerates an unclaimed token, and bootstrap-claim now
+// deliberately allows claiming an additional/replacement admin with it --
+// there is no "an admin already exists" block anymore, only the setup
+// token's own single-use protection.
+func TestHandleBootstrapClaimAllowsAdditionalAdminAfterReset(t *testing.T) {
 	a, db := newTestAPI(t, config.PolicyClosed)
 	token, _, err := store.InitSetupToken(db, time.Now())
 	if err != nil {
@@ -125,8 +131,40 @@ func TestHandleBootstrapClaimAdminAlreadyExists(t *testing.T) {
 
 	k2 := newIdentityKeys(t)
 	rec2 := doRequest(t, a.Router(), http.MethodPost, "/v1/bootstrap/claim", bootstrapBody(token2, k2, k2.certSignature(t)))
-	if rec2.Code != http.StatusConflict {
-		t.Errorf("second claim status = %d, want 409, body = %s", rec2.Code, rec2.Body.String())
+	if rec2.Code != http.StatusCreated {
+		t.Fatalf("second claim status = %d, want 201, body = %s", rec2.Code, rec2.Body.String())
+	}
+
+	count, err := store.CountActiveAdmins(db)
+	if err != nil {
+		t.Fatalf("CountActiveAdmins() error = %v", err)
+	}
+	if count != 2 {
+		t.Errorf("CountActiveAdmins() = %d, want 2", count)
+	}
+}
+
+// TestHandleBootstrapClaimSecondClaimWithoutResetFails confirms that,
+// absent an operator-triggered reset, a second claim attempt still fails
+// -- purely because the original token is already used up, not because of
+// any "admin already exists" check (which no longer exists).
+func TestHandleBootstrapClaimSecondClaimWithoutResetFails(t *testing.T) {
+	a, db := newTestAPI(t, config.PolicyClosed)
+	token, _, err := store.InitSetupToken(db, time.Now())
+	if err != nil {
+		t.Fatalf("InitSetupToken() error = %v", err)
+	}
+
+	k1 := newIdentityKeys(t)
+	rec := doRequest(t, a.Router(), http.MethodPost, "/v1/bootstrap/claim", bootstrapBody(token, k1, k1.certSignature(t)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("first claim status = %d, want 201, body = %s", rec.Code, rec.Body.String())
+	}
+
+	k2 := newIdentityKeys(t)
+	rec2 := doRequest(t, a.Router(), http.MethodPost, "/v1/bootstrap/claim", bootstrapBody(token, k2, k2.certSignature(t)))
+	if rec2.Code != http.StatusUnauthorized {
+		t.Errorf("second claim (same, already-used token) status = %d, want 401, body = %s", rec2.Code, rec2.Body.String())
 	}
 }
 

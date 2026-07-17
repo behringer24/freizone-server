@@ -51,6 +51,38 @@ type createInviteResponse struct {
 	ExpiresAt *string `json:"expires_at,omitempty"`
 }
 
+type adminAccountResponse struct {
+	ID        string `json:"id"`
+	Role      string `json:"role"`
+	Status    string `json:"status"`
+	CreatedAt string `json:"created_at"`
+}
+
+func adminAccountResponseFrom(acc store.Account) adminAccountResponse {
+	return adminAccountResponse{
+		ID:        acc.ID,
+		Role:      string(acc.Role),
+		Status:    acc.Status,
+		CreatedAt: acc.CreatedAt.UTC().Format(time.RFC3339),
+	}
+}
+
+type setAccountRoleRequest struct {
+	Role string `json:"role"`
+}
+
+type statusResponse struct {
+	Status string `json:"status"`
+}
+
+type registrationPolicyResponse struct {
+	Policy string `json:"policy"`
+}
+
+type setRegistrationPolicyRequest struct {
+	Policy string `json:"policy"`
+}
+
 type accountResponse struct {
 	ID         string           `json:"id"`
 	RootPubKey string           `json:"root_pubkey"`
