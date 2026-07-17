@@ -50,7 +50,7 @@ Usage:
   devclient bootstrap -server URL -datadir DIR -token TOKEN
   devclient register  -server URL -datadir DIR [-invite CODE]
   devclient upload-prekeys -datadir DIR [-count N]
-  devclient chat -datadir DIR -to ACCOUNT_ID
+  devclient chat -datadir DIR -to ACCOUNT_ID [-auto-reply]
 
 Run a subcommand with -h for its flags.`)
 }
