@@ -13,8 +13,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/behringer24/freizone-server/internal/devicecert"
-	"github.com/behringer24/freizone-server/internal/ratchet"
+	"github.com/behringer24/freizone-server/pkg/devicecert"
+	"github.com/behringer24/freizone-server/pkg/ratchet"
 )
 
 // defaultOneTimePrekeyBatch is how many one-time prekeys to generate and

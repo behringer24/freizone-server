@@ -7,10 +7,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/behringer24/freizone-server/internal/address"
 	"github.com/behringer24/freizone-server/internal/config"
-	"github.com/behringer24/freizone-server/internal/devicecert"
 	"github.com/behringer24/freizone-server/internal/store"
+	"github.com/behringer24/freizone-server/pkg/address"
+	"github.com/behringer24/freizone-server/pkg/devicecert"
 )
 
 // handleRegisterAccount creates a new (non-admin) account, subject to the

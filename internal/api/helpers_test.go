@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/behringer24/freizone-server/internal/address"
-	"github.com/behringer24/freizone-server/internal/auth"
-	"github.com/behringer24/freizone-server/internal/devicecert"
+	"github.com/behringer24/freizone-server/pkg/address"
+	"github.com/behringer24/freizone-server/pkg/devicecert"
+	"github.com/behringer24/freizone-server/pkg/httpsig"
 )
 
 func b64(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
@@ -96,12 +96,12 @@ func doSignedRequest(t *testing.T, handler http.Handler, method, path string, bo
 
 	ts := time.Now()
 	nonce := "nonce-" + signerDeviceID + "-" + path + "-" + ts.String()
-	sig := auth.Sign(method, req.URL.Path, req.URL.RawQuery, body, signerDeviceID, ts, nonce, signerPriv)
+	sig := httpsig.Sign(method, req.URL.Path, req.URL.RawQuery, body, signerDeviceID, ts, nonce, signerPriv)
 
-	req.Header.Set(auth.HeaderKeyID, signerDeviceID)
-	req.Header.Set(auth.HeaderTimestamp, auth.FormatTimestamp(ts))
-	req.Header.Set(auth.HeaderNonce, nonce)
-	req.Header.Set(auth.HeaderSignature, sig)
+	req.Header.Set(httpsig.HeaderKeyID, signerDeviceID)
+	req.Header.Set(httpsig.HeaderTimestamp, httpsig.FormatTimestamp(ts))
+	req.Header.Set(httpsig.HeaderNonce, nonce)
+	req.Header.Set(httpsig.HeaderSignature, sig)
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -129,12 +129,12 @@ func newSignedHTTPRequest(t *testing.T, method, targetURL string, body []byte, s
 
 	ts := time.Now()
 	nonce := "nonce-" + signerDeviceID + "-" + parsed.Path + "-" + ts.String()
-	sig := auth.Sign(method, parsed.Path, parsed.RawQuery, body, signerDeviceID, ts, nonce, priv)
+	sig := httpsig.Sign(method, parsed.Path, parsed.RawQuery, body, signerDeviceID, ts, nonce, priv)
 
-	req.Header.Set(auth.HeaderKeyID, signerDeviceID)
-	req.Header.Set(auth.HeaderTimestamp, auth.FormatTimestamp(ts))
-	req.Header.Set(auth.HeaderNonce, nonce)
-	req.Header.Set(auth.HeaderSignature, sig)
+	req.Header.Set(httpsig.HeaderKeyID, signerDeviceID)
+	req.Header.Set(httpsig.HeaderTimestamp, httpsig.FormatTimestamp(ts))
+	req.Header.Set(httpsig.HeaderNonce, nonce)
+	req.Header.Set(httpsig.HeaderSignature, sig)
 
 	return req
 }

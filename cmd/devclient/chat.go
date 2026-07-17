@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/behringer24/freizone-server/internal/ratchet"
-	"github.com/behringer24/freizone-server/internal/wire"
+	"github.com/behringer24/freizone-server/pkg/ratchet"
+	"github.com/behringer24/freizone-server/pkg/wire"
 )
 
 func runChat(args []string) error {

@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/behringer24/freizone-server/internal/config"
-	"github.com/behringer24/freizone-server/internal/devicecert"
+	"github.com/behringer24/freizone-server/pkg/devicecert"
 )
 
 // uploadedPrekeys holds the private halves of everything uploaded, so a

@@ -20,11 +20,11 @@ const x25519PubKeySize = 32
 // key, not the account's root key -- a device already certified by the
 // root is vouching for its own X3DH key material.
 type DHIdentityCertificate struct {
-	AccountID string
-	DeviceID  string
-	DHPubKey  []byte // X25519, 32 bytes
-	IssuedAt  time.Time
-	Signature []byte
+	AccountID string    `json:"account_id"`
+	DeviceID  string    `json:"device_id"`
+	DHPubKey  []byte    `json:"dh_pub_key"` // X25519, 32 bytes
+	IssuedAt  time.Time `json:"issued_at"`
+	Signature []byte    `json:"signature"`
 }
 
 // SignDHIdentityCertificate builds and signs a new DH identity certificate
@@ -82,13 +82,13 @@ func (c *DHIdentityCertificate) signingBytes() ([]byte, error) {
 // replayed against a substituted identity key. Signed by the device's own
 // Ed25519 private key, same as DHIdentityCertificate.
 type SignedPrekeyCertificate struct {
-	AccountID        string
-	DeviceID         string
-	KeyID            uint32
-	DHIdentityPubKey []byte // X25519, 32 bytes -- must match the device's DHIdentityCertificate
-	PrekeyPubKey     []byte // X25519, 32 bytes
-	IssuedAt         time.Time
-	Signature        []byte
+	AccountID        string    `json:"account_id"`
+	DeviceID         string    `json:"device_id"`
+	KeyID            uint32    `json:"key_id"`
+	DHIdentityPubKey []byte    `json:"dh_identity_pub_key"` // X25519, 32 bytes -- must match the device's DHIdentityCertificate
+	PrekeyPubKey     []byte    `json:"prekey_pub_key"`      // X25519, 32 bytes
+	IssuedAt         time.Time `json:"issued_at"`
+	Signature        []byte    `json:"signature"`
 }
 
 // SignSignedPrekeyCertificate builds and signs a new signed-prekey

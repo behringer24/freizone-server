@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/behringer24/freizone-server/internal/store"
+	"github.com/behringer24/freizone-server/pkg/httpsig"
 )
 
 func newTestDB(t *testing.T) *sql.DB {
@@ -70,11 +71,11 @@ func setupAccountAndDevice(t *testing.T, db store.DBTX, deviceStatus string) (ac
 
 func newSignedRequest(method, path string, body []byte, deviceID string, priv ed25519.PrivateKey, ts time.Time, nonce string) *http.Request {
 	req := httptest.NewRequest(method, path, strings.NewReader(string(body)))
-	sig := Sign(method, path, req.URL.RawQuery, body, deviceID, ts, nonce, priv)
-	req.Header.Set(HeaderKeyID, deviceID)
-	req.Header.Set(HeaderTimestamp, FormatTimestamp(ts))
-	req.Header.Set(HeaderNonce, nonce)
-	req.Header.Set(HeaderSignature, sig)
+	sig := httpsig.Sign(method, path, req.URL.RawQuery, body, deviceID, ts, nonce, priv)
+	req.Header.Set(httpsig.HeaderKeyID, deviceID)
+	req.Header.Set(httpsig.HeaderTimestamp, httpsig.FormatTimestamp(ts))
+	req.Header.Set(httpsig.HeaderNonce, nonce)
+	req.Header.Set(httpsig.HeaderSignature, sig)
 	return req
 }
 
@@ -119,7 +120,10 @@ func TestRequireRejectsMissingHeaders(t *testing.T) {
 
 func TestRequireRejectsUnknownDevice(t *testing.T) {
 	db := newTestDB(t)
-	_, priv := mustKeyPair(t)
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
 	mw := NewMiddleware(db, nil)
 	handler := mw.Require(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("handler should not be called")
@@ -162,13 +166,13 @@ func TestRequireRejectsTamperedBody(t *testing.T) {
 	ts := time.Now()
 	nonce := "nonce-1"
 	signedBody := []byte(`{"a":1}`)
-	sig := Sign(http.MethodPost, "/v1/devices", "", signedBody, deviceID, ts, nonce, priv)
+	sig := httpsig.Sign(http.MethodPost, "/v1/devices", "", signedBody, deviceID, ts, nonce, priv)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/devices", strings.NewReader(`{"a":2}`)) // different body than what was signed
-	req.Header.Set(HeaderKeyID, deviceID)
-	req.Header.Set(HeaderTimestamp, FormatTimestamp(ts))
-	req.Header.Set(HeaderNonce, nonce)
-	req.Header.Set(HeaderSignature, sig)
+	req.Header.Set(httpsig.HeaderKeyID, deviceID)
+	req.Header.Set(httpsig.HeaderTimestamp, httpsig.FormatTimestamp(ts))
+	req.Header.Set(httpsig.HeaderNonce, nonce)
+	req.Header.Set(httpsig.HeaderSignature, sig)
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)

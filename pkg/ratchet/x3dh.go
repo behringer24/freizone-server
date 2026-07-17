@@ -30,10 +30,10 @@ type RemoteBundle struct {
 // alongside its first Double-Ratchet-encrypted message, so the responder
 // can derive the same shared secret and bootstrap its own session.
 type InitialMessage struct {
-	SenderDHIdentityPub []byte // 32 bytes
-	SenderEphemeralPub  []byte // 32 bytes
-	SignedPrekeyID      uint32
-	OneTimePrekeyID     *uint32
+	SenderDHIdentityPub []byte  `json:"sender_dh_identity_pub"` // 32 bytes
+	SenderEphemeralPub  []byte  `json:"sender_ephemeral_pub"`   // 32 bytes
+	SignedPrekeyID      uint32  `json:"signed_prekey_id"`
+	OneTimePrekeyID     *uint32 `json:"one_time_prekey_id,omitempty"`
 }
 
 // InitiateSession runs X3DH as the initiator against a fetched

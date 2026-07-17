@@ -32,11 +32,11 @@ func NewDeviceID() (string, error) {
 // DeviceCertificate authorizes a device's identity key under an account's
 // root key.
 type DeviceCertificate struct {
-	AccountID    string
-	DeviceID     string
-	DevicePubKey ed25519.PublicKey
-	IssuedAt     time.Time
-	Signature    []byte
+	AccountID    string            `json:"account_id"`
+	DeviceID     string            `json:"device_id"`
+	DevicePubKey ed25519.PublicKey `json:"device_pub_key"`
+	IssuedAt     time.Time         `json:"issued_at"`
+	Signature    []byte            `json:"signature"`
 }
 
 // SignDeviceCertificate builds and signs a new device certificate with the
@@ -92,10 +92,10 @@ func (c *DeviceCertificate) signingBytes() ([]byte, error) {
 // DeviceRevocation revokes a previously certified device, signed by the
 // account's root key.
 type DeviceRevocation struct {
-	AccountID string
-	DeviceID  string
-	RevokedAt time.Time
-	Signature []byte
+	AccountID string    `json:"account_id"`
+	DeviceID  string    `json:"device_id"`
+	RevokedAt time.Time `json:"revoked_at"`
+	Signature []byte    `json:"signature"`
 }
 
 // SignDeviceRevocation builds and signs a new device revocation with the

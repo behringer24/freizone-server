@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/behringer24/freizone-server/internal/config"
-	"github.com/behringer24/freizone-server/internal/devicecert"
 	"github.com/behringer24/freizone-server/internal/store"
+	"github.com/behringer24/freizone-server/pkg/devicecert"
 )
 
 // registerAccount registers an account via the API and returns its keys.

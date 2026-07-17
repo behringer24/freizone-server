@@ -10,9 +10,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/behringer24/freizone-server/internal/address"
-	"github.com/behringer24/freizone-server/internal/devicecert"
-	"github.com/behringer24/freizone-server/internal/ratchet"
+	"github.com/behringer24/freizone-server/pkg/address"
+	"github.com/behringer24/freizone-server/pkg/devicecert"
+	"github.com/behringer24/freizone-server/pkg/ratchet"
 )
 
 // newIdentity generates a fresh root key, device key, and derived account

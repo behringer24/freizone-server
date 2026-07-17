@@ -1,7 +1,11 @@
-// Package auth implements Freizone's per-request signature authentication:
-// every API request is signed by the calling device's Ed25519 identity key
-// instead of carrying a session or password.
-package auth
+// Package httpsig implements Freizone's per-request signature
+// authentication: every API request is signed by the calling device's
+// Ed25519 identity key instead of carrying a session or password. Public
+// (not internal) because both the server (verification, via
+// internal/auth's Middleware) and any client -- including the mobile
+// app's Go core -- need to build the same canonical string and, for
+// clients, produce the Signature header itself.
+package httpsig
 
 import (
 	"crypto/ed25519"

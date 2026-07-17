@@ -346,7 +346,8 @@ server-side bundle tied to an already-verified device).
 
 Client-side only — the server never sees plaintext, key material beyond
 public keys/certificates, or ratchet state. Implemented in
-`internal/ratchet`, following
+`pkg/ratchet` (public, so other Go modules — e.g. the mobile app's shared
+core — can import it directly instead of re-implementing it), following
 [the X3DH spec](https://www.signal.org/docs/specifications/x3dh/) and
 [the Double Ratchet spec](https://www.signal.org/docs/specifications/doubleratchet/)
 with these concrete choices:
@@ -383,7 +384,7 @@ confidentiality. Revisit before any real deployment.
 
 A message's `payload` (§7) is an opaque JSON blob the server never parses —
 defined here purely as a client-to-client contract, implemented in
-`internal/wire`:
+`pkg/wire`:
 
 ```json
 {

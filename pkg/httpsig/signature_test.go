@@ -1,4 +1,4 @@
-package auth
+package httpsig
 
 import (
 	"crypto/ed25519"

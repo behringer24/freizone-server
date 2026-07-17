@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/behringer24/freizone-server/internal/ratchet"
+	"github.com/behringer24/freizone-server/pkg/ratchet"
 )
 
 // OTPKState is one uploaded one-time prekey's key pair, kept locally until

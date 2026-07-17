@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/behringer24/freizone-server/internal/config"
-	"github.com/behringer24/freizone-server/internal/ratchet"
-	"github.com/behringer24/freizone-server/internal/wire"
+	"github.com/behringer24/freizone-server/pkg/ratchet"
+	"github.com/behringer24/freizone-server/pkg/wire"
 )
 
 func mustBase64Decode(t *testing.T, s string) []byte {
@@ -24,7 +24,7 @@ func mustBase64Decode(t *testing.T, s string) []byte {
 // TestEndToEndEncryptedChat exercises the full path a real client would
 // take: register two accounts, upload prekeys, claim a bundle, run X3DH,
 // and exchange Double-Ratchet-encrypted messages through the real
-// send/list/delete API -- proving internal/ratchet, internal/wire, and the
+// send/list/delete API -- proving pkg/ratchet, pkg/wire, and the
 // prekey/message endpoints all fit together correctly, end to end.
 func TestEndToEndEncryptedChat(t *testing.T) {
 	a, _ := newTestAPI(t, config.PolicyOpen)

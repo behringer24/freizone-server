@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/behringer24/freizone-server/internal/auth"
+	"github.com/behringer24/freizone-server/pkg/httpsig"
 )
 
 // randomNonce generates a client-random nonce for a signed request.
@@ -55,12 +55,12 @@ func signedRequest(state *State, method, path string, body []byte) (*http.Respon
 	if err != nil {
 		return nil, err
 	}
-	sig := auth.Sign(method, path, "", body, state.DeviceID, ts, nonce, ed25519.PrivateKey(state.DevicePriv))
+	sig := httpsig.Sign(method, path, "", body, state.DeviceID, ts, nonce, ed25519.PrivateKey(state.DevicePriv))
 
-	req.Header.Set(auth.HeaderKeyID, state.DeviceID)
-	req.Header.Set(auth.HeaderTimestamp, auth.FormatTimestamp(ts))
-	req.Header.Set(auth.HeaderNonce, nonce)
-	req.Header.Set(auth.HeaderSignature, sig)
+	req.Header.Set(httpsig.HeaderKeyID, state.DeviceID)
+	req.Header.Set(httpsig.HeaderTimestamp, httpsig.FormatTimestamp(ts))
+	req.Header.Set(httpsig.HeaderNonce, nonce)
+	req.Header.Set(httpsig.HeaderSignature, sig)
 
 	return http.DefaultClient.Do(req)
 }
@@ -78,12 +78,12 @@ func newSignedStreamRequest(state *State, path string) (*http.Request, error) {
 	if err != nil {
 		return nil, err
 	}
-	sig := auth.Sign(http.MethodGet, path, "", nil, state.DeviceID, ts, nonce, ed25519.PrivateKey(state.DevicePriv))
+	sig := httpsig.Sign(http.MethodGet, path, "", nil, state.DeviceID, ts, nonce, ed25519.PrivateKey(state.DevicePriv))
 
-	req.Header.Set(auth.HeaderKeyID, state.DeviceID)
-	req.Header.Set(auth.HeaderTimestamp, auth.FormatTimestamp(ts))
-	req.Header.Set(auth.HeaderNonce, nonce)
-	req.Header.Set(auth.HeaderSignature, sig)
+	req.Header.Set(httpsig.HeaderKeyID, state.DeviceID)
+	req.Header.Set(httpsig.HeaderTimestamp, httpsig.FormatTimestamp(ts))
+	req.Header.Set(httpsig.HeaderNonce, nonce)
+	req.Header.Set(httpsig.HeaderSignature, sig)
 
 	return req, nil
 }

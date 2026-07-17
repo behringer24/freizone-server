@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/behringer24/freizone-server/internal/auth"
-	"github.com/behringer24/freizone-server/internal/devicecert"
 	"github.com/behringer24/freizone-server/internal/store"
+	"github.com/behringer24/freizone-server/pkg/devicecert"
 )
 
 // handleAddDevice adds a new device certificate to an account. The request

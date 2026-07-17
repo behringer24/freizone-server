@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/behringer24/freizone-server/internal/auth"
-	"github.com/behringer24/freizone-server/internal/devicecert"
 	"github.com/behringer24/freizone-server/internal/store"
+	"github.com/behringer24/freizone-server/pkg/devicecert"
 )
 
 // x25519PubKeySize is the byte length of an X25519 public key.

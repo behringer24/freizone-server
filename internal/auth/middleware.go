@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/behringer24/freizone-server/internal/store"
+	"github.com/behringer24/freizone-server/pkg/httpsig"
 )
 
 // MaxClockSkew is the maximum allowed difference between a request's
@@ -53,17 +54,17 @@ func (m *Middleware) Require(next http.Handler) http.Handler {
 }
 
 func (m *Middleware) authenticate(r *http.Request) (Identity, error) {
-	headers, err := ParseRequestHeaders(r)
+	headers, err := httpsig.ParseRequestHeaders(r)
 	if err != nil {
 		return Identity{}, err
 	}
 
-	ts, err := ParseTimestamp(headers.Timestamp)
+	ts, err := httpsig.ParseTimestamp(headers.Timestamp)
 	if err != nil {
 		return Identity{}, err
 	}
 	now := m.Now()
-	if !WithinSkew(ts, now, MaxClockSkew) {
+	if !httpsig.WithinSkew(ts, now, MaxClockSkew) {
 		return Identity{}, errors.New("auth: timestamp outside allowed skew")
 	}
 
@@ -81,8 +82,8 @@ func (m *Middleware) authenticate(r *http.Request) (Identity, error) {
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
 
-	canonical := CanonicalStringFromRequest(r, headers, body)
-	if err := Verify(canonical, headers.Signature, device.DevicePubKey); err != nil {
+	canonical := httpsig.CanonicalStringFromRequest(r, headers, body)
+	if err := httpsig.Verify(canonical, headers.Signature, device.DevicePubKey); err != nil {
 		return Identity{}, err
 	}
 

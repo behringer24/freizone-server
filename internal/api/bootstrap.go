@@ -7,9 +7,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/behringer24/freizone-server/internal/address"
-	"github.com/behringer24/freizone-server/internal/devicecert"
 	"github.com/behringer24/freizone-server/internal/store"
+	"github.com/behringer24/freizone-server/pkg/address"
+	"github.com/behringer24/freizone-server/pkg/devicecert"
 )
 
 // handleBootstrapClaim claims the first admin account using the one-time

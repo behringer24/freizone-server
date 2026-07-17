@@ -3,7 +3,7 @@ package wire
 import (
 	"testing"
 
-	"github.com/behringer24/freizone-server/internal/ratchet"
+	"github.com/behringer24/freizone-server/pkg/ratchet"
 )
 
 func TestHeaderDTORoundTrip(t *testing.T) {

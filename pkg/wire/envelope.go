@@ -1,7 +1,7 @@
 // Package wire defines the client-side JSON shape of a chat message
 // envelope: what a Freizone client puts in a message's opaque "payload"
 // field (see docs/PROTOCOL.md). The server never parses this -- it's a
-// contract between clients only, built on top of internal/ratchet.
+// contract between clients only, built on top of pkg/ratchet.
 package wire
 
 import (
@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/behringer24/freizone-server/internal/ratchet"
+	"github.com/behringer24/freizone-server/pkg/ratchet"
 )
 
 // Envelope is the full contents of a message's opaque payload. Prekey is

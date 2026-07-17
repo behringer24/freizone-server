@@ -32,9 +32,9 @@ const (
 // Header accompanies every ratchet-encrypted message and is itself part of
 // the AEAD associated data (see aead.go).
 type Header struct {
-	DHPub []byte // sender's current ratchet public key, 32 bytes
-	PN    uint32 // length of the sender's previous sending chain
-	N     uint32 // message number within the sender's current sending chain
+	DHPub []byte `json:"dh_pub"` // sender's current ratchet public key, 32 bytes
+	PN    uint32 `json:"pn"`     // length of the sender's previous sending chain
+	N     uint32 `json:"n"`      // message number within the sender's current sending chain
 }
 
 // Bytes returns Header's fixed-width binary encoding.
