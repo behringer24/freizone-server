@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"os"
 	"strings"
@@ -22,6 +23,7 @@ func runChat(args []string) error {
 	fs := flag.NewFlagSet("chat", flag.ExitOnError)
 	dataDir := fs.String("datadir", "./devclient-data", "local state directory")
 	to := fs.String("to", "", "peer account id to chat with")
+	autoReply := fs.Bool("auto-reply", false, "automatically answer every incoming message with a random short lorem-ipsum reply, so this instance can be tested without a human typing into it")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -57,10 +59,14 @@ func runChat(args []string) error {
 		return state.Save(path)
 	}
 
-	fmt.Printf("Chatting as %s with %s. Type a message and press enter; Ctrl+C to quit.\n", state.AccountID, *to)
+	if *autoReply {
+		fmt.Printf("Chatting as %s with %s (auto-reply on). Type a message and press enter; Ctrl+C to quit.\n", state.AccountID, *to)
+	} else {
+		fmt.Printf("Chatting as %s with %s. Type a message and press enter; Ctrl+C to quit.\n", state.AccountID, *to)
+	}
 
 	stop := make(chan struct{})
-	go receiveLoop(state, &mu, save, stop)
+	go receiveLoop(state, &mu, save, stop, *to, peerDeviceID, peerDevicePubKey, *autoReply)
 
 	scanner := bufio.NewScanner(os.Stdin)
 	fmt.Print("> ")
@@ -160,15 +166,25 @@ func getOrCreateSession(state *State, peerAccountID, peerDeviceID string, peerDe
 }
 
 // receiveLoop holds an SSE connection open, reconnecting on failure, and
-// prints/decrypts incoming messages as they arrive.
-func receiveLoop(state *State, mu *sync.Mutex, save func() error, stop <-chan struct{}) {
+// prints/decrypts incoming messages as they arrive. If autoReply is set,
+// every message received from peerAccountID is answered automatically
+// with a random short lorem-ipsum reply -- see sendAutoReply.
+func receiveLoop(
+	state *State,
+	mu *sync.Mutex,
+	save func() error,
+	stop <-chan struct{},
+	peerAccountID, peerDeviceID string,
+	peerDevicePubKey ed25519.PublicKey,
+	autoReply bool,
+) {
 	for {
 		select {
 		case <-stop:
 			return
 		default:
 		}
-		if err := streamMessages(state, mu, save, stop); err != nil {
+		if err := streamMessages(state, mu, save, stop, peerAccountID, peerDeviceID, peerDevicePubKey, autoReply); err != nil {
 			fmt.Fprintln(os.Stderr, "\nstream error, retrying in 3s:", err)
 			select {
 			case <-stop:
@@ -179,7 +195,15 @@ func receiveLoop(state *State, mu *sync.Mutex, save func() error, stop <-chan st
 	}
 }
 
-func streamMessages(state *State, mu *sync.Mutex, save func() error, stop <-chan struct{}) error {
+func streamMessages(
+	state *State,
+	mu *sync.Mutex,
+	save func() error,
+	stop <-chan struct{},
+	peerAccountID, peerDeviceID string,
+	peerDevicePubKey ed25519.PublicKey,
+	autoReply bool,
+) error {
 	req, err := newSignedStreamRequest(state, "/v1/messages/stream")
 	if err != nil {
 		return err
@@ -233,7 +257,49 @@ func streamMessages(state *State, mu *sync.Mutex, save func() error, stop <-chan
 		if err := save(); err != nil {
 			fmt.Fprintln(os.Stderr, "save error:", err)
 		}
+
+		if autoReply && msg.SenderAccountID == peerAccountID {
+			reply := randomLoremReply(plaintext)
+			mu.Lock()
+			err := sendChatMessage(state, peerAccountID, peerDeviceID, peerDevicePubKey, reply)
+			mu.Unlock()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "\nauto-reply send error:", err)
+			} else {
+				fmt.Printf("\r[auto-reply] %s\n> ", reply)
+				if err := save(); err != nil {
+					fmt.Fprintln(os.Stderr, "save error:", err)
+				}
+			}
+		}
 	}
+}
+
+// loremWords is a small classic lorem-ipsum word bank -- randomLoremReply
+// picks a handful of these to stand in for an actual reply, purely so
+// two devclient instances can hold a plausible-looking conversation
+// unattended while testing.
+var loremWords = []string{
+	"lorem", "ipsum", "dolor", "sit", "amet", "consectetur", "adipiscing", "elit",
+	"sed", "do", "eiusmod", "tempor", "incididunt", "ut", "labore", "et", "dolore",
+	"magna", "aliqua", "enim", "ad", "minim", "veniam", "quis", "nostrud",
+	"exercitation", "ullamco", "laboris", "nisi", "aliquip", "ex", "ea", "commodo",
+	"consequat", "duis", "aute", "irure", "in", "reprehenderit", "voluptate",
+	"velit", "esse", "cillum", "eu", "fugiat", "nulla", "pariatur",
+}
+
+// randomLoremReply builds a short (3-8 word) random lorem-ipsum sentence
+// with received appended in parentheses, so the reply is both
+// obviously auto-generated and traceable back to what triggered it.
+func randomLoremReply(received string) string {
+	n := 3 + rand.Intn(6)
+	words := make([]string, n)
+	for i := range words {
+		words[i] = loremWords[rand.Intn(len(loremWords))]
+	}
+	sentence := strings.Join(words, " ")
+	sentence = strings.ToUpper(sentence[:1]) + sentence[1:] + "."
+	return fmt.Sprintf("%s (%s)", sentence, received)
 }
 
 // handleIncomingMessage decrypts msg, establishing a new session as X3DH
