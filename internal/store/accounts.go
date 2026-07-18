@@ -49,20 +49,42 @@ type Account struct {
 	CreatedAt     time.Time
 }
 
-// CreateAccount inserts a new account. It returns ErrConflict if the id is
-// already taken.
+// idPrefixLength must match pkg/address.FormatForDisplay's group size (the
+// first displayed group is the version marker + 4 real characters of
+// entropy) -- duplicated here rather than imported so store stays decoupled
+// from the address-formatting package for a single shared constant.
+const idPrefixLength = 5
+
+// CreateAccount inserts a new account. It returns ErrConflict if the exact
+// id is already taken, or ErrIDPrefixConflict if only its first 5 characters
+// collide with another account on this server.
 func CreateAccount(db DBTX, acc Account) error {
+	idPrefix := acc.ID
+	if len(idPrefix) > idPrefixLength {
+		idPrefix = idPrefix[:idPrefixLength]
+	}
+
 	_, err := db.Exec(
-		`INSERT INTO accounts (id, root_pubkey, version_marker, status, role, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		acc.ID, []byte(acc.RootPubKey), acc.VersionMarker, acc.Status, string(acc.Role), formatTime(acc.CreatedAt),
+		`INSERT INTO accounts (id, id_prefix, root_pubkey, version_marker, status, role, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		acc.ID, idPrefix, []byte(acc.RootPubKey), acc.VersionMarker, acc.Status, string(acc.Role), formatTime(acc.CreatedAt),
 	)
-	if err != nil {
-		if isUniqueConstraintErr(err) {
-			return fmt.Errorf("%w: account %s", ErrConflict, acc.ID)
-		}
+	if err == nil {
+		return nil
+	}
+	if !isUniqueConstraintErr(err) {
 		return fmt.Errorf("store: creating account: %w", err)
 	}
-	return nil
+
+	// Re-inserting the exact same id trips both the id and id_prefix
+	// constraints at once, and which one the driver reports isn't
+	// something to rely on -- check directly instead. An exact-id
+	// collision is the more specific, and more actionable, case (e.g. a
+	// client retrying a registration that already succeeded); only report
+	// ErrIDPrefixConflict once that's ruled out.
+	if _, getErr := GetAccount(db, acc.ID); getErr == nil {
+		return fmt.Errorf("%w: account %s", ErrConflict, acc.ID)
+	}
+	return fmt.Errorf("%w: prefix %s", ErrIDPrefixConflict, idPrefix)
 }
 
 // GetAccount looks up an account by id. It returns ErrNotFound if no such
@@ -71,6 +93,18 @@ func GetAccount(db DBTX, id string) (*Account, error) {
 	row := db.QueryRow(
 		`SELECT id, root_pubkey, version_marker, status, role, created_at FROM accounts WHERE id = ?`,
 		id,
+	)
+	return scanAccount(row)
+}
+
+// GetAccountByPrefix looks up an account by its first 5 characters (see
+// idPrefixLength) -- enforced unique per server at CreateAccount time, so
+// at most one row can ever match. Returns ErrNotFound if no such account
+// exists.
+func GetAccountByPrefix(db DBTX, prefix string) (*Account, error) {
+	row := db.QueryRow(
+		`SELECT id, root_pubkey, version_marker, status, role, created_at FROM accounts WHERE id_prefix = ?`,
+		prefix,
 	)
 	return scanAccount(row)
 }

@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,6 +54,30 @@ func TestHandleBootstrapClaimSuccess(t *testing.T) {
 	}
 	if acc.Role != store.RoleAdmin {
 		t.Error("bootstrapped account is not marked as admin")
+	}
+}
+
+func TestHandleBootstrapClaimIDPrefixConflict(t *testing.T) {
+	a, db := newTestAPI(t, config.PolicyClosed)
+	token, _, err := store.InitSetupToken(db, time.Now())
+	if err != nil {
+		t.Fatalf("InitSetupToken() error = %v", err)
+	}
+	k := newIdentityKeys(t)
+
+	colliding := k.accountID[:5] + "-a-different-account-entirely"
+	if err := store.CreateAccount(db, store.Account{
+		ID: colliding, RootPubKey: k.rootPub, Role: store.RoleUser, Status: store.AccountStatusActive, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seeding colliding account error = %v", err)
+	}
+
+	rec := doRequest(t, a.Router(), http.MethodPost, "/v1/bootstrap/claim", bootstrapBody(token, k, k.certSignature(t)))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "id_prefix_taken") {
+		t.Errorf("body = %s, want it to mention id_prefix_taken", rec.Body.String())
 	}
 }
 

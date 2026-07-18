@@ -53,6 +53,24 @@ func TestCreateAccountRejectsDuplicateID(t *testing.T) {
 	}
 }
 
+func TestCreateAccountRejectsSamePrefixDifferentID(t *testing.T) {
+	db := newTestDB(t)
+	if err := CreateAccount(db, testAccount("qsame-first-account", false)); err != nil {
+		t.Fatalf("first CreateAccount() error = %v", err)
+	}
+
+	// Different id, but the same first 5 characters -- must be rejected
+	// distinctly from an exact-duplicate id, since the caller's fix here is
+	// "generate a fresh identity", not "you already have this account".
+	err := CreateAccount(db, testAccount("qsame-second-account", false))
+	if !errors.Is(err, ErrIDPrefixConflict) {
+		t.Errorf("CreateAccount() with colliding prefix error = %v, want ErrIDPrefixConflict", err)
+	}
+	if errors.Is(err, ErrConflict) {
+		t.Errorf("CreateAccount() with colliding prefix should not also be ErrConflict, got %v", err)
+	}
+}
+
 func TestGetAccountNotFound(t *testing.T) {
 	db := newTestDB(t)
 	_, err := GetAccount(db, "does-not-exist")

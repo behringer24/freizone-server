@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -76,6 +77,29 @@ func TestHandleRegisterAccountDuplicate(t *testing.T) {
 	}
 }
 
+func TestHandleRegisterAccountIDPrefixConflict(t *testing.T) {
+	a, db := newTestAPI(t, config.PolicyOpen)
+	k := newIdentityKeys(t)
+
+	// A different account that happens to share k's first 5 id characters
+	// -- store.CreateAccount doesn't validate id format, so this is a
+	// cheap way to force the collision without brute-forcing a real key.
+	colliding := k.accountID[:5] + "-a-different-account-entirely"
+	if err := store.CreateAccount(db, store.Account{
+		ID: colliding, RootPubKey: k.rootPub, Role: store.RoleUser, Status: store.AccountStatusActive, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seeding colliding account error = %v", err)
+	}
+
+	rec := doRequest(t, a.Router(), http.MethodPost, "/v1/accounts", registerBodyT(t, k, nil))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "id_prefix_taken") {
+		t.Errorf("body = %s, want it to mention id_prefix_taken", rec.Body.String())
+	}
+}
+
 func TestHandleRegisterAccountInvitePolicy(t *testing.T) {
 	a, db := newTestAPI(t, config.PolicyInvite)
 
@@ -131,6 +155,40 @@ func TestHandleGetAccount(t *testing.T) {
 	}
 	if len(resp.Devices) != 1 {
 		t.Errorf("len(devices) = %d, want 1", len(resp.Devices))
+	}
+}
+
+func TestHandleGetAccountByPrefix(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+	k := newIdentityKeys(t)
+
+	rec := doRequest(t, a.Router(), http.MethodPost, "/v1/accounts", registerBodyT(t, k, nil))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("register status = %d, want 201", rec.Code)
+	}
+
+	// Looking up just the first 5 characters (with a trailing dash, as
+	// FormatForDisplay would show it) must resolve to the same account as
+	// the full id, and the response's own "id" is always the true full id.
+	prefix := k.accountID[:5] + "-"
+	getRec := doRequest(t, a.Router(), http.MethodGet, "/v1/accounts/"+prefix, nil)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get by prefix status = %d, want 200, body = %s", getRec.Code, getRec.Body.String())
+	}
+
+	var resp accountResponse
+	decodeJSON(t, getRec, &resp)
+	if resp.ID != k.accountID {
+		t.Errorf("account id = %q, want %q", resp.ID, k.accountID)
+	}
+}
+
+func TestHandleGetAccountByPrefixNotFound(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+
+	rec := doRequest(t, a.Router(), http.MethodGet, "/v1/accounts/zzzzz", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404, body = %s", rec.Code, rec.Body.String())
 	}
 }
 

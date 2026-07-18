@@ -154,10 +154,13 @@ func TestClaimSetupTokenRejectsReuse(t *testing.T) {
 		t.Fatalf("first ClaimSetupToken() error = %v", err)
 	}
 
-	if err := CreateAccount(db, testAccount("admin2", true)); err != nil {
+	// A distinct fake id with a different first-5-char prefix from "admin1"
+	// -- reusing an "adminN" pattern here would collide with the new
+	// id_prefix uniqueness constraint, which isn't what this test is about.
+	if err := CreateAccount(db, testAccount("second-admin", true)); err != nil {
 		t.Fatalf("CreateAccount() error = %v", err)
 	}
-	if err := ClaimSetupToken(db, token, "admin2", now); !errors.Is(err, ErrInvalidToken) {
+	if err := ClaimSetupToken(db, token, "second-admin", now); !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("second ClaimSetupToken() error = %v, want ErrInvalidToken", err)
 	}
 }

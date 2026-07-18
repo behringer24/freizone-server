@@ -18,6 +18,12 @@ const (
 	payloadGroupCount  = 1 + hashGroupCount
 	checksumGroupCount = 6
 	idLength           = payloadGroupCount + checksumGroupCount // 21 chars
+
+	// PrefixLength is the number of leading characters of an id that a
+	// server enforces unique among its own accounts (see docs/PROTOCOL.md's
+	// id-prefix uniqueness note): the version marker plus 4 real characters
+	// of entropy. Matches FormatForDisplay's first group size exactly.
+	PrefixLength = 5
 )
 
 // domainSeparationTag is used only as checksum input (per BIP-350's hrp
@@ -67,10 +73,11 @@ func Verify(id string, rootPubKey ed25519.PublicKey) (bool, error) {
 	return normalized == expected, nil
 }
 
-// Normalize strips cosmetic separators/whitespace, lowercases, and validates
-// an address's length, character set, and checksum -- without needing the
-// corresponding public key. It returns the canonical 21-character form.
-func Normalize(id string) (string, error) {
+// StripSeparators removes cosmetic dashes/whitespace and lowercases id,
+// without validating its length or checksum. Shared by Normalize (which
+// additionally enforces the full 21-character form) and any caller that
+// also needs to recognize the shorter, unchecksummed PrefixLength form.
+func StripSeparators(id string) string {
 	var sb strings.Builder
 	for _, c := range id {
 		switch c {
@@ -79,7 +86,26 @@ func Normalize(id string) (string, error) {
 		}
 		sb.WriteRune(unicode.ToLower(c))
 	}
-	normalized := sb.String()
+	return sb.String()
+}
+
+// ValidCharset reports whether every character in s belongs to the bech32m
+// charset -- useful for validating a short id-prefix, which (unlike a full
+// id) carries no checksum of its own to catch typos.
+func ValidCharset(s string) bool {
+	for _, c := range s {
+		if !strings.ContainsRune(charset, c) {
+			return false
+		}
+	}
+	return true
+}
+
+// Normalize strips cosmetic separators/whitespace, lowercases, and validates
+// an address's length, character set, and checksum -- without needing the
+// corresponding public key. It returns the canonical 21-character form.
+func Normalize(id string) (string, error) {
+	normalized := StripSeparators(id)
 
 	if len(normalized) != idLength {
 		return "", fmt.Errorf("address: id must be %d characters (excluding separators), got %d", idLength, len(normalized))
@@ -101,13 +127,16 @@ func Normalize(id string) (string, error) {
 	return normalized, nil
 }
 
-// FormatForDisplay inserts hyphens every 4 characters for readability. It is
+// FormatForDisplay inserts hyphens every 5 characters for readability. It is
 // purely cosmetic: the canonical form used in storage, URLs, and comparisons
-// has no separators.
+// has no separators. 5 (not 4) is deliberate: the first char is always the
+// version marker (see CurrentVersion), so a 5-char first group carries 4
+// real characters of entropy -- and happens to split the 15-char payload
+// into exactly 3 even groups, leaving only the 6-char checksum tail uneven.
 func FormatForDisplay(id string) string {
 	var sb strings.Builder
 	for i, c := range id {
-		if i > 0 && i%4 == 0 {
+		if i > 0 && i%5 == 0 {
 			sb.WriteByte('-')
 		}
 		sb.WriteRune(c)

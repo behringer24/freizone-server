@@ -34,8 +34,11 @@ Ed25519 public key:
 
 The result is a plain 21-character string — **no human-readable prefix, no
 `1` separator** (unlike standard bech32/bech32m). For display, it may be
-shown in 4-character dash-separated blocks (`k5x9-p2qa-n7f3-xyzq-eh8m`-style)
+shown in 5-character dash-separated blocks (`qk5x9-p2qan-7f3xy-zqeh8-m`-style)
 purely for readability; this is cosmetic and not part of the canonical form.
+5 (not 4) is deliberate: the first character is always the version marker,
+so a 5-character first group carries 4 real characters of entropy — see the
+id-prefix uniqueness note below.
 
 The ID is **self-certifying**: any party can recompute
 `hash(delivered_root_pubkey) == id` themselves. No server can substitute a
@@ -44,6 +47,17 @@ itself.
 
 Normalization for comparison/lookup: lowercase, strip `-`/whitespace, verify
 length (21) and bech32m checksum.
+
+**id-prefix uniqueness**: a server also enforces that each account's first 5
+characters (the version marker + 4 real characters of entropy, i.e.
+`32^4 = 1,048,576` possible values) are unique among its own accounts. This
+doesn't change how ids are derived — an id is still always `hash(root_pubkey)`
+— it just means `POST /v1/accounts` and `POST /v1/bootstrap/claim` reject a
+freshly-derived id whose prefix collides with an existing account on that
+server (`409 id_prefix_taken`), and the client is expected to generate a new
+identity and retry. This makes the first displayed group usable as a short,
+typeable, locally-unique lookup key for the full id, without weakening
+self-certification or introducing a chosen/squattable handle.
 
 ## 2. Key hierarchy
 
@@ -185,8 +199,9 @@ Request:
 }
 ```
 `201` with an account response (see below) on success.
-`401` invalid, already-used, or locked-out token · `400` invalid certificate · `409` an
-admin already exists.
+`401` invalid, already-used, or locked-out token · `400` invalid certificate ·
+`409` an admin already exists, or `id_prefix_taken` (see §1's id-prefix
+uniqueness note) -- retry with a freshly generated identity.
 
 ### `POST /v1/accounts`
 No auth (registration policy-gated: `open` / `invite` / `closed`). Same
@@ -203,7 +218,8 @@ certificate-bearing shape as bootstrap, plus an optional `invite_code`:
 ```
 `201` account response · `403` registration closed / invite code required ·
 `404` unknown invite code · `410` invite code expired or already used ·
-`409` account or device id collision.
+`409` account or device id collision, or `id_prefix_taken` (see §1's
+id-prefix uniqueness note) -- retry with a freshly generated identity.
 
 ### `GET /v1/server-status`
 No auth — lets a client decide which setup path applies before it has any
@@ -243,8 +259,13 @@ client can verify the **full** self-certifying chain itself
 (`hash(root_pubkey) == id`, then `Ed25519.Verify(root_pubkey, device
 signing bytes, signature)`) instead of trusting the server's word for which
 devices belong to an account. Both active and revoked devices are listed
-(with their status). `404` if `{id}` is unknown or fails address
-normalization.
+(with their status). `{id}` also accepts the shorter, unchecksummed
+PrefixLength (5-character) form as an alias for the full id (see §1's
+id-prefix uniqueness note) -- either way, the response's own `"id"` is
+always the true full id, which is what a caller must actually verify
+against `root_pubkey`, never the shorthand it looked up with. `404` if
+`{id}` is unknown or fails address normalization (full form) / charset
+validation (prefix form).
 
 ### `GET /v1/vapid-public-key`
 No auth — this server's VAPID public key (RFC 8292), not secret. Clients
