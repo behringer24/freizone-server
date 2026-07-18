@@ -231,6 +231,15 @@ devices belong to an account. Both active and revoked devices are listed
 (with their status). `404` if `{id}` is unknown or fails address
 normalization.
 
+### `GET /v1/vapid-public-key`
+No auth — this server's VAPID public key (RFC 8292), not secret. Clients
+pass this to their UnifiedPush distributor at registration time (some
+distributors reject registration without one); it identifies which
+application server may push to that subscription. `200`:
+```json
+{ "key": "base64url-encoded P-256 public key" }
+```
+
 ### `POST /v1/devices` (signed)
 Adds a device to an account. Must be signed by a device already active on
 that account. Body carries a new device certificate pre-signed by the
@@ -263,6 +272,25 @@ Body carries a root-key-signed revocation record:
 {"status":"revoked"}` · `400` path/body mismatch or invalid revocation
 signature · `403` account mismatch · `404` unknown account/device or
 already revoked.
+
+### `PUT /v1/devices/{device_id}/push-endpoint` (signed, caller must be that device)
+Registers, or (with an empty body) clears, this device's push subscription
+— see §7's note on push under `POST /v1/messages`. This is a standard Web
+Push subscription (the same shape browsers hand you from
+`PushManager.subscribe()`): `p256dh`/`auth` are the device's own ECDH
+public key and auth secret, which the server uses to RFC 8291-encrypt the
+(content-free) wake payload it sends to `endpoint`.
+```json
+{
+  "endpoint": "https://distributor.example/wake/abc123",
+  "p256dh": "base64url-encoded uncompressed P-256 point",
+  "auth": "base64url-encoded 16-byte secret"
+}
+```
+All three fields must be given together, or all omitted/null to
+unregister. `endpoint` must be an `https://` URL. `200 {"status":"ok"}` ·
+`400` missing/partial/non-https fields · `403` path device_id isn't the
+signing device · `404` unknown device.
 
 ### `POST /v1/admin/invites` (signed, admin only)
 Issues a single-use invite code (for the `invite` registration policy) —
@@ -435,6 +463,21 @@ Enqueues a message envelope (§6) for a recipient device.
 ```
 `202 {"status":"queued"}` — durably queued, not yet necessarily delivered ·
 `404` unknown/inactive recipient device · `409` `message_id` already used.
+
+If the recipient device has no live SSE stream (`GET /v1/messages/stream`)
+open and has registered a push subscription (see `PUT
+/v1/devices/{device_id}/push-endpoint`), the server fires a best-effort
+Web Push notification (RFC 8291-encrypted via this server's one VAPID
+keypair, RFC 8292) to wake the recipient. The encrypted plaintext is
+itself empty — the wake carries no content or metadata whatsoever, not
+the message, not its sender, not even that it's specifically a "new
+message" wake as opposed to any other reason. Encryption here is purely a
+transport requirement of the Web Push/UnifiedPush protocol, not a way to
+communicate anything: the recipient is expected to react to any wake by
+syncing over this same authenticated API, exactly as if it had just
+reconnected. Delivery of the wake itself is not guaranteed (no retry,
+short timeout) — the durable queue and the client's own reconnect/poll
+remain the actual delivery guarantee, same as before push existed.
 
 ### `GET /v1/messages` (signed)
 Polls for messages queued for the caller's device. `200`, an array of:

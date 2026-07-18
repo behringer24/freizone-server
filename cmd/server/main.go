@@ -76,12 +76,23 @@ func run() error {
 		return fmt.Errorf("initializing registration policy: %w", err)
 	}
 
+	if err := store.InitVAPIDKeys(db); err != nil {
+		return fmt.Errorf("initializing vapid keys: %w", err)
+	}
+	vapidPublicKey, vapidPrivateKey, err := store.GetVAPIDKeys(db)
+	if err != nil {
+		return fmt.Errorf("loading vapid keys: %w", err)
+	}
+
 	if err := printSetupTokenIfNew(db, logger); err != nil {
 		return fmt.Errorf("initializing setup token: %w", err)
 	}
 
 	authMW := auth.NewMiddleware(db, logger)
-	handler := api.New(db, cfg, authMW, logger).Router()
+	a := api.New(db, cfg, authMW, logger)
+	a.VAPIDPublicKey = vapidPublicKey
+	a.VAPIDPrivateKey = vapidPrivateKey
+	handler := a.Router()
 
 	srv, err := server.New(server.Options{
 		Domain:           cfg.Domain,

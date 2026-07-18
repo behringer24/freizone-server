@@ -42,6 +42,15 @@ type revokeDeviceRequest struct {
 	Signature string `json:"signature"`
 }
 
+// setPushEndpointRequest registers or clears (all fields nil/omitted) a
+// device's push subscription. Endpoint, P256dh, and Auth must be given
+// together or not at all -- see handleSetPushEndpoint.
+type setPushEndpointRequest struct {
+	Endpoint *string `json:"endpoint"`
+	P256dh   *string `json:"p256dh"`
+	Auth     *string `json:"auth"`
+}
+
 type createInviteRequest struct {
 	ExpiresAt *string `json:"expires_at,omitempty"`
 }

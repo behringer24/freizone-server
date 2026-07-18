@@ -26,10 +26,19 @@ func newTestAPI(t *testing.T, policy config.RegistrationPolicy) (*API, *sql.DB) 
 	if err := store.InitRegistrationPolicy(db, string(policy)); err != nil {
 		t.Fatalf("InitRegistrationPolicy() error = %v", err)
 	}
+	if err := store.InitVAPIDKeys(db); err != nil {
+		t.Fatalf("InitVAPIDKeys() error = %v", err)
+	}
+	vapidPublicKey, vapidPrivateKey, err := store.GetVAPIDKeys(db)
+	if err != nil {
+		t.Fatalf("GetVAPIDKeys() error = %v", err)
+	}
 
 	cfg := &config.Config{RegistrationPolicy: policy, MessageRetentionDays: 14}
 	authMW := auth.NewMiddleware(db, nil)
 	a := New(db, cfg, authMW, nil)
 	a.Now = func() time.Time { return time.Now() }
+	a.VAPIDPublicKey = vapidPublicKey
+	a.VAPIDPrivateKey = vapidPrivateKey
 	return a, db
 }

@@ -29,6 +29,19 @@ type Device struct {
 	DHIdentityPubKey    []byte
 	DHIdentityIssuedAt  *time.Time
 	DHIdentitySignature []byte
+
+	// Push is this device's registered push-wake subscription (see
+	// SetDevicePushSubscription), nil until it has registered one.
+	Push *PushSubscription
+}
+
+// PushSubscription is a UnifiedPush/Web Push subscription: an endpoint
+// URL to POST wake notifications to, plus the recipient's ECDH public
+// key and auth secret used to RFC 8291-encrypt the payload for it.
+type PushSubscription struct {
+	Endpoint string
+	P256dh   string
+	Auth     string
 }
 
 // CreateDevice inserts a new device. It returns ErrConflict if the device id
@@ -53,7 +66,7 @@ func CreateDevice(db DBTX, d Device) error {
 func GetDevice(db DBTX, deviceID string) (*Device, error) {
 	row := db.QueryRow(
 		`SELECT device_id, account_id, device_pubkey, cert_issued_at, cert_signature, status, revoked_at, created_at,
-		        dh_identity_pubkey, dh_identity_issued_at, dh_identity_signature
+		        dh_identity_pubkey, dh_identity_issued_at, dh_identity_signature, push_endpoint, push_p256dh, push_auth
 		 FROM devices WHERE device_id = ?`,
 		deviceID,
 	)
@@ -65,7 +78,7 @@ func GetDevice(db DBTX, deviceID string) (*Device, error) {
 func ListDevicesByAccount(db DBTX, accountID string) ([]Device, error) {
 	rows, err := db.Query(
 		`SELECT device_id, account_id, device_pubkey, cert_issued_at, cert_signature, status, revoked_at, created_at,
-		        dh_identity_pubkey, dh_identity_issued_at, dh_identity_signature
+		        dh_identity_pubkey, dh_identity_issued_at, dh_identity_signature, push_endpoint, push_p256dh, push_auth
 		 FROM devices WHERE account_id = ? ORDER BY created_at ASC`,
 		accountID,
 	)
@@ -128,10 +141,11 @@ func scanDeviceFields(s scannable) (*Device, error) {
 	var revokedAt sql.NullString
 	var dhPubKey, dhSignature []byte
 	var dhIssuedAt sql.NullString
+	var pushEndpoint, pushP256dh, pushAuth sql.NullString
 
 	if err := s.Scan(
 		&d.DeviceID, &d.AccountID, &pubkey, &issuedAt, &d.CertSignature, &d.Status, &revokedAt, &createdAt,
-		&dhPubKey, &dhIssuedAt, &dhSignature,
+		&dhPubKey, &dhIssuedAt, &dhSignature, &pushEndpoint, &pushP256dh, &pushAuth,
 	); err != nil {
 		return nil, fmt.Errorf("store: scanning device: %w", err)
 	}
@@ -170,6 +184,10 @@ func scanDeviceFields(s scannable) (*Device, error) {
 		}
 	}
 
+	if pushEndpoint.Valid {
+		d.Push = &PushSubscription{Endpoint: pushEndpoint.String, P256dh: pushP256dh.String, Auth: pushAuth.String}
+	}
+
 	return &d, nil
 }
 
@@ -186,6 +204,31 @@ func UpsertDHIdentity(db DBTX, deviceID string, pubKey, signature []byte, issued
 	n, err := res.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("store: checking rows affected for dh identity upsert: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetDevicePushSubscription sets or clears (sub == nil) a device's
+// registered push subscription. It returns ErrNotFound if the device
+// doesn't exist.
+func SetDevicePushSubscription(db DBTX, deviceID string, sub *PushSubscription) error {
+	var endpoint, p256dh, auth *string
+	if sub != nil {
+		endpoint, p256dh, auth = &sub.Endpoint, &sub.P256dh, &sub.Auth
+	}
+	res, err := db.Exec(
+		`UPDATE devices SET push_endpoint = ?, push_p256dh = ?, push_auth = ? WHERE device_id = ?`,
+		endpoint, p256dh, auth, deviceID,
+	)
+	if err != nil {
+		return fmt.Errorf("store: setting device push subscription: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: checking rows affected for push subscription update: %w", err)
 	}
 	if n == 0 {
 		return ErrNotFound

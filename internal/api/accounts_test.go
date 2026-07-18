@@ -143,3 +143,17 @@ func TestHandleGetAccountNotFound(t *testing.T) {
 		t.Errorf("status = %d, want 404, body = %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestHandleGetVAPIDPublicKey(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+
+	rec := doRequest(t, a.Router(), http.MethodGet, "/v1/vapid-public-key", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	decodeJSON(t, rec, &resp)
+	if resp["key"] == "" || resp["key"] != a.VAPIDPublicKey {
+		t.Errorf("key = %q, want %q", resp["key"], a.VAPIDPublicKey)
+	}
+}

@@ -156,3 +156,79 @@ func TestHandleRevokeDeviceMismatchedPathAndBody(t *testing.T) {
 		t.Errorf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
 	}
 }
+
+func pushSubscriptionRequestBody(endpoint string) []byte {
+	p256dh, auth := "test-p256dh-value", "test-auth-value"
+	body, _ := json.Marshal(setPushEndpointRequest{Endpoint: &endpoint, P256dh: &p256dh, Auth: &auth})
+	return body
+}
+
+func TestHandleSetPushEndpoint(t *testing.T) {
+	a, db := newTestAPI(t, config.PolicyOpen)
+	k := registerAccount(t, a)
+
+	endpoint := "https://push.example.org/wake/abc123"
+	rec := doSignedRequest(t, a.Router(), http.MethodPut, "/v1/devices/"+k.deviceID+"/push-endpoint", pushSubscriptionRequestBody(endpoint), k.deviceID, k.devicePriv)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+
+	dev, err := store.GetDevice(db, k.deviceID)
+	if err != nil {
+		t.Fatalf("GetDevice() error = %v", err)
+	}
+	if dev.Push == nil || dev.Push.Endpoint != endpoint {
+		t.Errorf("Push = %v, want endpoint %q", dev.Push, endpoint)
+	}
+
+	// Clearing with an empty request.
+	clearBody, _ := json.Marshal(setPushEndpointRequest{})
+	rec = doSignedRequest(t, a.Router(), http.MethodPut, "/v1/devices/"+k.deviceID+"/push-endpoint", clearBody, k.deviceID, k.devicePriv)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+	dev, err = store.GetDevice(db, k.deviceID)
+	if err != nil {
+		t.Fatalf("GetDevice() error = %v", err)
+	}
+	if dev.Push != nil {
+		t.Errorf("Push = %v, want nil after clearing", dev.Push)
+	}
+}
+
+func TestHandleSetPushEndpointRejectsOtherDevice(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+	k1 := registerAccount(t, a)
+	k2 := registerAccount(t, a)
+
+	// k1 signs a request targeting k2's device id in the path.
+	rec := doSignedRequest(t, a.Router(), http.MethodPut, "/v1/devices/"+k2.deviceID+"/push-endpoint", pushSubscriptionRequestBody("https://push.example.org/wake/abc123"), k1.deviceID, k1.devicePriv)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleSetPushEndpointRejectsNonHTTPS(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+	k := registerAccount(t, a)
+
+	for _, endpoint := range []string{"http://push.example.org/wake", "not-a-url", "ftp://push.example.org/wake"} {
+		rec := doSignedRequest(t, a.Router(), http.MethodPut, "/v1/devices/"+k.deviceID+"/push-endpoint", pushSubscriptionRequestBody(endpoint), k.deviceID, k.devicePriv)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("endpoint %q: status = %d, want 400, body = %s", endpoint, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestHandleSetPushEndpointRejectsPartialFields(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+	k := registerAccount(t, a)
+
+	endpoint := "https://push.example.org/wake/abc123"
+	reqBody, _ := json.Marshal(setPushEndpointRequest{Endpoint: &endpoint}) // p256dh/auth missing
+
+	rec := doSignedRequest(t, a.Router(), http.MethodPut, "/v1/devices/"+k.deviceID+"/push-endpoint", reqBody, k.deviceID, k.devicePriv)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+	}
+}

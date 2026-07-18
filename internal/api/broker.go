@@ -46,6 +46,15 @@ func (b *messageBroker) subscribe(deviceID string) (ch <-chan store.Message, uns
 	return c, unsubscribe
 }
 
+// hasSubscribers reports whether deviceID currently has a live SSE stream
+// connected -- used to decide whether a push wake is needed at all (an
+// actively-connected device already gets the message via publish).
+func (b *messageBroker) hasSubscribers(deviceID string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.subs[deviceID]) > 0
+}
+
 // publish notifies every subscriber currently connected for deviceID.
 // Subscribers with a full buffer are skipped rather than blocked on --
 // they'll still see the message via the durable queue on their next poll

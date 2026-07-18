@@ -22,11 +22,22 @@ type API struct {
 	Now func() time.Time
 	// broker fans out newly-queued messages to connected SSE streams.
 	broker *messageBroker
+	// PushClient sends push-wake requests (see push.go); overridable in
+	// tests to point at a fake distributor, including one served over
+	// TLS with a test certificate.
+	PushClient *http.Client
+	// VAPIDPublicKey/VAPIDPrivateKey are this server's one push-signing
+	// keypair (RFC 8292), set by main.go after store.InitVAPIDKeys.
+	VAPIDPublicKey  string
+	VAPIDPrivateKey string
 }
 
 // New builds an API with the given dependencies.
 func New(db *sql.DB, cfg *config.Config, authMW *auth.Middleware, logger *slog.Logger) *API {
-	return &API{DB: db, Config: cfg, Auth: authMW, Logger: logger, Now: time.Now, broker: newMessageBroker()}
+	return &API{
+		DB: db, Config: cfg, Auth: authMW, Logger: logger, Now: time.Now,
+		broker: newMessageBroker(), PushClient: http.DefaultClient,
+	}
 }
 
 // Router builds the full HTTP route table.
@@ -38,9 +49,11 @@ func (a *API) Router() http.Handler {
 	mux.HandleFunc("POST /v1/bootstrap/claim", a.handleBootstrapClaim)
 	mux.HandleFunc("POST /v1/accounts", a.handleRegisterAccount)
 	mux.HandleFunc("GET /v1/accounts/{id}", a.handleGetAccount)
+	mux.HandleFunc("GET /v1/vapid-public-key", a.handleGetVAPIDPublicKey)
 
 	mux.Handle("POST /v1/devices", a.Auth.Require(http.HandlerFunc(a.handleAddDevice)))
 	mux.Handle("POST /v1/devices/{device_id}/revoke", a.Auth.Require(http.HandlerFunc(a.handleRevokeDevice)))
+	mux.Handle("PUT /v1/devices/{device_id}/push-endpoint", a.Auth.Require(http.HandlerFunc(a.handleSetPushEndpoint)))
 	mux.Handle("POST /v1/admin/invites", a.Auth.Require(http.HandlerFunc(a.handleCreateInvite)))
 
 	mux.Handle("GET /v1/admin/accounts", a.Auth.Require(http.HandlerFunc(a.handleListAccounts)))

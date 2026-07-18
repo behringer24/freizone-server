@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/behringer24/freizone-server/internal/auth"
@@ -162,4 +163,67 @@ func (a *API) handleRevokeDevice(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
+}
+
+// handleSetPushEndpoint registers (or, with all fields nil/omitted,
+// clears) the calling device's push subscription -- see docs/PROTOCOL.md's
+// push section. Only a device can manage its own subscription.
+//
+// The server later makes outbound requests to whatever endpoint URL is
+// registered here, which is a minor SSRF surface (a malicious device
+// could point it at an internal address); requiring https strips the
+// cheapest attack (plain-HTTP internal services) without building out
+// full IP-allowlist/DNS-rebinding defenses, which don't fit this
+// project's scale -- the residual risk is accepted, same as the
+// unauthenticated prekey-bundle claim endpoint.
+func (a *API) handleSetPushEndpoint(w http.ResponseWriter, r *http.Request) {
+	identity, ok := auth.IdentityFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+		return
+	}
+
+	deviceID := r.PathValue("device_id")
+	if identity.DeviceID != deviceID {
+		writeError(w, http.StatusForbidden, "forbidden", "can only set the push subscription for your own device")
+		return
+	}
+
+	var req setPushEndpointRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "malformed JSON body")
+		return
+	}
+
+	allNil := req.Endpoint == nil && req.P256dh == nil && req.Auth == nil
+	allSet := req.Endpoint != nil && req.P256dh != nil && req.Auth != nil
+	if !allNil && !allSet {
+		writeError(w, http.StatusBadRequest, "invalid_request", "endpoint, p256dh, and auth must be given together or not at all")
+		return
+	}
+
+	var sub *store.PushSubscription
+	if allSet {
+		parsed, err := url.Parse(*req.Endpoint)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+			writeError(w, http.StatusBadRequest, "invalid_request", "endpoint must be an https:// URL")
+			return
+		}
+		if *req.P256dh == "" || *req.Auth == "" {
+			writeError(w, http.StatusBadRequest, "invalid_request", "p256dh and auth must not be empty")
+			return
+		}
+		sub = &store.PushSubscription{Endpoint: *req.Endpoint, P256dh: *req.P256dh, Auth: *req.Auth}
+	}
+
+	if err := store.SetDevicePushSubscription(a.DB, deviceID, sub); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "unknown device")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

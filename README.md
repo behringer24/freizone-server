@@ -2,7 +2,7 @@
 
 A self-hostable, federated, end-to-end encrypted chat server (Go + SQLite) — modeled on email: you run your own small server under your own domain, and servers deliver messages to each other directly. No central provider, no server ever sees plaintext.
 
-**Status:** identity, per-request signature authentication, account/device management, bootstrap, invites, and full X3DH + Double Ratchet end-to-end encrypted 1:1 messaging are implemented (single server only — no federation yet). Groups/broadcast, federation, and push notifications are future work. The full wire protocol is documented in [docs/PROTOCOL.md](docs/PROTOCOL.md). A minimal reference client, [`cmd/devclient`](cmd/devclient), lets you try real encrypted chat locally — see [below](#trying-it-out-a-local-encrypted-chat).
+**Status:** identity, per-request signature authentication, account/device management, bootstrap, invites, and full X3DH + Double Ratchet end-to-end encrypted 1:1 messaging are implemented (single server only — no federation yet). Server-side push-wake support is implemented (content-free, per-device push endpoint registration, see `PUT /v1/devices/{device_id}/push-endpoint` in [docs/PROTOCOL.md](docs/PROTOCOL.md)) — the Android app side uses this via UnifiedPush. Groups/broadcast, federation, and a central relay for iOS/no-distributor push are future work. The full wire protocol is documented in [docs/PROTOCOL.md](docs/PROTOCOL.md). A minimal reference client, [`cmd/devclient`](cmd/devclient), lets you try real encrypted chat locally — see [below](#trying-it-out-a-local-encrypted-chat).
 
 This guide assumes no prior experience running a server. If you just want the quick reference, jump to [Configuration reference](#configuration-reference).
 
