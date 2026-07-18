@@ -3,6 +3,9 @@ package api
 import (
 	"bufio"
 	"context"
+	"crypto/ecdh"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +15,23 @@ import (
 
 	"github.com/behringer24/freizone-server/internal/config"
 )
+
+// generateTestPushSubscriptionKeys returns a syntactically and
+// cryptographically valid p256dh/auth pair -- webpush-go performs real
+// ECDH against p256dh when sending, so these can't be placeholder
+// strings the way most other test fixtures in this file are.
+func generateTestPushSubscriptionKeys(t *testing.T) (p256dh, auth string) {
+	t.Helper()
+	priv, err := ecdh.P256().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating p256 key: %v", err)
+	}
+	authBytes := make([]byte, 16)
+	if _, err := rand.Read(authBytes); err != nil {
+		t.Fatalf("generating auth secret: %v", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(priv.PublicKey().Bytes()), base64.RawURLEncoding.EncodeToString(authBytes)
+}
 
 func sendMessageBody(t *testing.T, messageID, recipientDeviceID string, payload string) []byte {
 	t.Helper()
@@ -234,5 +254,85 @@ func TestHandleMessageStreamFlushesPending(t *testing.T) {
 		t.Fatalf("reading SSE stream: %v", err)
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for flushed pending message")
+	}
+}
+
+func TestHandleSendMessageTriggersPushWhenNoSubscriber(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+	alice := registerAccount(t, a)
+	bob := registerAccount(t, a)
+
+	hitCh := make(chan struct{}, 1)
+	fakeDistributor := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitCh <- struct{}{}
+	}))
+	defer fakeDistributor.Close()
+	a.PushClient = fakeDistributor.Client()
+
+	p256dh, authSecret := generateTestPushSubscriptionKeys(t)
+	setEndpointBody, _ := json.Marshal(setPushEndpointRequest{Endpoint: &fakeDistributor.URL, P256dh: &p256dh, Auth: &authSecret})
+	setRec := doSignedRequest(t, a.Router(), http.MethodPut, "/v1/devices/"+bob.deviceID+"/push-endpoint", setEndpointBody, bob.deviceID, bob.devicePriv)
+	if setRec.Code != http.StatusOK {
+		t.Fatalf("set push endpoint status = %d, want 200, body = %s", setRec.Code, setRec.Body.String())
+	}
+
+	// Bob has no live SSE stream open, so sending him a message should
+	// trigger a wake POST to his registered (fake) push endpoint.
+	sendRec := doSignedRequest(t, a.Router(), http.MethodPost, "/v1/messages", sendMessageBody(t, "msg1", bob.deviceID, `{}`), alice.deviceID, alice.devicePriv)
+	if sendRec.Code != http.StatusAccepted {
+		t.Fatalf("send status = %d, want 202, body = %s", sendRec.Code, sendRec.Body.String())
+	}
+
+	select {
+	case <-hitCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for push wake request")
+	}
+}
+
+func TestHandleSendMessageSkipsPushWhenSubscribed(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+	alice := registerAccount(t, a)
+	bob := registerAccount(t, a)
+
+	hitCh := make(chan struct{}, 1)
+	fakeDistributor := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitCh <- struct{}{}
+	}))
+	defer fakeDistributor.Close()
+	a.PushClient = fakeDistributor.Client()
+
+	p256dh, authSecret := generateTestPushSubscriptionKeys(t)
+	setEndpointBody, _ := json.Marshal(setPushEndpointRequest{Endpoint: &fakeDistributor.URL, P256dh: &p256dh, Auth: &authSecret})
+	setRec := doSignedRequest(t, a.Router(), http.MethodPut, "/v1/devices/"+bob.deviceID+"/push-endpoint", setEndpointBody, bob.deviceID, bob.devicePriv)
+	if setRec.Code != http.StatusOK {
+		t.Fatalf("set push endpoint status = %d, want 200, body = %s", setRec.Code, setRec.Body.String())
+	}
+
+	ts := httptest.NewServer(a.Router())
+	defer ts.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	streamReq := newSignedHTTPRequest(t, http.MethodGet, ts.URL+"/v1/messages/stream", nil, bob.deviceID, bob.devicePriv)
+	streamReq = streamReq.WithContext(ctx)
+	resp, err := ts.Client().Do(streamReq)
+	if err != nil {
+		t.Fatalf("opening stream: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Bob's SSE stream is live, so the push wake should be skipped
+	// entirely -- he'll get the message over the stream instead.
+	sendRec := doSignedRequest(t, a.Router(), http.MethodPost, "/v1/messages", sendMessageBody(t, "msg1", bob.deviceID, `{}`), alice.deviceID, alice.devicePriv)
+	if sendRec.Code != http.StatusAccepted {
+		t.Fatalf("send status = %d, want 202, body = %s", sendRec.Code, sendRec.Body.String())
+	}
+
+	select {
+	case <-hitCh:
+		t.Fatal("push wake request was sent despite a live SSE subscriber")
+	case <-time.After(300 * time.Millisecond):
 	}
 }

@@ -73,6 +73,10 @@ func (a *API) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 
 	a.broker.publish(req.RecipientDeviceID, msg)
 
+	if !a.broker.hasSubscribers(req.RecipientDeviceID) && recipientDevice.Push != nil {
+		go notifyPush(a.PushClient, a.Logger, a.VAPIDPublicKey, a.VAPIDPrivateKey, *recipientDevice.Push)
+	}
+
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "queued"})
 }
 

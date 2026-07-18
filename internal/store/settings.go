@@ -1,6 +1,11 @@
 package store
 
-import "fmt"
+import (
+	"database/sql"
+	"fmt"
+
+	webpush "github.com/SherClockHolmes/webpush-go"
+)
 
 // InitRegistrationPolicy seeds the server_settings row with defaultPolicy
 // (the FREIZONE_REGISTRATION_POLICY env var's value) if no row exists yet.
@@ -40,4 +45,40 @@ func SetRegistrationPolicy(db DBTX, policy string) error {
 		return fmt.Errorf("store: setting registration policy: %w", err)
 	}
 	return nil
+}
+
+// InitVAPIDKeys generates and persists a server-wide VAPID keypair (RFC
+// 8292) the first time it's called, if server_settings doesn't have one
+// yet -- requires InitRegistrationPolicy to have already created the
+// server_settings row. All outgoing push wake notifications (see
+// internal/api/push.go) are signed with this one keypair, not a
+// per-device or per-push one.
+func InitVAPIDKeys(db DBTX) error {
+	var existing sql.NullString
+	if err := db.QueryRow(`SELECT vapid_public_key FROM server_settings WHERE id = 1`).Scan(&existing); err != nil {
+		return fmt.Errorf("store: checking for existing vapid keys: %w", err)
+	}
+	if existing.Valid {
+		return nil
+	}
+
+	privateKey, publicKey, err := webpush.GenerateVAPIDKeys()
+	if err != nil {
+		return fmt.Errorf("store: generating vapid keys: %w", err)
+	}
+	if _, err := db.Exec(
+		`UPDATE server_settings SET vapid_public_key = ?, vapid_private_key = ? WHERE id = 1`,
+		publicKey, privateKey,
+	); err != nil {
+		return fmt.Errorf("store: persisting vapid keys: %w", err)
+	}
+	return nil
+}
+
+// GetVAPIDKeys returns the server's VAPID keypair.
+func GetVAPIDKeys(db DBTX) (publicKey, privateKey string, err error) {
+	if err := db.QueryRow(`SELECT vapid_public_key, vapid_private_key FROM server_settings WHERE id = 1`).Scan(&publicKey, &privateKey); err != nil {
+		return "", "", fmt.Errorf("store: reading vapid keys: %w", err)
+	}
+	return publicKey, privateKey, nil
 }
