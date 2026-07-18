@@ -93,6 +93,11 @@ func (a *API) handleRegisterAccount(w http.ResponseWriter, r *http.Request) {
 		Role:          store.RoleUser,
 		CreatedAt:     now,
 	}); err != nil {
+		if errors.Is(err, store.ErrIDPrefixConflict) {
+			writeError(w, http.StatusConflict, "id_prefix_taken",
+				"this server already has an account whose id starts the same way -- generate a new identity and try again")
+			return
+		}
 		if errors.Is(err, store.ErrConflict) {
 			writeError(w, http.StatusConflict, "account_exists", "account already exists")
 			return
@@ -146,15 +151,32 @@ func (a *API) handleRegisterAccount(w http.ResponseWriter, r *http.Request) {
 
 // handleGetAccount is the public key directory: anyone can look up an
 // account's root public key and device certificates, to independently
-// verify them (self-certifying address, per docs/PROTOCOL.md).
+// verify them (self-certifying address, per docs/PROTOCOL.md). Also
+// accepts the shorter, unchecksummed PrefixLength form (docs/PROTOCOL.md's
+// id-prefix uniqueness note) as an alias for the full id -- either way,
+// the response's own "id" field is always the true full id, which is what
+// the caller must actually use and verify against the returned root key.
 func (a *API) handleGetAccount(w http.ResponseWriter, r *http.Request) {
-	id, err := address.Normalize(r.PathValue("id"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "malformed account id")
-		return
-	}
+	stripped := address.StripSeparators(r.PathValue("id"))
 
-	acc, err := store.GetAccount(a.DB, id)
+	var acc *store.Account
+	var err error
+	switch len(stripped) {
+	case address.PrefixLength:
+		if !address.ValidCharset(stripped) {
+			writeError(w, http.StatusBadRequest, "invalid_request", "malformed account id")
+			return
+		}
+		acc, err = store.GetAccountByPrefix(a.DB, stripped)
+	default:
+		var normalized string
+		normalized, err = address.Normalize(r.PathValue("id"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", "malformed account id")
+			return
+		}
+		acc, err = store.GetAccount(a.DB, normalized)
+	}
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", "unknown account")
@@ -164,7 +186,7 @@ func (a *API) handleGetAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	devices, err := store.ListDevicesByAccount(a.DB, id)
+	devices, err := store.ListDevicesByAccount(a.DB, acc.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
 		return

@@ -81,6 +81,11 @@ func (a *API) handleBootstrapClaim(w http.ResponseWriter, r *http.Request) {
 		Role:          store.RoleAdmin,
 		CreatedAt:     now,
 	}); err != nil {
+		if errors.Is(err, store.ErrIDPrefixConflict) {
+			writeError(w, http.StatusConflict, "id_prefix_taken",
+				"this server already has an account whose id starts the same way -- generate a new identity and try again")
+			return
+		}
 		if errors.Is(err, store.ErrConflict) {
 			writeError(w, http.StatusConflict, "account_exists", "account already exists")
 			return
