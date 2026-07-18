@@ -11,9 +11,9 @@ import (
 	"github.com/behringer24/freizone-server/internal/store"
 )
 
-// handleCreateInvite issues a single-use invite code, for an admin to hand
-// out (e.g. rendered as a QR code by the app) when the registration policy
-// is "invite".
+// handleCreateInvite issues a single-use invite code, for an admin or
+// moderator to hand out (e.g. rendered as a QR code by the app) when the
+// registration policy is "invite".
 func (a *API) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 	identity, ok := auth.IdentityFromContext(r.Context())
 	if !ok || (identity.Role != store.RoleAdmin && identity.Role != store.RoleModerator) {
