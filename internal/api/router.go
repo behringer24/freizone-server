@@ -50,6 +50,7 @@ func (a *API) Router() http.Handler {
 	mux.HandleFunc("POST /v1/accounts", a.handleRegisterAccount)
 	mux.HandleFunc("GET /v1/accounts/{id}", a.handleGetAccount)
 	mux.HandleFunc("GET /v1/vapid-public-key", a.handleGetVAPIDPublicKey)
+	mux.HandleFunc("GET /v1/server-status", a.handleGetServerStatus)
 
 	mux.Handle("POST /v1/devices", a.Auth.Require(http.HandlerFunc(a.handleAddDevice)))
 	mux.Handle("POST /v1/devices/{device_id}/revoke", a.Auth.Require(http.HandlerFunc(a.handleRevokeDevice)))

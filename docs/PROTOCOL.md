@@ -205,6 +205,19 @@ certificate-bearing shape as bootstrap, plus an optional `invite_code`:
 `404` unknown invite code · `410` invite code expired or already used ·
 `409` account or device id collision.
 
+### `GET /v1/server-status`
+No auth — lets a client decide which setup path applies before it has any
+identity: bootstrap (no admin claimed yet), self-register (open policy),
+invite-code registration, or "closed, ask the admin for an invite".
+`200`:
+```json
+{ "claimed": true, "registration_policy": "open" }
+```
+`claimed` is whether the one-time setup token has already been used
+(i.e. an admin exists) — not sensitive, same trust level as the
+registration policy itself, which has to be knowable before someone can
+register at all.
+
 ### `GET /v1/accounts/{id}`
 No auth — a public key directory, analogous to a keyserver. `200`:
 ```json

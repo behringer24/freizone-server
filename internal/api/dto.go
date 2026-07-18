@@ -92,6 +92,13 @@ type setRegistrationPolicyRequest struct {
 	Policy string `json:"policy"`
 }
 
+// serverStatusResponse is the public GET /v1/server-status payload -- see
+// internal/api/server_status.go.
+type serverStatusResponse struct {
+	Claimed            bool   `json:"claimed"`
+	RegistrationPolicy string `json:"registration_policy"`
+}
+
 type accountResponse struct {
 	ID         string           `json:"id"`
 	RootPubKey string           `json:"root_pubkey"`
