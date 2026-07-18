@@ -92,7 +92,7 @@ go build -o devclient ./cmd/devclient
 
 This generates the admin's keys locally (under `-datadir`, on this machine only — nothing sensitive is ever sent to the server) and claims the account. See [Trying it out](#trying-it-out-a-local-encrypted-chat) below for the full rundown of what `devclient` can do, including actually exchanging encrypted messages.
 
-Once your account is claimed, you (the admin) can issue invite codes for other people via `POST /v1/admin/invites` — the app will be able to turn a code into a scannable QR code. This is how new users join a server whose registration policy is `closed` or `invite`.
+Once your account is claimed, you (the admin) can issue invite codes for other people via `POST /v1/admin/invites` — the app will be able to turn a code into a scannable QR code. Invite codes only work while the registration policy is `invite`, though — switch to that policy first (see [below](#registration-policy-who-can-create-an-account)); `closed` blocks registration outright, invite code or not.
 
 ## Local trial run (no domain needed)
 
@@ -149,7 +149,7 @@ Type a line and press enter in either terminal — it's encrypted on your machin
 
 Set via `FREIZONE_REGISTRATION_POLICY`, this controls how people other than the bootstrapped admin can join your server:
 
-- **`closed`** (the default, and the safest choice): nobody can self-register. The admin creates every account by hand (via the same bootstrap-style flow, without a token). Good for a private, invite-only community of a handful of people you personally onboard.
+- **`closed`** (the default, and the safest choice): registration is fully blocked — nobody can self-register, and an existing invite code won't work either (the check for one is never reached). There is no "admin creates an account for someone else" flow — every account is always created by that person's own device generating its own keys, whether via self-registration (gated by this policy) or the one-off bootstrap flow. Use `closed` before you've decided on an ongoing policy, or to lock a server back down once everyone who should have an account already does.
 - **`invite`**: people can register themselves, but only with a single-use invite code issued by the admin (`POST /v1/admin/invites`). Good middle ground — you control who joins, but don't have to do the technical work yourself for each person.
 - **`open`**: anyone who can reach your server can create an account. Only use this if you deliberately want a public server.
 
