@@ -328,6 +328,25 @@ unregister. `endpoint` must be an `https://` URL. `200 {"status":"ok"}` ·
 `400` missing/partial/non-https fields · `403` path device_id isn't the
 signing device · `404` unknown device.
 
+### `PUT /v1/devices/{device_id}/push-target` (signed, caller must be that device)
+Registers, or (with an empty body) clears, this device's FCM/APNs push
+target — the counterpart to `push-endpoint` above for devices delivered
+through a [freizone-gateway](https://github.com/behringer24/freizone-gateway)
+instance instead of UnifiedPush/Web Push. `platform` is `"fcm"` or
+`"apns"`; `token` is that platform's own addressing token (an FCM
+registration token, or an APNs device token).
+```json
+{
+  "platform": "fcm",
+  "token": "the platform's own registration/device token"
+}
+```
+Both fields must be given together, or both omitted/null to unregister.
+Registering a push target clears any existing push subscription (and
+vice versa) — a device uses exactly one wake mechanism at a time. `200
+{"status":"ok"}` · `400` missing/partial fields or unknown platform ·
+`403` path device_id isn't the signing device · `404` unknown device.
+
 ### `POST /v1/admin/invites` (signed, admin or moderator)
 Issues a single-use invite code (for the `invite` registration policy) —
 typically rendered by the app as a QR code (see §8) for the caller to
@@ -502,19 +521,38 @@ Enqueues a message envelope (§6) for a recipient device.
 `404` unknown/inactive recipient device · `409` `message_id` already used.
 
 If the recipient device has no live SSE stream (`GET /v1/messages/stream`)
-open and has registered a push subscription (see `PUT
-/v1/devices/{device_id}/push-endpoint`), the server fires a best-effort
-Web Push notification (RFC 8291-encrypted via this server's one VAPID
-keypair, RFC 8292) to wake the recipient. The encrypted plaintext is
-itself empty — the wake carries no content or metadata whatsoever, not
-the message, not its sender, not even that it's specifically a "new
-message" wake as opposed to any other reason. Encryption here is purely a
-transport requirement of the Web Push/UnifiedPush protocol, not a way to
-communicate anything: the recipient is expected to react to any wake by
-syncing over this same authenticated API, exactly as if it had just
-reconnected. Delivery of the wake itself is not guaranteed (no retry,
-short timeout) — the durable queue and the client's own reconnect/poll
-remain the actual delivery guarantee, same as before push existed.
+open, the server fires one best-effort wake, via whichever of the two
+mechanisms the device has registered (a device has at most one at a
+time):
+
+- **Push subscription** (`PUT /v1/devices/{device_id}/push-endpoint`):
+  a Web Push notification, RFC 8291-encrypted via this server's one
+  VAPID keypair (RFC 8292), sent directly to the registered
+  UnifiedPush/Web Push distributor endpoint.
+- **Push target** (`PUT /v1/devices/{device_id}/push-target`): this
+  server signs a request with its own relay identity (an Ed25519
+  keypair generated on first boot, see `server_settings.relay_pubkey` —
+  never exposed via any endpoint, only used as the `Signature-Key-Id` on
+  outgoing relay requests) and POSTs `{"platform": ..., "token": ...}`
+  to `POST /v1/push/send` on the [freizone-gateway](https://github.com/behringer24/freizone-gateway)
+  instance configured via `FREIZONE_PUSH_GATEWAY_URL`, which holds the
+  actual FCM/APNs credentials and relays the wake. There is no
+  registration step with the gateway: it verifies the request against
+  the public key embedded in `Signature-Key-Id` itself, the same
+  self-certifying pattern this protocol already uses for account ids
+  (§1). Skipped entirely if `FREIZONE_PUSH_GATEWAY_URL` isn't
+  configured.
+
+Either way, the wake itself carries no content or metadata whatsoever —
+not the message, not its sender, not even that it's specifically a "new
+message" wake as opposed to any other reason (the Web Push path's
+encrypted plaintext is itself empty; the push-target path's body is only
+ever `{"platform", "token"}`, nothing message-related). The recipient is
+expected to react to any wake by syncing over this same authenticated
+API, exactly as if it had just reconnected. Delivery of the wake itself
+is not guaranteed (no retry, short timeout) — the durable queue and the
+client's own reconnect/poll remain the actual delivery guarantee, same as
+before push existed.
 
 ### `GET /v1/messages` (signed)
 Polls for messages queued for the caller's device. `200`, an array of:

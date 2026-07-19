@@ -3,6 +3,7 @@
 package api
 
 import (
+	"crypto/ed25519"
 	"database/sql"
 	"log/slog"
 	"net/http"
@@ -23,13 +24,18 @@ type API struct {
 	// broker fans out newly-queued messages to connected SSE streams.
 	broker *messageBroker
 	// PushClient sends push-wake requests (see push.go); overridable in
-	// tests to point at a fake distributor, including one served over
-	// TLS with a test certificate.
+	// tests to point at a fake distributor/gateway, including one served
+	// over TLS with a test certificate.
 	PushClient *http.Client
 	// VAPIDPublicKey/VAPIDPrivateKey are this server's one push-signing
 	// keypair (RFC 8292), set by main.go after store.InitVAPIDKeys.
 	VAPIDPublicKey  string
 	VAPIDPrivateKey string
+	// RelayPubKey/RelayPrivKey are this server's Ed25519 identity used to
+	// sign outgoing requests to a freizone-gateway (see push.go's
+	// notifyPushViaGateway), set by main.go after store.InitRelayIdentity.
+	RelayPubKey  ed25519.PublicKey
+	RelayPrivKey ed25519.PrivateKey
 }
 
 // New builds an API with the given dependencies.
@@ -55,6 +61,7 @@ func (a *API) Router() http.Handler {
 	mux.Handle("POST /v1/devices", a.Auth.Require(http.HandlerFunc(a.handleAddDevice)))
 	mux.Handle("POST /v1/devices/{device_id}/revoke", a.Auth.Require(http.HandlerFunc(a.handleRevokeDevice)))
 	mux.Handle("PUT /v1/devices/{device_id}/push-endpoint", a.Auth.Require(http.HandlerFunc(a.handleSetPushEndpoint)))
+	mux.Handle("PUT /v1/devices/{device_id}/push-target", a.Auth.Require(http.HandlerFunc(a.handleSetPushTarget)))
 	mux.Handle("POST /v1/admin/invites", a.Auth.Require(http.HandlerFunc(a.handleCreateInvite)))
 
 	mux.Handle("GET /v1/admin/accounts", a.Auth.Require(http.HandlerFunc(a.handleListAccounts)))

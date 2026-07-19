@@ -73,8 +73,13 @@ func (a *API) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 
 	a.broker.publish(req.RecipientDeviceID, msg)
 
-	if !a.broker.hasSubscribers(req.RecipientDeviceID) && recipientDevice.Push != nil {
-		go notifyPush(a.PushClient, a.Logger, a.VAPIDPublicKey, a.VAPIDPrivateKey, *recipientDevice.Push)
+	if !a.broker.hasSubscribers(req.RecipientDeviceID) {
+		switch {
+		case recipientDevice.Push != nil:
+			go notifyPush(a.PushClient, a.Logger, a.VAPIDPublicKey, a.VAPIDPrivateKey, *recipientDevice.Push)
+		case recipientDevice.PushTarget != nil && a.Config.PushGatewayURL != "":
+			go notifyPushViaGateway(a.PushClient, a.Logger, a.Config.PushGatewayURL, a.RelayPubKey, a.RelayPrivKey, *recipientDevice.PushTarget)
+		}
 	}
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "queued"})

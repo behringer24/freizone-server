@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/behringer24/freizone-server/internal/config"
+	"github.com/behringer24/freizone-server/pkg/httpsig"
 )
 
 // generateTestPushSubscriptionKeys returns a syntactically and
@@ -336,3 +338,92 @@ func TestHandleSendMessageSkipsPushWhenSubscribed(t *testing.T) {
 	case <-time.After(300 * time.Millisecond):
 	}
 }
+
+func TestHandleSendMessageTriggersGatewayPushWhenNoSubscriber(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+	alice := registerAccount(t, a)
+	bob := registerAccount(t, a)
+
+	type gotRequest struct {
+		platform, token string
+		verified        bool
+	}
+	reqCh := make(chan gotRequest, 1)
+	fakeGateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		keyID := r.Header.Get(httpsig.HeaderKeyID)
+		ts := r.Header.Get(httpsig.HeaderTimestamp)
+		nonce := r.Header.Get(httpsig.HeaderNonce)
+		sig := r.Header.Get(httpsig.HeaderSignature)
+
+		body, _ := io.ReadAll(r.Body)
+		canonical := httpsig.CanonicalString(r.Method, r.URL.Path, r.URL.RawQuery, ts, nonce, keyID, body)
+		pubKey, err := base64.StdEncoding.DecodeString(keyID)
+		verified := err == nil && httpsig.Verify(canonical, sig, pubKey) == nil
+
+		var payload struct{ Platform, Token string }
+		json.Unmarshal(body, &payload)
+
+		reqCh <- gotRequest{platform: payload.Platform, token: payload.Token, verified: verified}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer fakeGateway.Close()
+	a.PushClient = fakeGateway.Client()
+	a.Config.PushGatewayURL = fakeGateway.URL
+
+	setTargetBody, _ := json.Marshal(setPushTargetRequest{Platform: strPtr("fcm"), Token: strPtr("fcm-registration-token")})
+	setRec := doSignedRequest(t, a.Router(), http.MethodPut, "/v1/devices/"+bob.deviceID+"/push-target", setTargetBody, bob.deviceID, bob.devicePriv)
+	if setRec.Code != http.StatusOK {
+		t.Fatalf("set push target status = %d, want 200, body = %s", setRec.Code, setRec.Body.String())
+	}
+
+	sendRec := doSignedRequest(t, a.Router(), http.MethodPost, "/v1/messages", sendMessageBody(t, "msg1", bob.deviceID, `{}`), alice.deviceID, alice.devicePriv)
+	if sendRec.Code != http.StatusAccepted {
+		t.Fatalf("send status = %d, want 202, body = %s", sendRec.Code, sendRec.Body.String())
+	}
+
+	select {
+	case got := <-reqCh:
+		if got.platform != "fcm" || got.token != "fcm-registration-token" {
+			t.Errorf("gateway request = %+v, want platform=fcm token=fcm-registration-token", got)
+		}
+		if !got.verified {
+			t.Error("gateway request signature did not verify against its own embedded Signature-Key-Id")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for gateway push request")
+	}
+}
+
+func TestHandleSendMessageSkipsGatewayPushWhenGatewayURLUnset(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+	alice := registerAccount(t, a)
+	bob := registerAccount(t, a)
+
+	hitCh := make(chan struct{}, 1)
+	fakeGateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitCh <- struct{}{}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer fakeGateway.Close()
+	a.PushClient = fakeGateway.Client()
+	// a.Config.PushGatewayURL intentionally left empty.
+
+	setTargetBody, _ := json.Marshal(setPushTargetRequest{Platform: strPtr("fcm"), Token: strPtr("fcm-registration-token")})
+	setRec := doSignedRequest(t, a.Router(), http.MethodPut, "/v1/devices/"+bob.deviceID+"/push-target", setTargetBody, bob.deviceID, bob.devicePriv)
+	if setRec.Code != http.StatusOK {
+		t.Fatalf("set push target status = %d, want 200, body = %s", setRec.Code, setRec.Body.String())
+	}
+
+	sendRec := doSignedRequest(t, a.Router(), http.MethodPost, "/v1/messages", sendMessageBody(t, "msg1", bob.deviceID, `{}`), alice.deviceID, alice.devicePriv)
+	if sendRec.Code != http.StatusAccepted {
+		t.Fatalf("send status = %d, want 202, body = %s", sendRec.Code, sendRec.Body.String())
+	}
+
+	select {
+	case <-hitCh:
+		t.Fatal("gateway push request was sent despite no PushGatewayURL being configured")
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+func strPtr(s string) *string { return &s }

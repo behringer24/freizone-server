@@ -1,0 +1,23 @@
+.git
+.claude
+.gitignore
+
+# Local dev-only artifacts -- never needed inside the build context, and
+# accidentally copying a real data dir/db could leak local test accounts
+# into an image layer.
+/data
+/alice
+/bob
+/hank
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+server.exe
+start.bat
+
+/bin
+/dist
+
+README.md
+docs

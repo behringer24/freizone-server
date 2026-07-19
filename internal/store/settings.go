@@ -1,7 +1,9 @@
 package store
 
 import (
+	"crypto/ed25519"
 	"database/sql"
+	"encoding/base64"
 	"fmt"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
@@ -81,4 +83,53 @@ func GetVAPIDKeys(db DBTX) (publicKey, privateKey string, err error) {
 		return "", "", fmt.Errorf("store: reading vapid keys: %w", err)
 	}
 	return publicKey, privateKey, nil
+}
+
+// InitRelayIdentity generates and persists this server's Ed25519 signing
+// identity the first time it's called, if server_settings doesn't have
+// one yet -- requires InitRegistrationPolicy to have already created the
+// server_settings row. This identity signs every outgoing request to a
+// freizone-gateway (see internal/api/push.go's notifyPushViaGateway),
+// with the public key itself serving as the gateway's lookup-free
+// Signature-Key-Id -- there is no separate registration step with any
+// gateway, by design (see freizone-gateway's README for the security
+// model this enables).
+func InitRelayIdentity(db DBTX) error {
+	var existing sql.NullString
+	if err := db.QueryRow(`SELECT relay_pubkey FROM server_settings WHERE id = 1`).Scan(&existing); err != nil {
+		return fmt.Errorf("store: checking for existing relay identity: %w", err)
+	}
+	if existing.Valid {
+		return nil
+	}
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		return fmt.Errorf("store: generating relay identity: %w", err)
+	}
+	if _, err := db.Exec(
+		`UPDATE server_settings SET relay_pubkey = ?, relay_privkey = ? WHERE id = 1`,
+		base64.StdEncoding.EncodeToString(pub), base64.StdEncoding.EncodeToString(priv),
+	); err != nil {
+		return fmt.Errorf("store: persisting relay identity: %w", err)
+	}
+	return nil
+}
+
+// GetRelayIdentity returns the server's relay signing identity, base64-
+// decoded and ready to use with pkg/httpsig.
+func GetRelayIdentity(db DBTX) (pub ed25519.PublicKey, priv ed25519.PrivateKey, err error) {
+	var pubB64, privB64 string
+	if err := db.QueryRow(`SELECT relay_pubkey, relay_privkey FROM server_settings WHERE id = 1`).Scan(&pubB64, &privB64); err != nil {
+		return nil, nil, fmt.Errorf("store: reading relay identity: %w", err)
+	}
+	pub, err = base64.StdEncoding.DecodeString(pubB64)
+	if err != nil {
+		return nil, nil, fmt.Errorf("store: decoding relay public key: %w", err)
+	}
+	priv, err = base64.StdEncoding.DecodeString(privB64)
+	if err != nil {
+		return nil, nil, fmt.Errorf("store: decoding relay private key: %w", err)
+	}
+	return pub, priv, nil
 }
