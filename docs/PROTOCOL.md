@@ -764,3 +764,34 @@ per member — nothing here assumes a single recipient server or a shared
 delivery transaction across members), account portability/migrating
 servers, and server discovery — not needed, since an address already
 names the exact server.
+
+## 10. Chat invite QR codes (`freizone://chat`)
+
+Client-side convention, not a server endpoint — the counterpart to §8's
+`freizone://join`, but for contact initiation rather than server
+registration: a URI that lets one already-registered account hand
+another its own address, so the scanning device can start a
+conversation directly (federated per §9 if the two accounts are on
+different servers) instead of typing an `id*server` address by hand.
+
+```
+freizone://chat?id=<account id>&server=<url>&name=<display name>
+```
+
+- `id` (required): the sharer's account id, in its canonical (unhyphenated)
+  form.
+- `server` (required): the sharer's home server, in the same form as
+  §8's `server` param.
+- `name` (optional): a display-name suggestion for the conversation the
+  scanning device creates — purely a local default on the recipient's
+  side, not authoritative and freely overridden there.
+
+Unlike §8's join invite, this carries no secret or capability: an
+account's `id*server` address is already public information (it's
+exactly what `GET /v1/accounts/{id}` on `server` answers about, per
+§4/§9), so there's nothing here to expire or revoke. The QR is purely a
+convenience encoding of already-public data, equivalent in trust terms
+to reading the address off a screen and typing it in by hand — the
+actual identity verification happens the same way it would for a
+manually-typed address, via the existing account/prekey lookup and
+device-certificate checks (§2, §9), not anything carried by this URI.
