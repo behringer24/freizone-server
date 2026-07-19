@@ -39,6 +39,21 @@ func CreateMessage(db DBTX, m Message) error {
 	return nil
 }
 
+// CountPendingMessages reports how many messages are currently queued for
+// recipientDeviceID -- checked against Config.MaxQueuedMessagesPerDevice
+// before enqueuing another (see internal/api/messages.go's
+// handleSendMessage and federation.go's handleReceiveFederatedMessage),
+// so an unresponsive or malicious sender can't grow one device's queue
+// without bound.
+func CountPendingMessages(db DBTX, recipientDeviceID string) (int, error) {
+	var n int
+	err := db.QueryRow(`SELECT COUNT(1) FROM messages WHERE recipient_device_id = ?`, recipientDeviceID).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("store: counting pending messages: %w", err)
+	}
+	return n, nil
+}
+
 // ListPendingMessages returns all messages queued for recipientDeviceID,
 // oldest first.
 func ListPendingMessages(db DBTX, recipientDeviceID string) ([]Message, error) {

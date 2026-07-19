@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
@@ -81,6 +82,64 @@ func TestHandleSendListAndDeleteMessage(t *testing.T) {
 	decodeJSON(t, listRec2, &messages2)
 	if len(messages2) != 0 {
 		t.Errorf("messages after delete = %+v, want none", messages2)
+	}
+}
+
+func TestHandleSendMessageRejectsWhenRecipientQueueIsFull(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+	a.Config.MaxQueuedMessagesPerDevice = 2
+	alice := registerAccount(t, a)
+	bob := registerAccount(t, a)
+
+	for i, id := range []string{"msg1", "msg2"} {
+		rec := doSignedRequest(t, a.Router(), http.MethodPost, "/v1/messages", sendMessageBody(t, id, bob.deviceID, `{}`), alice.deviceID, alice.devicePriv)
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("send #%d status = %d, want 202, body = %s", i+1, rec.Code, rec.Body.String())
+		}
+	}
+
+	rec := doSignedRequest(t, a.Router(), http.MethodPost, "/v1/messages", sendMessageBody(t, "msg3", bob.deviceID, `{}`), alice.deviceID, alice.devicePriv)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("third send status = %d, want 429, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleSendMessageRejectsOversizedBody(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+	alice := registerAccount(t, a)
+	bob := registerAccount(t, a)
+
+	body := sendMessageBody(t, "msg-too-large", bob.deviceID, `{"ciphertext":"abc"}`)
+	const path = "/v1/messages"
+	ts := time.Now()
+	nonce := "nonce-too-large"
+	sig := httpsig.Sign(http.MethodPost, path, "", body, alice.deviceID, ts, nonce, alice.devicePriv)
+
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(httpsig.HeaderKeyID, alice.deviceID)
+	req.Header.Set(httpsig.HeaderTimestamp, httpsig.FormatTimestamp(ts))
+	req.Header.Set(httpsig.HeaderNonce, nonce)
+	req.Header.Set(httpsig.HeaderSignature, sig)
+
+	rec := httptest.NewRecorder()
+	// Simulates internal/server's withMaxBody middleware, which isn't
+	// part of a.Router() itself -- one byte under the real body size, so
+	// the read is guaranteed to be cut short.
+	req.Body = http.MaxBytesReader(rec, req.Body, int64(len(body)-1))
+	a.Router().ServeHTTP(rec, req)
+
+	// This route is wrapped in a.Auth.Require (internal/auth/
+	// middleware.go), which reads the body itself first, to verify the
+	// request signature, before this handler ever runs -- so the
+	// MaxBytesError is hit there, and internal/auth's blanket "same 401
+	// for every failure mode" policy applies, not this handler's own
+	// (413) handling of the same error. The oversized body is still
+	// rejected either way -- decodeJSONBody's 413 path is exercised by
+	// handleReceiveFederatedMessage instead, which has no such
+	// preceding middleware (see federation_test.go).
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401 (rejected by auth middleware's own body read), body = %s", rec.Code, rec.Body.String())
 	}
 }
 

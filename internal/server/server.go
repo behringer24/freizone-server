@@ -28,6 +28,8 @@ type Options struct {
 	AutocertCacheDir string
 	Handler          http.Handler
 	Logger           *slog.Logger
+	// MaxRequestBodyBytes caps every request body -- see withMaxBody.
+	MaxRequestBodyBytes int64
 }
 
 // Server wraps one or two http.Server instances, depending on TLS mode.
@@ -38,7 +40,7 @@ type Server struct {
 
 // New builds a Server for opts. It does not start listening.
 func New(opts Options) (*Server, error) {
-	wrapped := withLogging(withRecover(opts.Handler, opts.Logger), opts.Logger)
+	wrapped := withLogging(withRecover(withMaxBody(opts.Handler, opts.MaxRequestBodyBytes), opts.Logger), opts.Logger)
 
 	switch opts.TLSMode {
 	case config.TLSModeOff:

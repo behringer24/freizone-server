@@ -39,6 +39,23 @@ func (w *statusWriter) Flush() {
 	}
 }
 
+// withMaxBody caps every request body at maxBytes, rejecting anything
+// larger (the handler's own body-read -- json.Decode or io.ReadAll --
+// gets a *http.MaxBytesError instead of the full oversized body) rather
+// than reading an arbitrarily large request into memory. A maxBytes <= 0
+// disables the cap (kept out of validated Config -- see
+// internal/config -- so this is just defense against a caller
+// misconfiguring it directly).
+func withMaxBody(next http.Handler, maxBytes int64) http.Handler {
+	if maxBytes <= 0 {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+		next.ServeHTTP(w, r)
+	})
+}
+
 // withRecover recovers from panics in next, logging them and returning a
 // generic 500 instead of crashing the process.
 func withRecover(next http.Handler, logger *slog.Logger) http.Handler {

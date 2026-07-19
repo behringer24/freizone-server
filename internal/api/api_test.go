@@ -41,7 +41,7 @@ func newTestAPI(t *testing.T, policy config.RegistrationPolicy) (*API, *sql.DB) 
 		t.Fatalf("GetRelayIdentity() error = %v", err)
 	}
 
-	cfg := &config.Config{RegistrationPolicy: policy, MessageRetentionDays: 14}
+	cfg := &config.Config{RegistrationPolicy: policy, MessageRetentionDays: 14, FederationEnabled: true, MaxQueuedMessagesPerDevice: 1000}
 	authMW := auth.NewMiddleware(db, nil)
 	a := New(db, cfg, authMW, nil)
 	a.Now = func() time.Time { return time.Now() }

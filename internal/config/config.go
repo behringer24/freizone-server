@@ -47,6 +47,28 @@ type Config struct {
 	// operated by this server's own operator or someone else's -- see
 	// https://github.com/behringer24/freizone-gateway.
 	PushGatewayURL string
+
+	// FederationEnabled controls whether POST /v1/federation/messages
+	// (see internal/api/federation.go) accepts inbound cross-server
+	// messages at all. Defaults to true (federation is open by design --
+	// see docs/PROTOCOL.md); an operator who wants none of it can turn
+	// the whole surface off without a code change.
+	FederationEnabled bool
+
+	// MaxRequestBodyBytes caps every incoming request body (applied as
+	// middleware, internal/server/middleware.go's withMaxBody) -- without
+	// this, a single request (e.g. a message payload) could be
+	// arbitrarily large, limited only by host memory.
+	MaxRequestBodyBytes int64
+
+	// MaxQueuedMessagesPerDevice caps how many undelivered messages may
+	// be queued for one recipient device at once (internal/store/
+	// messages.go's CountPendingMessages, checked by handleSendMessage
+	// and handleReceiveFederatedMessage before enqueuing another) --
+	// without this, an unresponsive recipient (or, since federation
+	// requires no registration, anyone who can mint a free Ed25519
+	// identity) could flood a device's queue without bound.
+	MaxQueuedMessagesPerDevice int
 }
 
 const (
@@ -61,9 +83,23 @@ const (
 	envRegistrationPolicy   = "FREIZONE_REGISTRATION_POLICY"
 	envMessageRetentionDays = "FREIZONE_MESSAGE_RETENTION_DAYS"
 	envPushGatewayURL       = "FREIZONE_PUSH_GATEWAY_URL"
+	envFederationEnabled    = "FREIZONE_FEDERATION_ENABLED"
+	envMaxRequestBodyBytes  = "FREIZONE_MAX_REQUEST_BODY_BYTES"
+	envMaxQueuedMessages    = "FREIZONE_MAX_QUEUED_MESSAGES_PER_DEVICE"
 )
 
 const defaultMessageRetentionDays = 14
+
+// defaultMaxRequestBodyBytes (512 KiB) is generous for a single E2E chat
+// message (ciphertext + header, base64-encoded) while still bounding a
+// request to a small, fixed cost regardless of who's sending it.
+const defaultMaxRequestBodyBytes int64 = 512 * 1024
+
+// defaultMaxQueuedMessagesPerDevice is deliberately generous -- far more
+// than any real device should accumulate within the retention window --
+// since this is a backstop against unbounded flooding, not a realistic
+// usage cap.
+const defaultMaxQueuedMessagesPerDevice = 1000
 
 // Load reads configuration from the process environment.
 func Load(getenv func(string) string) (*Config, error) {
@@ -95,6 +131,36 @@ func Load(getenv func(string) string) (*Config, error) {
 	}
 	cfg.MessageRetentionDays = retentionDays
 
+	federationEnabled := true
+	if v := getenv(envFederationEnabled); v != "" {
+		parsed, err := strconv.ParseBool(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: invalid value %q (must be true or false)", envFederationEnabled, v)
+		}
+		federationEnabled = parsed
+	}
+	cfg.FederationEnabled = federationEnabled
+
+	maxBodyBytes := defaultMaxRequestBodyBytes
+	if v := getenv(envMaxRequestBodyBytes); v != "" {
+		parsed, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("%s: invalid value %q (must be a whole number of bytes): %w", envMaxRequestBodyBytes, v, err)
+		}
+		maxBodyBytes = parsed
+	}
+	cfg.MaxRequestBodyBytes = maxBodyBytes
+
+	maxQueuedMessages := defaultMaxQueuedMessagesPerDevice
+	if v := getenv(envMaxQueuedMessages); v != "" {
+		parsed, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: invalid value %q (must be a whole number): %w", envMaxQueuedMessages, v, err)
+		}
+		maxQueuedMessages = parsed
+	}
+	cfg.MaxQueuedMessagesPerDevice = maxQueuedMessages
+
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
@@ -124,6 +190,14 @@ func (c *Config) validate() error {
 
 	if c.MessageRetentionDays <= 0 {
 		return fmt.Errorf("%s must be a positive number of days, got %d", envMessageRetentionDays, c.MessageRetentionDays)
+	}
+
+	if c.MaxRequestBodyBytes <= 0 {
+		return fmt.Errorf("%s must be a positive number of bytes, got %d", envMaxRequestBodyBytes, c.MaxRequestBodyBytes)
+	}
+
+	if c.MaxQueuedMessagesPerDevice <= 0 {
+		return fmt.Errorf("%s must be a positive number, got %d", envMaxQueuedMessages, c.MaxQueuedMessagesPerDevice)
 	}
 
 	return nil

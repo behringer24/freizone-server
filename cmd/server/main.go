@@ -111,15 +111,16 @@ func run() error {
 	handler := a.Router()
 
 	srv, err := server.New(server.Options{
-		Domain:           cfg.Domain,
-		HTTPAddr:         cfg.HTTPAddr,
-		HTTPSAddr:        cfg.HTTPSAddr,
-		TLSMode:          cfg.TLSMode,
-		TLSCertFile:      cfg.TLSCertFile,
-		TLSKeyFile:       cfg.TLSKeyFile,
-		AutocertCacheDir: filepath.Join(cfg.DataDir, "autocert-cache"),
-		Handler:          handler,
-		Logger:           logger,
+		Domain:              cfg.Domain,
+		HTTPAddr:            cfg.HTTPAddr,
+		HTTPSAddr:           cfg.HTTPSAddr,
+		TLSMode:             cfg.TLSMode,
+		TLSCertFile:         cfg.TLSCertFile,
+		TLSKeyFile:          cfg.TLSKeyFile,
+		AutocertCacheDir:    filepath.Join(cfg.DataDir, "autocert-cache"),
+		Handler:             handler,
+		Logger:              logger,
+		MaxRequestBodyBytes: cfg.MaxRequestBodyBytes,
 	})
 	if err != nil {
 		return fmt.Errorf("configuring server: %w", err)

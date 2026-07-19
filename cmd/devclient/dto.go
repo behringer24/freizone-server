@@ -73,6 +73,23 @@ type messageResponse struct {
 	Payload         json.RawMessage `json:"payload"`
 }
 
+type federationDeviceCertDTO struct {
+	DeviceID     string `json:"device_id"`
+	DevicePubKey string `json:"device_pub_key"`
+	IssuedAt     string `json:"issued_at"`
+	Signature    string `json:"signature"`
+}
+
+type federationMessageRequest struct {
+	SenderAccountID    string                  `json:"sender_account_id"`
+	SenderRootPubKey   string                  `json:"sender_root_pub_key"`
+	SenderDeviceCert   federationDeviceCertDTO `json:"sender_device_cert"`
+	RecipientAccountID string                  `json:"recipient_account_id,omitempty"`
+	RecipientDeviceID  string                  `json:"recipient_device_id"`
+	MessageID          string                  `json:"message_id"`
+	Payload            json.RawMessage         `json:"payload"`
+}
+
 type accountResponse struct {
 	ID         string           `json:"id"`
 	RootPubKey string           `json:"root_pubkey"`
