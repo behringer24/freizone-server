@@ -177,3 +177,89 @@ func TestSetDevicePushSubscription(t *testing.T) {
 		t.Errorf("SetDevicePushSubscription() on unknown device error = %v, want ErrNotFound", err)
 	}
 }
+
+func TestSetDevicePushTarget(t *testing.T) {
+	db := newTestDB(t)
+	mustCreateAccount(t, db, "acct1")
+	if err := CreateDevice(db, testDevice("acct1", "device1")); err != nil {
+		t.Fatalf("CreateDevice() error = %v", err)
+	}
+
+	got, err := GetDevice(db, "device1")
+	if err != nil {
+		t.Fatalf("GetDevice() error = %v", err)
+	}
+	if got.PushTarget != nil {
+		t.Errorf("PushTarget = %v, want nil before it's ever set", got.PushTarget)
+	}
+
+	target := &PushTarget{Platform: "fcm", Token: "fcm-registration-token"}
+	if err := SetDevicePushTarget(db, "device1", target); err != nil {
+		t.Fatalf("SetDevicePushTarget() error = %v", err)
+	}
+	got, err = GetDevice(db, "device1")
+	if err != nil {
+		t.Fatalf("GetDevice() error = %v", err)
+	}
+	if got.PushTarget == nil || *got.PushTarget != *target {
+		t.Errorf("PushTarget = %v, want %v", got.PushTarget, target)
+	}
+
+	if err := SetDevicePushTarget(db, "device1", nil); err != nil {
+		t.Fatalf("SetDevicePushTarget(nil) error = %v", err)
+	}
+	got, err = GetDevice(db, "device1")
+	if err != nil {
+		t.Fatalf("GetDevice() error = %v", err)
+	}
+	if got.PushTarget != nil {
+		t.Errorf("PushTarget = %v, want nil after clearing", got.PushTarget)
+	}
+
+	if err := SetDevicePushTarget(db, "does-not-exist", target); !errors.Is(err, ErrNotFound) {
+		t.Errorf("SetDevicePushTarget() on unknown device error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestPushSubscriptionAndPushTargetAreMutuallyExclusive(t *testing.T) {
+	db := newTestDB(t)
+	mustCreateAccount(t, db, "acct1")
+	if err := CreateDevice(db, testDevice("acct1", "device1")); err != nil {
+		t.Fatalf("CreateDevice() error = %v", err)
+	}
+
+	sub := &PushSubscription{Endpoint: "https://push.example.org/wake/abc123", P256dh: "p256dh-value", Auth: "auth-value"}
+	if err := SetDevicePushSubscription(db, "device1", sub); err != nil {
+		t.Fatalf("SetDevicePushSubscription() error = %v", err)
+	}
+
+	target := &PushTarget{Platform: "fcm", Token: "fcm-registration-token"}
+	if err := SetDevicePushTarget(db, "device1", target); err != nil {
+		t.Fatalf("SetDevicePushTarget() error = %v", err)
+	}
+
+	got, err := GetDevice(db, "device1")
+	if err != nil {
+		t.Fatalf("GetDevice() error = %v", err)
+	}
+	if got.Push != nil {
+		t.Errorf("Push = %v, want nil after setting a push target -- the two are mutually exclusive", got.Push)
+	}
+	if got.PushTarget == nil || *got.PushTarget != *target {
+		t.Errorf("PushTarget = %v, want %v", got.PushTarget, target)
+	}
+
+	if err := SetDevicePushSubscription(db, "device1", sub); err != nil {
+		t.Fatalf("SetDevicePushSubscription() error = %v", err)
+	}
+	got, err = GetDevice(db, "device1")
+	if err != nil {
+		t.Fatalf("GetDevice() error = %v", err)
+	}
+	if got.PushTarget != nil {
+		t.Errorf("PushTarget = %v, want nil after setting a push subscription -- the two are mutually exclusive", got.PushTarget)
+	}
+	if got.Push == nil || *got.Push != *sub {
+		t.Errorf("Push = %v, want %v", got.Push, sub)
+	}
+}

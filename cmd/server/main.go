@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -84,6 +85,19 @@ func run() error {
 		return fmt.Errorf("loading vapid keys: %w", err)
 	}
 
+	if err := store.InitRelayIdentity(db); err != nil {
+		return fmt.Errorf("initializing relay identity: %w", err)
+	}
+	relayPub, relayPriv, err := store.GetRelayIdentity(db)
+	if err != nil {
+		return fmt.Errorf("loading relay identity: %w", err)
+	}
+	// Not a secret -- this is exactly what any freizone-gateway sees in
+	// Signature-Key-Id on every relayed request, so an operator who ever
+	// needs to identify or discuss this server with a gateway operator
+	// (e.g. "please don't revoke me") can find it in their own logs.
+	logger.Info("relay identity ready", "public_key", base64.StdEncoding.EncodeToString(relayPub))
+
 	if err := printSetupTokenIfNew(db, logger); err != nil {
 		return fmt.Errorf("initializing setup token: %w", err)
 	}
@@ -92,6 +106,8 @@ func run() error {
 	a := api.New(db, cfg, authMW, logger)
 	a.VAPIDPublicKey = vapidPublicKey
 	a.VAPIDPrivateKey = vapidPrivateKey
+	a.RelayPubKey = relayPub
+	a.RelayPrivKey = relayPriv
 	handler := a.Router()
 
 	srv, err := server.New(server.Options{

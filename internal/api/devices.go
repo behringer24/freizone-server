@@ -227,3 +227,61 @@ func (a *API) handleSetPushEndpoint(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
+
+// handleSetPushTarget registers (or, with both fields nil/omitted,
+// clears) the calling device's FCM/APNs push target -- the counterpart
+// to handleSetPushEndpoint for devices delivered through a
+// freizone-gateway instead of UnifiedPush. Only a device can manage its
+// own target. Setting one clears the other (see
+// store.SetDevicePushTarget) -- a device uses exactly one wake mechanism
+// at a time.
+func (a *API) handleSetPushTarget(w http.ResponseWriter, r *http.Request) {
+	identity, ok := auth.IdentityFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+		return
+	}
+
+	deviceID := r.PathValue("device_id")
+	if identity.DeviceID != deviceID {
+		writeError(w, http.StatusForbidden, "forbidden", "can only set the push target for your own device")
+		return
+	}
+
+	var req setPushTargetRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "malformed JSON body")
+		return
+	}
+
+	allNil := req.Platform == nil && req.Token == nil
+	allSet := req.Platform != nil && req.Token != nil
+	if !allNil && !allSet {
+		writeError(w, http.StatusBadRequest, "invalid_request", "platform and token must be given together or not at all")
+		return
+	}
+
+	var target *store.PushTarget
+	if allSet {
+		if *req.Platform != store.PushPlatformFCM && *req.Platform != store.PushPlatformAPNS {
+			writeError(w, http.StatusBadRequest, "invalid_request", "platform must be one of: fcm, apns")
+			return
+		}
+		if *req.Token == "" {
+			writeError(w, http.StatusBadRequest, "invalid_request", "token must not be empty")
+			return
+		}
+		target = &store.PushTarget{Platform: *req.Platform, Token: *req.Token}
+	}
+
+	if err := store.SetDevicePushTarget(a.DB, deviceID, target); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "unknown device")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}

@@ -51,6 +51,14 @@ type setPushEndpointRequest struct {
 	Auth     *string `json:"auth"`
 }
 
+// setPushTargetRequest registers or clears (both fields nil/omitted) a
+// device's FCM/APNs push target. Platform and Token must be given
+// together or not at all -- see handleSetPushTarget.
+type setPushTargetRequest struct {
+	Platform *string `json:"platform"`
+	Token    *string `json:"token"`
+}
+
 type createInviteRequest struct {
 	ExpiresAt *string `json:"expires_at,omitempty"`
 }

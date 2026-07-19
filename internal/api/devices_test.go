@@ -232,3 +232,101 @@ func TestHandleSetPushEndpointRejectsPartialFields(t *testing.T) {
 		t.Errorf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
 	}
 }
+
+func pushTargetRequestBody(platform, token string) []byte {
+	body, _ := json.Marshal(setPushTargetRequest{Platform: &platform, Token: &token})
+	return body
+}
+
+func TestHandleSetPushTarget(t *testing.T) {
+	a, db := newTestAPI(t, config.PolicyOpen)
+	k := registerAccount(t, a)
+
+	rec := doSignedRequest(t, a.Router(), http.MethodPut, "/v1/devices/"+k.deviceID+"/push-target", pushTargetRequestBody("fcm", "fcm-registration-token"), k.deviceID, k.devicePriv)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+
+	dev, err := store.GetDevice(db, k.deviceID)
+	if err != nil {
+		t.Fatalf("GetDevice() error = %v", err)
+	}
+	if dev.PushTarget == nil || dev.PushTarget.Platform != "fcm" || dev.PushTarget.Token != "fcm-registration-token" {
+		t.Errorf("PushTarget = %v, want platform=fcm token=fcm-registration-token", dev.PushTarget)
+	}
+
+	// Clearing with an empty request.
+	clearBody, _ := json.Marshal(setPushTargetRequest{})
+	rec = doSignedRequest(t, a.Router(), http.MethodPut, "/v1/devices/"+k.deviceID+"/push-target", clearBody, k.deviceID, k.devicePriv)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+	dev, err = store.GetDevice(db, k.deviceID)
+	if err != nil {
+		t.Fatalf("GetDevice() error = %v", err)
+	}
+	if dev.PushTarget != nil {
+		t.Errorf("PushTarget = %v, want nil after clearing", dev.PushTarget)
+	}
+}
+
+func TestHandleSetPushTargetRejectsOtherDevice(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+	k1 := registerAccount(t, a)
+	k2 := registerAccount(t, a)
+
+	rec := doSignedRequest(t, a.Router(), http.MethodPut, "/v1/devices/"+k2.deviceID+"/push-target", pushTargetRequestBody("fcm", "tok"), k1.deviceID, k1.devicePriv)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleSetPushTargetRejectsUnknownPlatform(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+	k := registerAccount(t, a)
+
+	rec := doSignedRequest(t, a.Router(), http.MethodPut, "/v1/devices/"+k.deviceID+"/push-target", pushTargetRequestBody("carrier-pigeon", "tok"), k.deviceID, k.devicePriv)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleSetPushTargetRejectsPartialFields(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+	k := registerAccount(t, a)
+
+	platform := "fcm"
+	reqBody, _ := json.Marshal(setPushTargetRequest{Platform: &platform}) // token missing
+
+	rec := doSignedRequest(t, a.Router(), http.MethodPut, "/v1/devices/"+k.deviceID+"/push-target", reqBody, k.deviceID, k.devicePriv)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleSetPushTargetClearsExistingPushSubscription(t *testing.T) {
+	a, db := newTestAPI(t, config.PolicyOpen)
+	k := registerAccount(t, a)
+
+	endpoint := "https://push.example.org/wake/abc123"
+	rec := doSignedRequest(t, a.Router(), http.MethodPut, "/v1/devices/"+k.deviceID+"/push-endpoint", pushSubscriptionRequestBody(endpoint), k.deviceID, k.devicePriv)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("push-endpoint status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+
+	rec = doSignedRequest(t, a.Router(), http.MethodPut, "/v1/devices/"+k.deviceID+"/push-target", pushTargetRequestBody("fcm", "fcm-registration-token"), k.deviceID, k.devicePriv)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("push-target status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+
+	dev, err := store.GetDevice(db, k.deviceID)
+	if err != nil {
+		t.Fatalf("GetDevice() error = %v", err)
+	}
+	if dev.Push != nil {
+		t.Errorf("Push = %v, want nil after registering a push target", dev.Push)
+	}
+	if dev.PushTarget == nil {
+		t.Error("PushTarget = nil, want set")
+	}
+}

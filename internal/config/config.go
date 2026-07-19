@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 // TLSMode selects how the server terminates TLS.
@@ -37,6 +38,15 @@ type Config struct {
 	DBPath               string
 	RegistrationPolicy   RegistrationPolicy
 	MessageRetentionDays int
+
+	// PushGatewayURL is the base URL of a freizone-gateway instance this
+	// server relays FCM/APNs push-wake requests to (see internal/api/
+	// push.go's notifyPushViaGateway) -- empty disables that path
+	// entirely, exactly like "no UnifiedPush distributor" already
+	// degrades gracefully today. Any freizone-gateway works, whether
+	// operated by this server's own operator or someone else's -- see
+	// https://github.com/behringer24/freizone-gateway.
+	PushGatewayURL string
 }
 
 const (
@@ -50,6 +60,7 @@ const (
 	envDBPath               = "FREIZONE_DB_PATH"
 	envRegistrationPolicy   = "FREIZONE_REGISTRATION_POLICY"
 	envMessageRetentionDays = "FREIZONE_MESSAGE_RETENTION_DAYS"
+	envPushGatewayURL       = "FREIZONE_PUSH_GATEWAY_URL"
 )
 
 const defaultMessageRetentionDays = 14
@@ -65,6 +76,7 @@ func Load(getenv func(string) string) (*Config, error) {
 		TLSKeyFile:         getenv(envTLSKeyFile),
 		DataDir:            orDefault(getenv(envDataDir), "./data"),
 		RegistrationPolicy: RegistrationPolicy(orDefault(getenv(envRegistrationPolicy), string(PolicyClosed))),
+		PushGatewayURL:     strings.TrimSuffix(getenv(envPushGatewayURL), "/"),
 	}
 
 	dbPath := getenv(envDBPath)

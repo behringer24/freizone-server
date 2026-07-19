@@ -13,6 +13,12 @@ const (
 	DeviceStatusRevoked = "revoked"
 )
 
+// Recognized PushTarget.Platform values.
+const (
+	PushPlatformFCM  = "fcm"
+	PushPlatformAPNS = "apns"
+)
+
 // Device is a device certified under an account's root key.
 type Device struct {
 	DeviceID      string
@@ -33,6 +39,12 @@ type Device struct {
 	// Push is this device's registered push-wake subscription (see
 	// SetDevicePushSubscription), nil until it has registered one.
 	Push *PushSubscription
+
+	// PushTarget is this device's registered FCM/APNs push target (see
+	// SetDevicePushTarget), nil until it has registered one. Mutually
+	// exclusive with Push -- a device uses exactly one wake mechanism
+	// at a time.
+	PushTarget *PushTarget
 }
 
 // PushSubscription is a UnifiedPush/Web Push subscription: an endpoint
@@ -42,6 +54,15 @@ type PushSubscription struct {
 	Endpoint string
 	P256dh   string
 	Auth     string
+}
+
+// PushTarget identifies a device for delivery through a freizone-gateway
+// (see internal/api/push.go's notifyPushViaGateway): which platform, and
+// that platform's own addressing token (an FCM registration token, or --
+// once implemented -- an APNs device token).
+type PushTarget struct {
+	Platform string
+	Token    string
 }
 
 // CreateDevice inserts a new device. It returns ErrConflict if the device id
@@ -66,7 +87,8 @@ func CreateDevice(db DBTX, d Device) error {
 func GetDevice(db DBTX, deviceID string) (*Device, error) {
 	row := db.QueryRow(
 		`SELECT device_id, account_id, device_pubkey, cert_issued_at, cert_signature, status, revoked_at, created_at,
-		        dh_identity_pubkey, dh_identity_issued_at, dh_identity_signature, push_endpoint, push_p256dh, push_auth
+		        dh_identity_pubkey, dh_identity_issued_at, dh_identity_signature, push_endpoint, push_p256dh, push_auth,
+		        push_platform, push_target
 		 FROM devices WHERE device_id = ?`,
 		deviceID,
 	)
@@ -78,7 +100,8 @@ func GetDevice(db DBTX, deviceID string) (*Device, error) {
 func ListDevicesByAccount(db DBTX, accountID string) ([]Device, error) {
 	rows, err := db.Query(
 		`SELECT device_id, account_id, device_pubkey, cert_issued_at, cert_signature, status, revoked_at, created_at,
-		        dh_identity_pubkey, dh_identity_issued_at, dh_identity_signature, push_endpoint, push_p256dh, push_auth
+		        dh_identity_pubkey, dh_identity_issued_at, dh_identity_signature, push_endpoint, push_p256dh, push_auth,
+		        push_platform, push_target
 		 FROM devices WHERE account_id = ? ORDER BY created_at ASC`,
 		accountID,
 	)
@@ -142,10 +165,12 @@ func scanDeviceFields(s scannable) (*Device, error) {
 	var dhPubKey, dhSignature []byte
 	var dhIssuedAt sql.NullString
 	var pushEndpoint, pushP256dh, pushAuth sql.NullString
+	var pushPlatform, pushToken sql.NullString
 
 	if err := s.Scan(
 		&d.DeviceID, &d.AccountID, &pubkey, &issuedAt, &d.CertSignature, &d.Status, &revokedAt, &createdAt,
 		&dhPubKey, &dhIssuedAt, &dhSignature, &pushEndpoint, &pushP256dh, &pushAuth,
+		&pushPlatform, &pushToken,
 	); err != nil {
 		return nil, fmt.Errorf("store: scanning device: %w", err)
 	}
@@ -188,6 +213,10 @@ func scanDeviceFields(s scannable) (*Device, error) {
 		d.Push = &PushSubscription{Endpoint: pushEndpoint.String, P256dh: pushP256dh.String, Auth: pushAuth.String}
 	}
 
+	if pushPlatform.Valid {
+		d.PushTarget = &PushTarget{Platform: pushPlatform.String, Token: pushToken.String}
+	}
+
 	return &d, nil
 }
 
@@ -212,23 +241,56 @@ func UpsertDHIdentity(db DBTX, deviceID string, pubKey, signature []byte, issued
 }
 
 // SetDevicePushSubscription sets or clears (sub == nil) a device's
-// registered push subscription. It returns ErrNotFound if the device
-// doesn't exist.
+// registered push subscription. Setting a non-nil subscription also
+// clears any registered push target (see SetDevicePushTarget) -- a
+// device uses exactly one wake mechanism at a time. It returns
+// ErrNotFound if the device doesn't exist.
 func SetDevicePushSubscription(db DBTX, deviceID string, sub *PushSubscription) error {
 	var endpoint, p256dh, auth *string
 	if sub != nil {
 		endpoint, p256dh, auth = &sub.Endpoint, &sub.P256dh, &sub.Auth
 	}
-	res, err := db.Exec(
-		`UPDATE devices SET push_endpoint = ?, push_p256dh = ?, push_auth = ? WHERE device_id = ?`,
-		endpoint, p256dh, auth, deviceID,
-	)
+	query := `UPDATE devices SET push_endpoint = ?, push_p256dh = ?, push_auth = ? WHERE device_id = ?`
+	args := []any{endpoint, p256dh, auth, deviceID}
+	if sub != nil {
+		query = `UPDATE devices SET push_endpoint = ?, push_p256dh = ?, push_auth = ?, push_platform = NULL, push_target = NULL WHERE device_id = ?`
+	}
+	res, err := db.Exec(query, args...)
 	if err != nil {
 		return fmt.Errorf("store: setting device push subscription: %w", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("store: checking rows affected for push subscription update: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetDevicePushTarget sets or clears (target == nil) a device's
+// registered FCM/APNs push target. Setting a non-nil target also clears
+// any registered push subscription (see SetDevicePushSubscription) -- a
+// device uses exactly one wake mechanism at a time. It returns
+// ErrNotFound if the device doesn't exist.
+func SetDevicePushTarget(db DBTX, deviceID string, target *PushTarget) error {
+	var platform, token *string
+	if target != nil {
+		platform, token = &target.Platform, &target.Token
+	}
+	query := `UPDATE devices SET push_platform = ?, push_target = ? WHERE device_id = ?`
+	args := []any{platform, token, deviceID}
+	if target != nil {
+		query = `UPDATE devices SET push_platform = ?, push_target = ?, push_endpoint = NULL, push_p256dh = NULL, push_auth = NULL WHERE device_id = ?`
+	}
+	res, err := db.Exec(query, args...)
+	if err != nil {
+		return fmt.Errorf("store: setting device push target: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: checking rows affected for push target update: %w", err)
 	}
 	if n == 0 {
 		return ErrNotFound

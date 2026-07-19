@@ -169,6 +169,7 @@ All configuration is via environment variables (there is no config file):
 | `FREIZONE_DB_PATH` | `<DATA_DIR>/freizone.db` | Override the exact SQLite file path, if you need it somewhere other than inside `FREIZONE_DATA_DIR`. |
 | `FREIZONE_REGISTRATION_POLICY` | `closed` | `open` · `invite` · `closed` — see [above](#registration-policy-who-can-create-an-account). |
 | `FREIZONE_MESSAGE_RETENTION_DAYS` | `14` | How long an undelivered message stays queued before being permanently discarded. There is no server-side message history beyond this — by design. |
+| `FREIZONE_PUSH_GATEWAY_URL` | – | Base URL of a [freizone-gateway](https://github.com/behringer24/freizone-gateway) instance for relaying push wakes to devices that registered an FCM/APNs push target (`PUT /v1/devices/{device_id}/push-target`) instead of a UnifiedPush subscription. Unset disables that path entirely — UnifiedPush keeps working regardless. This server mints its own signing identity automatically; there's no separate registration step with the gateway. |
 
 There is also one command-line flag: `--reset-setup-token` (see below).
 

@@ -33,6 +33,13 @@ func newTestAPI(t *testing.T, policy config.RegistrationPolicy) (*API, *sql.DB) 
 	if err != nil {
 		t.Fatalf("GetVAPIDKeys() error = %v", err)
 	}
+	if err := store.InitRelayIdentity(db); err != nil {
+		t.Fatalf("InitRelayIdentity() error = %v", err)
+	}
+	relayPub, relayPriv, err := store.GetRelayIdentity(db)
+	if err != nil {
+		t.Fatalf("GetRelayIdentity() error = %v", err)
+	}
 
 	cfg := &config.Config{RegistrationPolicy: policy, MessageRetentionDays: 14}
 	authMW := auth.NewMiddleware(db, nil)
@@ -40,5 +47,7 @@ func newTestAPI(t *testing.T, policy config.RegistrationPolicy) (*API, *sql.DB) 
 	a.Now = func() time.Time { return time.Now() }
 	a.VAPIDPublicKey = vapidPublicKey
 	a.VAPIDPrivateKey = vapidPrivateKey
+	a.RelayPubKey = relayPub
+	a.RelayPrivKey = relayPriv
 	return a, db
 }
