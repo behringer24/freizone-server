@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -58,6 +59,35 @@ func signedRequest(state *State, method, path string, body []byte) (*http.Respon
 	sig := httpsig.Sign(method, path, "", body, state.DeviceID, ts, nonce, ed25519.PrivateKey(state.DevicePriv))
 
 	req.Header.Set(httpsig.HeaderKeyID, state.DeviceID)
+	req.Header.Set(httpsig.HeaderTimestamp, httpsig.FormatTimestamp(ts))
+	req.Header.Set(httpsig.HeaderNonce, nonce)
+	req.Header.Set(httpsig.HeaderSignature, sig)
+
+	return http.DefaultClient.Do(req)
+}
+
+// federatedSignedRequest sends a request to a DIFFERENT server than
+// state.Server, signed with state's own device key using the
+// self-describing-key convention federation uses in place of a
+// registered device id: Signature-Key-Id is the base64-encoded device
+// public key itself, since the target server has no local row for this
+// device to look a device id up in. See docs/PROTOCOL.md §9.
+func federatedSignedRequest(state *State, targetServer, method, path string, body []byte) (*http.Response, error) {
+	req, err := http.NewRequest(method, targetServer+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("building request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	keyID := base64.StdEncoding.EncodeToString(state.DevicePub)
+	ts := time.Now()
+	nonce, err := randomNonce()
+	if err != nil {
+		return nil, err
+	}
+	sig := httpsig.Sign(method, path, "", body, keyID, ts, nonce, ed25519.PrivateKey(state.DevicePriv))
+
+	req.Header.Set(httpsig.HeaderKeyID, keyID)
 	req.Header.Set(httpsig.HeaderTimestamp, httpsig.FormatTimestamp(ts))
 	req.Header.Set(httpsig.HeaderNonce, nonce)
 	req.Header.Set(httpsig.HeaderSignature, sig)

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/ecdh"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/behringer24/freizone-server/pkg/devicecert"
 	"github.com/behringer24/freizone-server/pkg/ratchet"
 	"github.com/behringer24/freizone-server/pkg/wire"
 )
@@ -23,6 +25,7 @@ func runChat(args []string) error {
 	fs := flag.NewFlagSet("chat", flag.ExitOnError)
 	dataDir := fs.String("datadir", "./devclient-data", "local state directory")
 	to := fs.String("to", "", "peer account id to chat with")
+	toServer := fs.String("to-server", "", "peer's home server, if different from this account's own -- federated delivery (see docs/PROTOCOL.md §9), posted directly to that server's /v1/federation/messages")
 	autoReply := fs.Bool("auto-reply", false, "automatically answer every incoming message with a random short lorem-ipsum reply, so this instance can be tested without a human typing into it")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -47,7 +50,12 @@ func runChat(args []string) error {
 		}
 	}
 
-	peerDeviceID, peerDevicePubKey, err := resolvePeerDevice(state.Server, *to)
+	peerServer := *toServer
+	resolveServer := state.Server
+	if peerServer != "" {
+		resolveServer = peerServer
+	}
+	peerDeviceID, peerDevicePubKey, err := resolvePeerDevice(resolveServer, *to)
 	if err != nil {
 		return fmt.Errorf("resolving peer: %w", err)
 	}
@@ -59,14 +67,16 @@ func runChat(args []string) error {
 		return state.Save(path)
 	}
 
-	if *autoReply {
+	if peerServer != "" {
+		fmt.Printf("Chatting as %s with %s*%s (federated). Type a message and press enter; Ctrl+C to quit.\n", state.AccountID, *to, peerServer)
+	} else if *autoReply {
 		fmt.Printf("Chatting as %s with %s (auto-reply on). Type a message and press enter; Ctrl+C to quit.\n", state.AccountID, *to)
 	} else {
 		fmt.Printf("Chatting as %s with %s. Type a message and press enter; Ctrl+C to quit.\n", state.AccountID, *to)
 	}
 
 	stop := make(chan struct{})
-	go receiveLoop(state, &mu, save, stop, *to, peerDeviceID, peerDevicePubKey, *autoReply)
+	go receiveLoop(state, &mu, save, stop, *to, peerServer, peerDeviceID, peerDevicePubKey, *autoReply)
 
 	scanner := bufio.NewScanner(os.Stdin)
 	fmt.Print("> ")
@@ -78,7 +88,7 @@ func runChat(args []string) error {
 		}
 
 		mu.Lock()
-		err := sendChatMessage(state, *to, peerDeviceID, peerDevicePubKey, text)
+		err := sendToPeer(state, *to, peerServer, peerDeviceID, peerDevicePubKey, text)
 		mu.Unlock()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "send error:", err)
@@ -91,10 +101,21 @@ func runChat(args []string) error {
 	return scanner.Err()
 }
 
+// sendToPeer sends text to peerAccountID via the ordinary same-server
+// path, or federated delivery if peerServer names a different server
+// than this account's own -- see docs/PROTOCOL.md §9. Callers must hold
+// mu.
+func sendToPeer(state *State, peerAccountID, peerServer, peerDeviceID string, peerDevicePubKey ed25519.PublicKey, text string) error {
+	if peerServer == "" {
+		return sendChatMessage(state, peerAccountID, peerDeviceID, peerDevicePubKey, text)
+	}
+	return sendFederatedChatMessage(state, peerAccountID, peerServer, peerDeviceID, peerDevicePubKey, text)
+}
+
 // sendChatMessage encrypts and sends one chat message to peerAccountID.
 // Callers must hold mu.
 func sendChatMessage(state *State, peerAccountID, peerDeviceID string, peerDevicePubKey ed25519.PublicKey, text string) error {
-	session, initial, err := getOrCreateSession(state, peerAccountID, peerDeviceID, peerDevicePubKey)
+	session, initial, err := getOrCreateSession(state, peerAccountID, "", peerDeviceID, peerDevicePubKey)
 	if err != nil {
 		return err
 	}
@@ -131,15 +152,82 @@ func sendChatMessage(state *State, peerAccountID, peerDeviceID string, peerDevic
 	return nil
 }
 
+// sendFederatedChatMessage encrypts and sends text directly to
+// peerServer's POST /v1/federation/messages -- see docs/PROTOCOL.md §9.
+// Unlike sendChatMessage, the request carries this device's own
+// certificate inline, freshly re-signed (nothing requires re-using the
+// one cached at registration time), since peerServer has no local row to
+// look this device up in. Callers must hold mu.
+func sendFederatedChatMessage(state *State, peerAccountID, peerServer, peerDeviceID string, peerDevicePubKey ed25519.PublicKey, text string) error {
+	session, initial, err := getOrCreateSession(state, peerAccountID, peerServer, peerDeviceID, peerDevicePubKey)
+	if err != nil {
+		return err
+	}
+
+	header, ciphertext, err := session.Encrypt([]byte(text))
+	if err != nil {
+		return fmt.Errorf("encrypting message: %w", err)
+	}
+
+	payload, err := wire.NewEnvelope(initial, header, ciphertext).MarshalPayload()
+	if err != nil {
+		return err
+	}
+
+	msgID, err := randomMessageID()
+	if err != nil {
+		return err
+	}
+
+	issuedAt := time.Now().UTC()
+	cert, err := devicecert.SignDeviceCertificate(state.AccountID, state.DeviceID, ed25519.PublicKey(state.DevicePub), issuedAt, ed25519.PrivateKey(state.RootPriv))
+	if err != nil {
+		return fmt.Errorf("signing device certificate: %w", err)
+	}
+
+	body, err := json.Marshal(federationMessageRequest{
+		SenderAccountID:  state.AccountID,
+		SenderRootPubKey: base64.StdEncoding.EncodeToString(state.RootPub),
+		SenderDeviceCert: federationDeviceCertDTO{
+			DeviceID:     state.DeviceID,
+			DevicePubKey: base64.StdEncoding.EncodeToString(state.DevicePub),
+			IssuedAt:     issuedAt.Format(time.RFC3339),
+			Signature:    base64.StdEncoding.EncodeToString(cert.Signature),
+		},
+		RecipientDeviceID: peerDeviceID,
+		MessageID:         msgID,
+		Payload:           payload,
+	})
+	if err != nil {
+		return fmt.Errorf("building federated send request: %w", err)
+	}
+
+	resp, err := federatedSignedRequest(state, peerServer, http.MethodPost, "/v1/federation/messages", body)
+	if err != nil {
+		return fmt.Errorf("sending federated message: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		data, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("federated send failed: %s: %s", resp.Status, data)
+	}
+	return nil
+}
+
 // getOrCreateSession returns the existing session with peerAccountID, or
 // establishes a new one as X3DH initiator by claiming the peer's prekey
-// bundle. Callers must hold the state's lock.
-func getOrCreateSession(state *State, peerAccountID, peerDeviceID string, peerDevicePubKey ed25519.PublicKey) (*ratchet.Session, *ratchet.InitialMessage, error) {
+// bundle -- from peerServer if given (a federated peer), or this
+// account's own server otherwise. Callers must hold the state's lock.
+func getOrCreateSession(state *State, peerAccountID, peerServer, peerDeviceID string, peerDevicePubKey ed25519.PublicKey) (*ratchet.Session, *ratchet.InitialMessage, error) {
 	if s, ok := state.Sessions[peerAccountID]; ok {
 		return s, nil, nil
 	}
 
-	bundle, err := claimPrekeyBundle(state.Server, peerDeviceID)
+	bundleServer := peerServer
+	if bundleServer == "" {
+		bundleServer = state.Server
+	}
+	bundle, err := claimPrekeyBundle(bundleServer, peerDeviceID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -174,7 +262,7 @@ func receiveLoop(
 	mu *sync.Mutex,
 	save func() error,
 	stop <-chan struct{},
-	peerAccountID, peerDeviceID string,
+	peerAccountID, peerServer, peerDeviceID string,
 	peerDevicePubKey ed25519.PublicKey,
 	autoReply bool,
 ) {
@@ -184,7 +272,7 @@ func receiveLoop(
 			return
 		default:
 		}
-		if err := streamMessages(state, mu, save, stop, peerAccountID, peerDeviceID, peerDevicePubKey, autoReply); err != nil {
+		if err := streamMessages(state, mu, save, stop, peerAccountID, peerServer, peerDeviceID, peerDevicePubKey, autoReply); err != nil {
 			fmt.Fprintln(os.Stderr, "\nstream error, retrying in 3s:", err)
 			select {
 			case <-stop:
@@ -200,7 +288,7 @@ func streamMessages(
 	mu *sync.Mutex,
 	save func() error,
 	stop <-chan struct{},
-	peerAccountID, peerDeviceID string,
+	peerAccountID, peerServer, peerDeviceID string,
 	peerDevicePubKey ed25519.PublicKey,
 	autoReply bool,
 ) error {
@@ -261,7 +349,7 @@ func streamMessages(
 		if autoReply && msg.SenderAccountID == peerAccountID {
 			reply := randomLoremReply(plaintext)
 			mu.Lock()
-			err := sendChatMessage(state, peerAccountID, peerDeviceID, peerDevicePubKey, reply)
+			err := sendToPeer(state, peerAccountID, peerServer, peerDeviceID, peerDevicePubKey, reply)
 			mu.Unlock()
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "\nauto-reply send error:", err)

@@ -2,6 +2,8 @@ package server
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -111,5 +113,66 @@ func TestWithRecoverPassesThroughNormalResponses(t *testing.T) {
 
 	if rec.Code != http.StatusCreated {
 		t.Errorf("status = %d, want 201", rec.Code)
+	}
+}
+
+func TestWithMaxBodyAllowsBodyAtOrUnderLimit(t *testing.T) {
+	var readErr error
+	handler := withMaxBody(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, readErr = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}), 10)
+
+	req := httptest.NewRequest(http.MethodPost, "/foo", strings.NewReader("0123456789")) // exactly 10 bytes
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if readErr != nil {
+		t.Errorf("unexpected read error at the exact limit: %v", readErr)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+}
+
+func TestWithMaxBodyRejectsOversizedBody(t *testing.T) {
+	var readErr error
+	handler := withMaxBody(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, readErr = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}), 10)
+
+	req := httptest.NewRequest(http.MethodPost, "/foo", strings.NewReader("this body is longer than ten bytes"))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if readErr == nil {
+		t.Fatal("expected a read error for a body over the limit, got none")
+	}
+	var maxBytesErr *http.MaxBytesError
+	if !errors.As(readErr, &maxBytesErr) {
+		t.Errorf("error = %v, want *http.MaxBytesError", readErr)
+	}
+}
+
+func TestWithMaxBodyZeroDisablesTheLimit(t *testing.T) {
+	var readErr error
+	var bodyLen int
+	handler := withMaxBody(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		readErr = err
+		bodyLen = len(body)
+		w.WriteHeader(http.StatusOK)
+	}), 0)
+
+	req := httptest.NewRequest(http.MethodPost, "/foo", strings.NewReader("an arbitrarily long body, unbounded when maxBytes <= 0"))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if readErr != nil {
+		t.Errorf("unexpected read error with the limit disabled: %v", readErr)
+	}
+	if bodyLen == 0 {
+		t.Error("expected the full body to be readable with the limit disabled")
 	}
 }

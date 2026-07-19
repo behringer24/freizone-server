@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -24,8 +25,7 @@ func (a *API) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req sendMessageRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "malformed JSON body")
+	if !a.decodeJSONBody(w, r, &req) {
 		return
 	}
 	if req.MessageID == "" || req.RecipientDeviceID == "" || len(req.Payload) == 0 {
@@ -50,6 +50,9 @@ func (a *API) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "recipient_account_id does not match recipient_device_id")
 		return
 	}
+	if !a.checkQueueNotFull(w, req.RecipientDeviceID) {
+		return
+	}
 
 	now := a.Now()
 	msg := store.Message{
@@ -71,9 +74,22 @@ func (a *API) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.broker.publish(req.RecipientDeviceID, msg)
+	a.queueAndNotify(msg, recipientDevice)
 
-	if !a.broker.hasSubscribers(req.RecipientDeviceID) {
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "queued"})
+}
+
+// queueAndNotify publishes msg to any live SSE subscriber for
+// recipientDevice, or -- if none is currently connected -- dispatches a
+// push wake via whichever mechanism (Web Push, or FCM/APNs via a
+// freizone-gateway) recipientDevice has registered. Shared by
+// handleSendMessage and handleReceiveFederatedMessage: once a message is
+// queued, delivery to the recipient is identical regardless of which
+// server the sender came from.
+func (a *API) queueAndNotify(msg store.Message, recipientDevice *store.Device) {
+	a.broker.publish(msg.RecipientDeviceID, msg)
+
+	if !a.broker.hasSubscribers(msg.RecipientDeviceID) {
 		switch {
 		case recipientDevice.Push != nil:
 			go notifyPush(a.PushClient, a.Logger, a.VAPIDPublicKey, a.VAPIDPrivateKey, *recipientDevice.Push)
@@ -81,8 +97,63 @@ func (a *API) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 			go notifyPushViaGateway(a.PushClient, a.Logger, a.Config.PushGatewayURL, a.RelayPubKey, a.RelayPrivKey, *recipientDevice.PushTarget)
 		}
 	}
+}
 
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "queued"})
+// decodeJSONBody decodes r's body into v, writing the response and
+// returning false on failure. A body rejected by withMaxBody's cap
+// (internal/server/middleware.go) surfaces here as a *http.MaxBytesError
+// from the underlying read -- json.Decoder passes it through
+// unwrapped -- so it gets a clear 413 instead of the generic 400
+// "malformed JSON" a real syntax error gets.
+func (a *API) decodeJSONBody(w http.ResponseWriter, r *http.Request, v any) bool {
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large",
+				fmt.Sprintf("request body exceeds the %d byte limit", maxBytesErr.Limit))
+			return false
+		}
+		writeError(w, http.StatusBadRequest, "invalid_request", "malformed JSON body")
+		return false
+	}
+	return true
+}
+
+// readBody reads the whole of r's body, writing the response and
+// returning ok=false on failure -- same *http.MaxBytesError handling as
+// decodeJSONBody, for a caller (handleReceiveFederatedMessage) that
+// needs the raw bytes itself (for httpsig canonicalization) rather than
+// decoding directly.
+func readBody(w http.ResponseWriter, r *http.Request) (body []byte, ok bool) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large",
+				fmt.Sprintf("request body exceeds the %d byte limit", maxBytesErr.Limit))
+			return nil, false
+		}
+		writeError(w, http.StatusBadRequest, "invalid_request", "could not read request body")
+		return nil, false
+	}
+	return body, true
+}
+
+// checkQueueNotFull rejects with 429 if recipientDeviceID already has
+// Config.MaxQueuedMessagesPerDevice messages queued -- see
+// store.CountPendingMessages -- so a sender (same-server or federated)
+// can't grow one device's backlog without bound.
+func (a *API) checkQueueNotFull(w http.ResponseWriter, recipientDeviceID string) bool {
+	count, err := store.CountPendingMessages(a.DB, recipientDeviceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+		return false
+	}
+	if count >= a.Config.MaxQueuedMessagesPerDevice {
+		writeError(w, http.StatusTooManyRequests, "recipient_queue_full", "recipient device's message queue is full")
+		return false
+	}
+	return true
 }
 
 // handleListMessages polls for messages queued for the caller's device.

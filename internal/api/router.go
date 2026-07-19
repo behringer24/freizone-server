@@ -72,10 +72,19 @@ func (a *API) Router() http.Handler {
 	mux.Handle("GET /v1/admin/registration-policy", a.Auth.Require(http.HandlerFunc(a.handleGetRegistrationPolicy)))
 	mux.Handle("PUT /v1/admin/registration-policy", a.Auth.Require(http.HandlerFunc(a.handleSetRegistrationPolicy)))
 
+	mux.Handle("GET /v1/admin/federation-blocklist", a.Auth.Require(http.HandlerFunc(a.handleListFederationBlocklist)))
+	mux.Handle("POST /v1/admin/federation-blocklist", a.Auth.Require(http.HandlerFunc(a.handleBlockFederationSender)))
+	mux.Handle("DELETE /v1/admin/federation-blocklist/{account_id}", a.Auth.Require(http.HandlerFunc(a.handleUnblockFederationSender)))
+
 	mux.Handle("POST /v1/devices/{device_id}/prekeys", a.Auth.Require(http.HandlerFunc(a.handleUploadPrekeys)))
 	mux.HandleFunc("POST /v1/devices/{device_id}/prekey-bundle", a.handleClaimPrekeyBundle)
 
 	mux.Handle("POST /v1/messages", a.Auth.Require(http.HandlerFunc(a.handleSendMessage)))
+	// Public, not wrapped in a.Auth.Require: this handler verifies a
+	// cross-server sender's self-certifying identity chain inline (see
+	// federation.go) instead of the local-device-lookup Middleware
+	// performs -- a foreign sender has no local device row to look up.
+	mux.HandleFunc("POST /v1/federation/messages", a.handleReceiveFederatedMessage)
 	mux.Handle("GET /v1/messages", a.Auth.Require(http.HandlerFunc(a.handleListMessages)))
 	mux.Handle("DELETE /v1/messages/{message_id}", a.Auth.Require(http.HandlerFunc(a.handleDeleteMessage)))
 	mux.Handle("GET /v1/messages/stream", a.Auth.Require(http.HandlerFunc(a.handleMessageStream)))

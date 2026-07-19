@@ -46,6 +46,46 @@ func TestCreateAndListPendingMessages(t *testing.T) {
 	}
 }
 
+func TestCountPendingMessages(t *testing.T) {
+	db := newTestDB(t)
+	mustCreateAccount(t, db, "acct1")
+	if err := CreateDevice(db, testDevice("acct1", "device1")); err != nil {
+		t.Fatalf("CreateDevice() error = %v", err)
+	}
+
+	count, err := CountPendingMessages(db, "device1")
+	if err != nil {
+		t.Fatalf("CountPendingMessages() error = %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("count = %d, want 0 for a device with nothing queued", count)
+	}
+
+	if err := CreateMessage(db, testMessage("msg1", "device1")); err != nil {
+		t.Fatalf("CreateMessage() error = %v", err)
+	}
+	if err := CreateMessage(db, testMessage("msg2", "device1")); err != nil {
+		t.Fatalf("CreateMessage() error = %v", err)
+	}
+
+	count, err = CountPendingMessages(db, "device1")
+	if err != nil {
+		t.Fatalf("CountPendingMessages() error = %v", err)
+	}
+	if count != 2 {
+		t.Errorf("count = %d, want 2", count)
+	}
+
+	// A different device's queue is unaffected.
+	count, err = CountPendingMessages(db, "some-other-device")
+	if err != nil {
+		t.Fatalf("CountPendingMessages() error = %v", err)
+	}
+	if count != 0 {
+		t.Errorf("count = %d, want 0 for an unrelated device", count)
+	}
+}
+
 func TestCreateMessageRejectsDuplicateID(t *testing.T) {
 	db := newTestDB(t)
 	mustCreateAccount(t, db, "acct1")

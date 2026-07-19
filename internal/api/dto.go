@@ -88,6 +88,30 @@ type setAccountRoleRequest struct {
 	Role string `json:"role"`
 }
 
+// blockFederationSenderRequest blocks a remote account id from delivering
+// federated messages here -- see docs/PROTOCOL.md's federation section on
+// why this is per-account, not per-origin-server.
+type blockFederationSenderRequest struct {
+	AccountID string  `json:"account_id"`
+	Reason    *string `json:"reason,omitempty"`
+}
+
+type federationBlockEntryResponse struct {
+	AccountID string  `json:"account_id"`
+	BlockedAt string  `json:"blocked_at"`
+	BlockedBy string  `json:"blocked_by"`
+	Reason    *string `json:"reason,omitempty"`
+}
+
+func federationBlockEntryResponseFrom(e store.FederationBlockEntry) federationBlockEntryResponse {
+	return federationBlockEntryResponse{
+		AccountID: e.AccountID,
+		BlockedAt: e.BlockedAt.UTC().Format(time.RFC3339),
+		BlockedBy: e.BlockedBy,
+		Reason:    e.Reason,
+	}
+}
+
 type statusResponse struct {
 	Status string `json:"status"`
 }
@@ -182,6 +206,31 @@ func messageResponseFrom(m store.Message) messageResponse {
 		SentAt:          m.SentAt.UTC().Format(time.RFC3339),
 		Payload:         json.RawMessage(m.Payload),
 	}
+}
+
+// federationDeviceCertDTO is the sending device's own certificate,
+// carried inline since the recipient server has no local row to look one
+// up from (see handleReceiveFederatedMessage).
+type federationDeviceCertDTO struct {
+	DeviceID     string `json:"device_id"`
+	DevicePubKey string `json:"device_pub_key"`
+	IssuedAt     string `json:"issued_at"`
+	Signature    string `json:"signature"`
+}
+
+// federationMessageRequest is a cross-server message delivery: unlike
+// sendMessageRequest (which relies on the caller already being a known,
+// registered local device), this carries everything needed to verify the
+// sender purely cryptographically -- no prior registration with this
+// server required. See docs/PROTOCOL.md's federation section.
+type federationMessageRequest struct {
+	SenderAccountID    string                  `json:"sender_account_id"`
+	SenderRootPubKey   string                  `json:"sender_root_pub_key"`
+	SenderDeviceCert   federationDeviceCertDTO `json:"sender_device_cert"`
+	RecipientAccountID string                  `json:"recipient_account_id"`
+	RecipientDeviceID  string                  `json:"recipient_device_id"`
+	MessageID          string                  `json:"message_id"`
+	Payload            json.RawMessage         `json:"payload"`
 }
 
 func decodeBase64Key(s string, expectedLen int) ([]byte, error) {
