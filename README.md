@@ -1,8 +1,8 @@
 # Freizone Server
 
-A self-hostable, federated, end-to-end encrypted chat server (Go + SQLite) — modeled on email: you run your own small server under your own domain, and servers deliver messages to each other directly. No central provider, no server ever sees plaintext.
+A self-hostable, federated, end-to-end encrypted chat server (Go + SQLite) — modeled on email: you run your own small server under your own domain. Federation means a message to someone on a different server is still delivered directly — client to that recipient's server, not relayed through yours (see [docs/PROTOCOL.md §9](docs/PROTOCOL.md)) — no central provider, no server ever sees plaintext.
 
-**Status:** identity, per-request signature authentication, account/device management, bootstrap, invites, and full X3DH + Double Ratchet end-to-end encrypted 1:1 messaging are implemented, including federation — a message to an account on a different server is delivered directly, client-to-server, with no registration or trust relationship needed between the two servers (see [docs/PROTOCOL.md §9](docs/PROTOCOL.md)). Server-side push-wake support is implemented (content-free, per-device push endpoint registration, see `PUT /v1/devices/{device_id}/push-endpoint` in [docs/PROTOCOL.md](docs/PROTOCOL.md)) — the Android app side uses this via UnifiedPush. Groups/broadcast and a central relay for iOS/no-distributor push are future work. The full wire protocol is documented in [docs/PROTOCOL.md](docs/PROTOCOL.md). A minimal reference client, [`cmd/devclient`](cmd/devclient), lets you try real encrypted chat locally — see [below](#trying-it-out-a-local-encrypted-chat).
+**Status:** identity, per-request signature authentication, account/device management, bootstrap, invites, and full X3DH + Double Ratchet end-to-end encrypted 1:1 messaging are implemented, including federation (see [docs/PROTOCOL.md §9](docs/PROTOCOL.md)). Server-side push-wake support is implemented for both UnifiedPush (Android, via `PUT /v1/devices/{device_id}/push-endpoint`) and a central FCM/APNs relay for devices without a UnifiedPush distributor (via `PUT /v1/devices/{device_id}/push-target` and a [freizone-gateway](https://github.com/behringer24/freizone-gateway) instance — see [docs/PROTOCOL.md §7](docs/PROTOCOL.md)); only groups/broadcast remain future work. The full wire protocol is documented in [docs/PROTOCOL.md](docs/PROTOCOL.md). A minimal reference client, [`cmd/devclient`](cmd/devclient), lets you try real encrypted chat locally — see [below](#trying-it-out-a-local-encrypted-chat).
 
 This guide assumes no prior experience running a server. If you just want the quick reference, jump to [Configuration reference](#configuration-reference).
 
@@ -153,6 +153,8 @@ Set via `FREIZONE_REGISTRATION_POLICY`, this controls how people other than the 
 - **`invite`**: people can register themselves, but only with a single-use invite code issued by the admin (`POST /v1/admin/invites`). Good middle ground — you control who joins, but don't have to do the technical work yourself for each person.
 - **`open`**: anyone who can reach your server can create an account. Only use this if you deliberately want a public server.
 
+`FREIZONE_REGISTRATION_POLICY` only **seeds** this on first boot (when the database has no policy stored yet). After that, the live policy — settable at runtime by an admin via `GET`/`PUT /v1/admin/registration-policy` (e.g. from the app's admin area) — is what's actually in effect and survives restarts; changing the env var later has no effect until the database is reset.
+
 ## Configuration reference
 
 All configuration is via environment variables (there is no config file):
@@ -174,7 +176,7 @@ All configuration is via environment variables (there is no config file):
 | `FREIZONE_MAX_REQUEST_BODY_BYTES` | `524288` (512 KiB) | Caps every incoming request body. Generous for a real E2E chat message, but bounds the cost of any single request regardless of who's sending it. |
 | `FREIZONE_MAX_QUEUED_MESSAGES_PER_DEVICE` | `1000` | Caps how many undelivered messages may be queued for one recipient device at once (`POST /v1/messages` and `POST /v1/federation/messages` both return `429` once a device is at this limit) — a backstop against an unresponsive or malicious sender flooding a device's queue, far above what any real device should accumulate within the retention window. |
 
-There is also one command-line flag: `--reset-setup-token` (see below).
+There are also two command-line flags: `--reset-setup-token` and `--reset-admin` (an alias for the same operation, named for the "lost the admin device" recovery scenario — see below).
 
 ## Lost your setup token?
 

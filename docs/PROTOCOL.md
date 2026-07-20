@@ -203,8 +203,12 @@ Request:
 ```
 `201` with an account response (see below) on success.
 `401` invalid, already-used, or locked-out token · `400` invalid certificate ·
-`409` an admin already exists, or `id_prefix_taken` (see §1's id-prefix
-uniqueness note) -- retry with a freshly generated identity.
+`409` `id_prefix_taken` (see §1's id-prefix uniqueness note) -- retry with a
+freshly generated identity. There is no "an admin already exists" check —
+claiming with a valid, unused setup token always succeeds regardless of how
+many admins already exist; minting a fresh token (`--reset-setup-token` /
+`--reset-admin`) is the intended way to add an additional or replacement
+admin.
 
 ### `POST /v1/accounts`
 No auth (registration policy-gated: `open` / `invite` / `closed`). Same
@@ -362,6 +366,44 @@ hand out.
 { "code": "...", "expires_at": "optional" }
 ```
 `403` if the caller is neither admin nor moderator.
+
+### Server admin endpoints
+The user list and role changes are available to admins and moderators
+alike (moderators also get invite creation, documented above); blocking,
+deleting, and changing the registration policy are admin-only, so
+privilege escalation and account removal can never come from a moderator.
+Every one of these (except `GET`) that targets an admin account rejects
+the change with `409 last_admin` if it would leave the server with zero
+active admins.
+
+- **`GET /v1/admin/accounts`** (signed, admin or moderator) — the full
+  account list.
+  `200`:
+  ```json
+  [{ "id": "...", "role": "user|moderator|admin", "status": "active|disabled", "created_at": "..." }]
+  ```
+- **`POST /v1/admin/accounts/{id}/role`** (signed, admin only) — `{"role": "user|moderator|admin"}`.
+  `200 {"status":"ok"}` · `400` invalid role · `404` unknown account ·
+  `409 last_admin` demoting the server's only remaining admin.
+- **`POST /v1/admin/accounts/{id}/block`** / **`.../unblock`** (signed,
+  admin only) — no body. Blocking sets the account `disabled`, which
+  `internal/auth`'s middleware then rejects on every subsequent request
+  from that account, from any of its devices.
+  `200 {"status":"ok"}` · `404` unknown account · `409 last_admin`
+  blocking the server's only remaining admin.
+- **`DELETE /v1/admin/accounts/{id}`** (signed, admin only) — permanently
+  removes the account, cascading through its devices to their
+  prekeys/queued messages and any invite codes it issued.
+  `200 {"status":"ok"}` · `404` unknown account · `409 last_admin`
+  deleting the server's only remaining admin.
+- **`GET /v1/admin/registration-policy`** (signed, admin or moderator) /
+  **`PUT /v1/admin/registration-policy`** (signed, admin only) —
+  `{"policy": "open|invite|closed"}` in both directions. This is the
+  *runtime* policy (see [README.md](../README.md)'s config reference):
+  `FREIZONE_REGISTRATION_POLICY` only seeds it on first boot, this
+  endpoint is what actually governs it afterwards, and the change
+  persists across restarts.
+  `200 {"policy": "..."}` · `400` invalid policy value.
 
 ### `POST /v1/devices/{device_id}/prekeys` (signed, caller must be that device)
 Uploads/replaces a device's X3DH key material. `dh_identity_cert` is
