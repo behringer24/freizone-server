@@ -5,3 +5,6 @@
 *.db-wal
 *.db-shm
 .env
+
+# Personal Claude Code workflow notes -- not part of the public project.
+CLAUDE.md
