@@ -13,8 +13,13 @@
 *.db-journal
 *.db-wal
 *.db-shm
-server.exe
+*.exe
 start.bat
+.env
+*.pem
+*.p8
+*.key
+*.crt
 
 /bin
 /dist
