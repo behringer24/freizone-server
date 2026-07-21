@@ -111,27 +111,34 @@ func getAccount(server, accountID string) (*accountResponse, error) {
 	return &acc, nil
 }
 
-// resolvePeerDevice fetches accountID's directory entry and returns the
-// first active device whose certificate independently verifies against the
-// account's root key -- no trust in the server is required, only in this
-// signature chain (see docs/PROTOCOL.md).
-func resolvePeerDevice(server, accountID string) (deviceID string, devicePubKey ed25519.PublicKey, err error) {
-	acc, err := getAccount(server, accountID)
+// resolvePeerDevice fetches accountIDOrPrefix's directory entry and returns
+// its own fully-resolved account id (the server's account lookup accepts a
+// short prefix -- e.g. "qsvfg" for "qsvfgwuwvtdsr7hej0yag" -- but every
+// certificate involving this account, both the DeviceCertificate verified
+// right here and every X3DH cert bundleToRemoteBundle verifies afterward,
+// is signed over the FULL id; verifying (or later re-deriving signing
+// bytes for outgoing messages) with the unresolved prefix instead silently
+// fails signature checks even though the certificate itself is perfectly
+// valid) and the first active device whose certificate independently
+// verifies against the account's root key -- no trust in the server is
+// required, only in this signature chain (see docs/PROTOCOL.md).
+func resolvePeerDevice(server, accountIDOrPrefix string) (accountID, deviceID string, devicePubKey ed25519.PublicKey, err error) {
+	acc, err := getAccount(server, accountIDOrPrefix)
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
 
 	rootPub, err := base64.StdEncoding.DecodeString(acc.RootPubKey)
 	if err != nil {
-		return "", nil, fmt.Errorf("decoding root pubkey: %w", err)
+		return "", "", nil, fmt.Errorf("decoding root pubkey: %w", err)
 	}
 
 	ok, err := address.Verify(acc.ID, ed25519.PublicKey(rootPub))
 	if err != nil {
-		return "", nil, fmt.Errorf("verifying account id: %w", err)
+		return "", "", nil, fmt.Errorf("verifying account id: %w", err)
 	}
 	if !ok {
-		return "", nil, fmt.Errorf("account id %s does not match its root pubkey", acc.ID)
+		return "", "", nil, fmt.Errorf("account id %s does not match its root pubkey", acc.ID)
 	}
 
 	for _, d := range acc.Devices {
@@ -161,8 +168,8 @@ func resolvePeerDevice(server, accountID string) (deviceID string, devicePubKey 
 		if err := cert.Verify(ed25519.PublicKey(rootPub)); err != nil {
 			continue
 		}
-		return d.DeviceID, ed25519.PublicKey(devicePub), nil
+		return acc.ID, d.DeviceID, ed25519.PublicKey(devicePub), nil
 	}
 
-	return "", nil, fmt.Errorf("no verifiable active device found for account %s", accountID)
+	return "", "", nil, fmt.Errorf("no verifiable active device found for account %s", accountIDOrPrefix)
 }

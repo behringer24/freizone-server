@@ -55,7 +55,16 @@ func runChat(args []string) error {
 	if peerServer != "" {
 		resolveServer = peerServer
 	}
-	peerDeviceID, peerDevicePubKey, err := resolvePeerDevice(resolveServer, *to)
+	// peerAccountID is the server's fully-resolved id, NOT necessarily
+	// *to verbatim -- the account lookup accepts a short prefix (e.g.
+	// "qsvfg" for "qsvfgwuwvtdsr7hej0yag"), but every certificate this
+	// account is party to (the DeviceCertificate resolvePeerDevice itself
+	// verifies, and every X3DH cert bundleToRemoteBundle verifies when a
+	// session actually gets established below) is signed over the FULL
+	// id. Using the unresolved prefix for those would silently fail
+	// signature verification even for a perfectly valid certificate --
+	// see resolvePeerDevice's doc comment.
+	peerAccountID, peerDeviceID, peerDevicePubKey, err := resolvePeerDevice(resolveServer, *to)
 	if err != nil {
 		return fmt.Errorf("resolving peer: %w", err)
 	}
@@ -68,15 +77,15 @@ func runChat(args []string) error {
 	}
 
 	if peerServer != "" {
-		fmt.Printf("Chatting as %s with %s*%s (federated). Type a message and press enter; Ctrl+C to quit.\n", state.AccountID, *to, peerServer)
+		fmt.Printf("Chatting as %s with %s*%s (federated). Type a message and press enter; Ctrl+C to quit.\n", state.AccountID, peerAccountID, peerServer)
 	} else if *autoReply {
-		fmt.Printf("Chatting as %s with %s (auto-reply on). Type a message and press enter; Ctrl+C to quit.\n", state.AccountID, *to)
+		fmt.Printf("Chatting as %s with %s (auto-reply on). Type a message and press enter; Ctrl+C to quit.\n", state.AccountID, peerAccountID)
 	} else {
-		fmt.Printf("Chatting as %s with %s. Type a message and press enter; Ctrl+C to quit.\n", state.AccountID, *to)
+		fmt.Printf("Chatting as %s with %s. Type a message and press enter; Ctrl+C to quit.\n", state.AccountID, peerAccountID)
 	}
 
 	stop := make(chan struct{})
-	go receiveLoop(state, &mu, save, stop, *to, peerServer, peerDeviceID, peerDevicePubKey, *autoReply)
+	go receiveLoop(state, &mu, save, stop, peerAccountID, peerServer, peerDeviceID, peerDevicePubKey, *autoReply)
 
 	scanner := bufio.NewScanner(os.Stdin)
 	fmt.Print("> ")
@@ -88,7 +97,7 @@ func runChat(args []string) error {
 		}
 
 		mu.Lock()
-		err := sendToPeer(state, *to, peerServer, peerDeviceID, peerDevicePubKey, text)
+		err := sendToPeer(state, peerAccountID, peerServer, peerDeviceID, peerDevicePubKey, text)
 		mu.Unlock()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "send error:", err)
