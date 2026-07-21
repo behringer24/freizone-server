@@ -55,6 +55,7 @@ func (a *API) Router() http.Handler {
 	mux.HandleFunc("POST /v1/bootstrap/claim", a.handleBootstrapClaim)
 	mux.HandleFunc("POST /v1/accounts", a.handleRegisterAccount)
 	mux.HandleFunc("GET /v1/accounts/{id}", a.handleGetAccount)
+	mux.Handle("DELETE /v1/accounts/{id}", a.Auth.Require(http.HandlerFunc(a.handleDeleteOwnAccount)))
 	mux.HandleFunc("GET /v1/vapid-public-key", a.handleGetVAPIDPublicKey)
 	mux.HandleFunc("GET /v1/server-status", a.handleGetServerStatus)
 

@@ -274,6 +274,33 @@ against `root_pubkey`, never the shorthand it looked up with. `404` if
 `{id}` is unknown or fails address normalization (full form) / charset
 validation (prefix form).
 
+### `DELETE /v1/accounts/{id}` (signed, caller must be that account)
+Permanently deletes the caller's own account, cascading (via FK) through
+its devices to their prekeys and queued messages, and through invite
+codes it issued (deleted) or used (`used_by_account_id` cleared) — the
+same cascade as the admin delete (§4's server admin endpoints), just
+self-service rather than requiring admin privileges. `{id}` is checked
+against the signing device's own account as defense in depth, but the
+actual target is always the identity the request's signature already
+established, never `{id}` taken at face value — a request signed by
+account A can never delete account B, no matter what `{id}` names.
+Irreversible: a deleted account can never be recreated with the same id
+on this or any other server, since a new registration under the same
+root key would collide with (or rather, no longer exist to collide with,
+but the private key itself isn't gone anywhere) nothing — there's simply
+no path back to the same identity.
+
+A chat partner who writes to a deleted account afterward gets an
+immediate `404 not_found` (their client has no device to deliver to,
+since the cascade already removed it) — not a silently growing queue.
+Messages already sent to others *before* deletion, if not yet fetched,
+are unaffected: they remain deliverable, same as already-sent mail isn't
+recalled by deleting the sender's mailbox.
+
+`200 {"status":"ok"}` · `403` `{id}` does not match the signing device's
+own account · `404` unknown account · `409 last_admin` deleting the
+server's only remaining admin (same guard as the admin delete).
+
 ### `GET /v1/vapid-public-key`
 No auth — this server's VAPID public key (RFC 8292), not secret. Clients
 pass this to their UnifiedPush distributor at registration time (some
