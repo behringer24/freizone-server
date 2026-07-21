@@ -90,12 +90,23 @@ func (a *API) queueAndNotify(msg store.Message, recipientDevice *store.Device) {
 	a.broker.publish(msg.RecipientDeviceID, msg)
 
 	if !a.broker.hasSubscribers(msg.RecipientDeviceID) {
-		switch {
-		case recipientDevice.Push != nil:
-			go notifyPush(a.PushClient, a.Logger, a.VAPIDPublicKey, a.VAPIDPrivateKey, *recipientDevice.Push)
-		case recipientDevice.PushTarget != nil && a.Config.PushGatewayURL != "":
-			go notifyPushViaGateway(a.PushClient, a.Logger, a.Config.PushGatewayURL, a.RelayPubKey, a.RelayPrivKey, *recipientDevice.PushTarget)
-		}
+		a.wakeDevice(recipientDevice)
+	}
+}
+
+// wakeDevice dispatches a content-free push wake via whichever mechanism
+// (Web Push, or FCM/APNs via a freizone-gateway) device has registered --
+// a no-op if it has registered neither. Shared by queueAndNotify (a new
+// message arrived) and handleClaimPrekeyBundle (the device's one-time-
+// prekey pool just ran low) -- both are just "go sync" nudges,
+// indistinguishable on the wire (see docs/PROTOCOL.md's push-wake
+// section), so one wake mechanism serves every reason to wake a device.
+func (a *API) wakeDevice(device *store.Device) {
+	switch {
+	case device.Push != nil:
+		go notifyPush(a.PushClient, a.Logger, a.VAPIDPublicKey, a.VAPIDPrivateKey, *device.Push)
+	case device.PushTarget != nil && a.Config.PushGatewayURL != "":
+		go notifyPushViaGateway(a.PushClient, a.Logger, a.Config.PushGatewayURL, a.RelayPubKey, a.RelayPrivKey, *device.PushTarget)
 	}
 }
 

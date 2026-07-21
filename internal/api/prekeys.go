@@ -163,6 +163,38 @@ func (a *API) handleUploadPrekeys(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// handleGetPrekeyStatus reports how many unclaimed one-time prekeys a
+// device has left, so it can decide whether to top up -- a non-destructive
+// counterpart to handleClaimPrekeyBundle, which consumes one.
+func (a *API) handleGetPrekeyStatus(w http.ResponseWriter, r *http.Request) {
+	identity, ok := auth.IdentityFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+		return
+	}
+
+	deviceID := r.PathValue("device_id")
+	if identity.DeviceID != deviceID {
+		writeError(w, http.StatusForbidden, "forbidden", "can only check your own device's prekey status")
+		return
+	}
+
+	remaining, err := store.CountOneTimePrekeys(a.DB, deviceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, prekeyStatusResponse{OneTimePrekeysRemaining: remaining})
+}
+
+// lowOneTimePrekeyThreshold is the remaining-pool size below which
+// handleClaimPrekeyBundle proactively wakes the device (see there) --
+// chosen well below the client's default upload batch of 10
+// (app_session.dart's _oneTimePrekeyBatch) so a wake fires with enough
+// runway left to actually replenish before the pool hits zero.
+const lowOneTimePrekeyThreshold = 3
+
 // handleClaimPrekeyBundle atomically hands out a device's current X3DH
 // bundle -- including one one-time prekey, if the pool isn't empty -- for
 // an initiator to start a session. Public, like the account directory: no
@@ -199,6 +231,19 @@ func (a *API) handleClaimPrekeyBundle(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
 		return
+	}
+
+	// A device with a live SSE connection re-checks its own pool on every
+	// reconnect anyway (see AppSession's SSE onConnected hook), so only a
+	// device with no open connection right now needs an active nudge --
+	// otherwise it might not open the app again for a long time. Only
+	// wake if a key was actually claimed just now: an already-empty pool
+	// has nothing new to warn about, so this can't fire on every repeat
+	// call once drained.
+	if claimed != nil && !a.broker.hasSubscribers(deviceID) {
+		if remaining, err := store.CountOneTimePrekeys(a.DB, deviceID); err == nil && remaining < lowOneTimePrekeyThreshold {
+			a.wakeDevice(device)
+		}
 	}
 
 	resp := prekeyBundleResponse{

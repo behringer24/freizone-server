@@ -1,10 +1,12 @@
 package api
 
 import (
+	"context"
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -181,5 +183,137 @@ func TestHandleClaimPrekeyBundleNotFoundBeforeUpload(t *testing.T) {
 	rec := doRequest(t, a.Router(), http.MethodPost, "/v1/devices/"+k.deviceID+"/prekey-bundle", nil)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleGetPrekeyStatus(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+	k := registerAccount(t, a)
+	uploadPrekeysT(t, a.Router(), k, 5)
+
+	rec := doSignedRequest(t, a.Router(), http.MethodGet, "/v1/devices/"+k.deviceID+"/prekey-status", nil, k.deviceID, k.devicePriv)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp prekeyStatusResponse
+	decodeJSON(t, rec, &resp)
+	if resp.OneTimePrekeysRemaining != 5 {
+		t.Errorf("one_time_prekeys_remaining = %d, want 5", resp.OneTimePrekeysRemaining)
+	}
+
+	// Claiming one (as an initiator would) should be reflected on the
+	// next status check.
+	doRequest(t, a.Router(), http.MethodPost, "/v1/devices/"+k.deviceID+"/prekey-bundle", nil)
+
+	rec2 := doSignedRequest(t, a.Router(), http.MethodGet, "/v1/devices/"+k.deviceID+"/prekey-status", nil, k.deviceID, k.devicePriv)
+	decodeJSON(t, rec2, &resp)
+	if resp.OneTimePrekeysRemaining != 4 {
+		t.Errorf("one_time_prekeys_remaining = %d, want 4 after one claim", resp.OneTimePrekeysRemaining)
+	}
+}
+
+func TestHandleGetPrekeyStatusRejectsOtherDevice(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+	k1 := registerAccount(t, a)
+	k2 := registerAccount(t, a)
+
+	rec := doSignedRequest(t, a.Router(), http.MethodGet, "/v1/devices/"+k2.deviceID+"/prekey-status", nil, k1.deviceID, k1.devicePriv)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleGetPrekeyStatusRequiresAuthentication(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+	k := registerAccount(t, a)
+
+	rec := doRequest(t, a.Router(), http.MethodGet, "/v1/devices/"+k.deviceID+"/prekey-status", nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleClaimPrekeyBundleWakesDeviceWhenPoolRunsLow(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+	k := registerAccount(t, a)
+
+	hitCh := make(chan struct{}, 8)
+	fakeDistributor := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitCh <- struct{}{}
+	}))
+	defer fakeDistributor.Close()
+	a.PushClient = fakeDistributor.Client()
+
+	p256dh, authSecret := generateTestPushSubscriptionKeys(t)
+	setEndpointBody, _ := json.Marshal(setPushEndpointRequest{Endpoint: &fakeDistributor.URL, P256dh: &p256dh, Auth: &authSecret})
+	setRec := doSignedRequest(t, a.Router(), http.MethodPut, "/v1/devices/"+k.deviceID+"/push-endpoint", setEndpointBody, k.deviceID, k.devicePriv)
+	if setRec.Code != http.StatusOK {
+		t.Fatalf("set push endpoint status = %d, want 200, body = %s", setRec.Code, setRec.Body.String())
+	}
+
+	// lowOneTimePrekeyThreshold is 3; upload exactly enough keys that the
+	// pool is still above threshold after two claims, and crosses below
+	// it on the third -- claims 1 and 2 must NOT wake the device, claim 3
+	// must.
+	uploadPrekeysT(t, a.Router(), k, lowOneTimePrekeyThreshold+2)
+
+	for i := 0; i < 2; i++ {
+		doRequest(t, a.Router(), http.MethodPost, "/v1/devices/"+k.deviceID+"/prekey-bundle", nil)
+	}
+	select {
+	case <-hitCh:
+		t.Fatal("push wake fired before the pool crossed the low threshold")
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	doRequest(t, a.Router(), http.MethodPost, "/v1/devices/"+k.deviceID+"/prekey-bundle", nil)
+	select {
+	case <-hitCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for low-pool push wake")
+	}
+}
+
+func TestHandleClaimPrekeyBundleSkipsWakeWhenSubscribed(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+	k := registerAccount(t, a)
+
+	hitCh := make(chan struct{}, 8)
+	fakeDistributor := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitCh <- struct{}{}
+	}))
+	defer fakeDistributor.Close()
+	a.PushClient = fakeDistributor.Client()
+
+	p256dh, authSecret := generateTestPushSubscriptionKeys(t)
+	setEndpointBody, _ := json.Marshal(setPushEndpointRequest{Endpoint: &fakeDistributor.URL, P256dh: &p256dh, Auth: &authSecret})
+	setRec := doSignedRequest(t, a.Router(), http.MethodPut, "/v1/devices/"+k.deviceID+"/push-endpoint", setEndpointBody, k.deviceID, k.devicePriv)
+	if setRec.Code != http.StatusOK {
+		t.Fatalf("set push endpoint status = %d, want 200, body = %s", setRec.Code, setRec.Body.String())
+	}
+	uploadPrekeysT(t, a.Router(), k, 1)
+
+	ts := httptest.NewServer(a.Router())
+	defer ts.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	streamReq := newSignedHTTPRequest(t, http.MethodGet, ts.URL+"/v1/messages/stream", nil, k.deviceID, k.devicePriv)
+	streamReq = streamReq.WithContext(ctx)
+	resp, err := ts.Client().Do(streamReq)
+	if err != nil {
+		t.Fatalf("opening stream: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Claiming the device's only prekey drives the pool to 0 (below
+	// threshold), but it has a live SSE stream open -- no wake should
+	// fire, since it'll re-check its own pool on its next reconnect.
+	doRequest(t, a.Router(), http.MethodPost, "/v1/devices/"+k.deviceID+"/prekey-bundle", nil)
+	select {
+	case <-hitCh:
+		t.Fatal("push wake fired despite a live SSE subscriber")
+	case <-time.After(300 * time.Millisecond):
 	}
 }
