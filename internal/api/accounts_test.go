@@ -202,6 +202,63 @@ func TestHandleGetAccountNotFound(t *testing.T) {
 	}
 }
 
+func TestHandleDeleteOwnAccount(t *testing.T) {
+	a, db := newTestAPI(t, config.PolicyOpen)
+	k := registerAccount(t, a)
+
+	rec := doSignedRequest(t, a.Router(), http.MethodDelete, "/v1/accounts/"+k.accountID, nil, k.deviceID, k.devicePriv)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+
+	if _, err := store.GetAccount(db, k.accountID); err == nil {
+		t.Error("expected account to be gone after self-delete")
+	}
+}
+
+// TestHandleDeleteOwnAccountRejectsOtherAccount confirms the target is
+// never taken from the path in isolation: a validly-signed request from
+// k1's own device, naming k2's account in the path, must be rejected --
+// deleting a different account is impossible, not just policy-forbidden.
+func TestHandleDeleteOwnAccountRejectsOtherAccount(t *testing.T) {
+	a, db := newTestAPI(t, config.PolicyOpen)
+	k1 := registerAccount(t, a)
+	k2 := registerAccount(t, a)
+
+	rec := doSignedRequest(t, a.Router(), http.MethodDelete, "/v1/accounts/"+k2.accountID, nil, k1.deviceID, k1.devicePriv)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403, body = %s", rec.Code, rec.Body.String())
+	}
+
+	if _, err := store.GetAccount(db, k2.accountID); err != nil {
+		t.Errorf("GetAccount(k2) error = %v, want k2 to still exist", err)
+	}
+}
+
+func TestHandleDeleteOwnAccountLastAdminGuard(t *testing.T) {
+	a, db := newTestAPI(t, config.PolicyOpen)
+	admin := newAccountWithRole(t, db, store.RoleAdmin)
+
+	rec := doSignedRequest(t, a.Router(), http.MethodDelete, "/v1/accounts/"+admin.accountID, nil, admin.deviceID, admin.devicePriv)
+	if rec.Code != http.StatusConflict {
+		t.Errorf("status = %d, want 409, body = %s", rec.Code, rec.Body.String())
+	}
+
+	if _, err := store.GetAccount(db, admin.accountID); err != nil {
+		t.Errorf("GetAccount() error = %v, want the sole admin to still exist", err)
+	}
+}
+
+func TestHandleDeleteOwnAccountRequiresAuthentication(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+	k := registerAccount(t, a)
+
+	rec := doRequest(t, a.Router(), http.MethodDelete, "/v1/accounts/"+k.accountID, nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHandleGetVAPIDPublicKey(t *testing.T) {
 	a, _ := newTestAPI(t, config.PolicyOpen)
 

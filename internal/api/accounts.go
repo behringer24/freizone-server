@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/behringer24/freizone-server/internal/auth"
 	"github.com/behringer24/freizone-server/internal/config"
 	"github.com/behringer24/freizone-server/internal/store"
 	"github.com/behringer24/freizone-server/pkg/address"
@@ -193,4 +194,55 @@ func (a *API) handleGetAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, accountResponseFrom(acc, devices))
+}
+
+// handleDeleteOwnAccount permanently deletes the caller's own account --
+// the self-service counterpart to handleDeleteAccount (admin.go), which
+// targets a *different* account and requires admin privileges. The
+// target here is never taken from the path/body verbatim: it's always
+// identity.AccountID, already cryptographically established by
+// internal/auth.Middleware from the request's signature -- the path id
+// is checked against it (mirroring handleAddDevice/handleRevokeDevice's
+// "signing device does not belong to this account" pattern) purely as
+// defense in depth, not as the actual authorization source. This makes
+// deleting a different account structurally impossible, not just
+// policy-forbidden.
+func (a *API) handleDeleteOwnAccount(w http.ResponseWriter, r *http.Request) {
+	identity, ok := auth.IdentityFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+		return
+	}
+
+	id := r.PathValue("id")
+	if id != identity.AccountID {
+		writeError(w, http.StatusForbidden, "forbidden", "signing device does not belong to this account")
+		return
+	}
+
+	target, err := store.GetAccount(a.DB, identity.AccountID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "unknown account")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+		return
+	}
+
+	blocked, err := a.wouldRemoveLastActiveAdmin(target)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+		return
+	}
+	if blocked {
+		writeError(w, http.StatusConflict, "last_admin", "cannot delete the server's only remaining admin")
+		return
+	}
+
+	if err := store.DeleteAccount(a.DB, identity.AccountID); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+		return
+	}
+	writeJSON(w, http.StatusOK, statusResponse{Status: "ok"})
 }
