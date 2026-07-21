@@ -479,7 +479,18 @@ remain) and returns it — each one-time prekey is handed out at most once.
 `one_time_prekey` is omitted (`null`) once the pool is empty — X3DH
 proceeds without it (§5), with reduced forward secrecy for that first
 message only. `404` if the device is unknown, inactive, or has never
-uploaded prekeys.
+uploaded prekeys. If this claim leaves the pool below a low-water mark and
+the device has no live SSE stream open, the server fires a push wake (see
+"Push notifications" below) so a rarely-opened device gets a chance to
+replenish before the pool actually runs dry.
+
+### `GET /v1/devices/{device_id}/prekey-status` (signed, caller must be that device)
+Non-destructive counterpart to the claim endpoint above — reports the pool
+size without consuming a key, so a device can decide whether to top up.
+```json
+{ "one_time_prekeys_remaining": 7 }
+```
+`200` · `403` wrong device · `401` unauthenticated.
 
 ## 5. X3DH + Double Ratchet
 
@@ -601,7 +612,10 @@ auth failure, rather than this `413`).
 If the recipient device has no live SSE stream (`GET /v1/messages/stream`)
 open, the server fires one best-effort wake, via whichever of the two
 mechanisms the device has registered (a device has at most one at a
-time):
+time). The same wake is also fired when `POST /v1/devices/{device_id}/prekey-bundle`
+(§4) leaves a device's one-time-prekey pool below the low-water mark — the
+wake carries no indication of which reason triggered it (see below), so
+this reuses the identical mechanism rather than needing a second one:
 
 - **Push subscription** (`PUT /v1/devices/{device_id}/push-endpoint`):
   a Web Push notification, RFC 8291-encrypted via this server's one
@@ -627,10 +641,12 @@ message" wake as opposed to any other reason (the Web Push path's
 encrypted plaintext is itself empty; the push-target path's body is only
 ever `{"platform", "token"}`, nothing message-related). The recipient is
 expected to react to any wake by syncing over this same authenticated
-API, exactly as if it had just reconnected. Delivery of the wake itself
-is not guaranteed (no retry, short timeout) — the durable queue and the
-client's own reconnect/poll remain the actual delivery guarantee, same as
-before push existed.
+API, exactly as if it had just reconnected — fetching queued messages
+*and* checking `GET /v1/devices/{device_id}/prekey-status` (§4), since a
+wake can't tell the client which of the two actually needs attention.
+Delivery of the wake itself is not guaranteed (no retry, short timeout) —
+the durable queue and the client's own reconnect/poll remain the actual
+delivery guarantee, same as before push existed.
 
 ### `GET /v1/messages` (signed)
 Polls for messages queued for the caller's device. `200`, an array of:

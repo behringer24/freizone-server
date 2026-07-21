@@ -78,6 +78,7 @@ func (a *API) Router() http.Handler {
 	mux.Handle("DELETE /v1/admin/federation-blocklist/{account_id}", a.Auth.Require(http.HandlerFunc(a.handleUnblockFederationSender)))
 
 	mux.Handle("POST /v1/devices/{device_id}/prekeys", a.Auth.Require(http.HandlerFunc(a.handleUploadPrekeys)))
+	mux.Handle("GET /v1/devices/{device_id}/prekey-status", a.Auth.Require(http.HandlerFunc(a.handleGetPrekeyStatus)))
 	mux.HandleFunc("POST /v1/devices/{device_id}/prekey-bundle", a.handleClaimPrekeyBundle)
 
 	mux.Handle("POST /v1/messages", a.Auth.Require(http.HandlerFunc(a.handleSendMessage)))

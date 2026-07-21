@@ -94,6 +94,20 @@ type ClaimedOneTimePrekey struct {
 	PubKey []byte
 }
 
+// CountOneTimePrekeys returns how many unclaimed one-time prekeys remain in
+// the device's pool, so a client (or the server, to decide whether to wake
+// a dormant device) can tell when it's running low.
+func CountOneTimePrekeys(db DBTX, deviceID string) (int, error) {
+	var count int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM one_time_prekeys WHERE device_id = ?`,
+		deviceID,
+	).Scan(&count); err != nil {
+		return 0, fmt.Errorf("store: counting one-time prekeys: %w", err)
+	}
+	return count, nil
+}
+
 // ClaimOneTimePrekey atomically removes and returns one one-time prekey
 // from the device's pool, or (nil, nil) if the pool is empty -- an empty
 // pool is a normal, expected condition (X3DH can proceed without one), not

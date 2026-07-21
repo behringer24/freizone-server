@@ -183,6 +183,13 @@ type prekeyBundleResponse struct {
 	OneTimePrekey    *oneTimePrekeyDTO `json:"one_time_prekey,omitempty"`
 }
 
+// prekeyStatusResponse is the GET /v1/devices/{id}/prekey-status payload --
+// lets a device check its own one-time-prekey pool without consuming one
+// (unlike POST .../prekey-bundle, which claims and removes a key).
+type prekeyStatusResponse struct {
+	OneTimePrekeysRemaining int `json:"one_time_prekeys_remaining"`
+}
+
 type sendMessageRequest struct {
 	MessageID          string          `json:"message_id"`
 	RecipientAccountID string          `json:"recipient_account_id"`

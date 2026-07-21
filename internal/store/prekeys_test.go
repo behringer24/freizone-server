@@ -146,6 +146,37 @@ func TestAddAndClaimOneTimePrekeys(t *testing.T) {
 	}
 }
 
+func TestCountOneTimePrekeys(t *testing.T) {
+	db := newTestDB(t)
+	mustCreateAccount(t, db, "acct1")
+	if err := CreateDevice(db, testDevice("acct1", "device1")); err != nil {
+		t.Fatalf("CreateDevice() error = %v", err)
+	}
+
+	if count, err := CountOneTimePrekeys(db, "device1"); err != nil || count != 0 {
+		t.Fatalf("CountOneTimePrekeys() = (%d, %v), want (0, nil) before any upload", count, err)
+	}
+
+	keys := []OneTimePrekeyInput{
+		{KeyID: 1, PubKey: []byte("otpk1")},
+		{KeyID: 2, PubKey: []byte("otpk2")},
+		{KeyID: 3, PubKey: []byte("otpk3")},
+	}
+	if err := AddOneTimePrekeys(db, "device1", keys, time.Now()); err != nil {
+		t.Fatalf("AddOneTimePrekeys() error = %v", err)
+	}
+	if count, err := CountOneTimePrekeys(db, "device1"); err != nil || count != 3 {
+		t.Fatalf("CountOneTimePrekeys() = (%d, %v), want (3, nil) after upload", count, err)
+	}
+
+	if _, err := ClaimOneTimePrekey(db, "device1"); err != nil {
+		t.Fatalf("ClaimOneTimePrekey() error = %v", err)
+	}
+	if count, err := CountOneTimePrekeys(db, "device1"); err != nil || count != 2 {
+		t.Fatalf("CountOneTimePrekeys() = (%d, %v), want (2, nil) after one claim", count, err)
+	}
+}
+
 func TestClaimOneTimePrekeyNeverHandsOutTheSameKeyTwice(t *testing.T) {
 	db := newTestDB(t)
 	mustCreateAccount(t, db, "acct1")
