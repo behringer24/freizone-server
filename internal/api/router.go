@@ -50,6 +50,11 @@ func New(db *sql.DB, cfg *config.Config, authMW *auth.Middleware, logger *slog.L
 func (a *API) Router() http.Handler {
 	mux := http.NewServeMux()
 
+	// Exactly "/" (the {$} anchor), never a catch-all: unknown paths still
+	// fall through to the mux's default 404, so this never shadows the /v1/
+	// API or its JSON error contract. See handleLanding for the rest.
+	mux.HandleFunc("GET /{$}", a.handleLanding)
+
 	mux.HandleFunc("GET /healthz", a.handleHealth)
 
 	mux.HandleFunc("POST /v1/bootstrap/claim", a.handleBootstrapClaim)
