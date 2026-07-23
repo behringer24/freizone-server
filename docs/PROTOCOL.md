@@ -236,12 +236,17 @@ even with an invite code (the invite-code check in `POST /v1/accounts` is
 never reached while the policy is `closed`).
 `200`:
 ```json
-{ "claimed": true, "registration_policy": "open" }
+{ "claimed": true, "registration_policy": "open", "federation_enabled": true }
 ```
 `claimed` is whether the one-time setup token has already been used
 (i.e. an admin exists) — not sensitive, same trust level as the
 registration policy itself, which has to be knowable before someone can
-register at all.
+register at all. `federation_enabled` reflects whether this server accepts
+inbound federation (§9); it is public because clients rely on it to decide
+whether their own users may reach other servers at all — with it off, a
+peer's replies would be blocked inbound, so an honest client won't start or
+send into such a cross-server conversation (older servers omit the field;
+clients treat its absence as `true`).
 
 ### `GET /v1/accounts/{id}`
 No auth — a public key directory, analogous to a keyserver. `200`:
@@ -431,6 +436,14 @@ active admins.
   endpoint is what actually governs it afterwards, and the change
   persists across restarts.
   `200 {"policy": "..."}` · `400` invalid policy value.
+- **`GET /v1/admin/federation`** (signed, admin or moderator) /
+  **`PUT /v1/admin/federation`** (signed, admin only) —
+  `{"enabled": true|false}` in both directions. Turns inbound federation
+  (§9) on/off at *runtime*, mirroring the registration-policy endpoint:
+  `FREIZONE_FEDERATION_ENABLED` only seeds it on first boot, this endpoint
+  governs it afterwards, and the change persists across restarts and is
+  reflected in `GET /v1/server-status`'s `federation_enabled`.
+  `200 {"enabled": ...}`.
 
 ### `POST /v1/devices/{device_id}/prekeys` (signed, caller must be that device)
 Uploads/replaces a device's X3DH key material. `dh_identity_cert` is
@@ -839,9 +852,14 @@ best-effort version remains a natural future addition (reusing the
 already-public `GET /v1/accounts/{id}`, no new endpoint needed) but isn't
 built in this version.
 
-**`FREIZONE_FEDERATION_ENABLED`** (default `true`): set to `false` to
-turn off `POST /v1/federation/messages` entirely (`404`), for an operator
-who wants no inbound federation at all.
+**`FREIZONE_FEDERATION_ENABLED`** (default `true`): seeds the inbound-
+federation switch on first boot. Turned off, `POST /v1/federation/messages`
+returns `404` for an operator who wants no inbound federation at all. Like
+the registration policy, this is only the *seed*: the authoritative value
+lives in the DB and is changed at runtime via `PUT /v1/admin/federation`
+(§4), surfaced publicly on `GET /v1/server-status` so honest clients also
+stop *sending* outbound federation when their home server has it off (a
+peer's reply would otherwise be blocked here, stranding the conversation).
 
 **Explicitly out of scope**: groups (a future group send is simply N
 parallel invocations of this same per-recipient delivery, fanned out

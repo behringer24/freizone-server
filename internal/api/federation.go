@@ -32,7 +32,14 @@ import (
 // because it performs its own, different authentication rather than
 // internal/auth.Middleware's local-device-lookup.
 func (a *API) handleReceiveFederatedMessage(w http.ResponseWriter, r *http.Request) {
-	if !a.Config.FederationEnabled {
+	// DB-authoritative (admin-settable at runtime via PUT /v1/admin/federation);
+	// a.Config.FederationEnabled is only the first-boot seed (see store.InitFederationEnabled).
+	enabled, err := store.GetFederationEnabled(a.DB)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+		return
+	}
+	if !enabled {
 		writeError(w, http.StatusNotFound, "not_found", "federation is disabled on this server")
 		return
 	}
