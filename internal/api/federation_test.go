@@ -53,7 +53,7 @@ func doKeyIDSignedRequest(t *testing.T, handler http.Handler, path string, body 
 	req.Header.Set("Content-Type", "application/json")
 
 	ts := time.Now()
-	nonce := "nonce-" + keyID + "-" + path + "-" + ts.String()
+	nonce := uniqueTestNonce(keyID, path, ts)
 	sig := httpsig.Sign(http.MethodPost, req.URL.Path, req.URL.RawQuery, body, keyID, ts, nonce, priv)
 
 	req.Header.Set(httpsig.HeaderKeyID, keyID)
