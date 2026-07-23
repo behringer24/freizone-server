@@ -5,6 +5,13 @@ import (
 	"time"
 )
 
+// NOTE: as of the in-memory replay-cache change, the server no longer uses
+// these functions or the used_nonces table on the request path -- signature
+// replay protection now lives in internal/auth's nonceCache. They are kept
+// (along with the table and its migration) to avoid a destructive schema
+// change; existing rows are harmless and expire logically. Still covered by
+// nonces_test.go as a valid store capability.
+
 // RecordNonce attempts to record a (device_id, nonce) pair as used. It
 // returns ok=true if this is the first time the pair has been seen, and
 // ok=false if it was already recorded (i.e. a replay).
