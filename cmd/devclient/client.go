@@ -8,10 +8,56 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/behringer24/freizone-server/pkg/httpsig"
 )
+
+// verbose is set from each subcommand's -verbose flag. When true, every
+// HTTP request to the server is logged (see loggingRoundTripper) -- not just
+// chat messages, but account lookups, prekey-bundle claims, acks, the stream
+// connect, etc.
+var verbose bool
+
+// httpClient is the single client every request goes through, so the
+// loggingRoundTripper below sees them all. No timeout is set on purpose: the
+// SSE stream (GET /v1/messages/stream) is a long-lived response.
+var httpClient = &http.Client{Transport: loggingRoundTripper{base: http.DefaultTransport}}
+
+// loggingRoundTripper prints a one-line summary of every request when
+// verbose is on. It measures time-to-response-headers (for the streaming
+// endpoint that is the connect time, which is what we want) and never reads
+// the response body, so streaming is unaffected.
+type loggingRoundTripper struct {
+	base http.RoundTripper
+}
+
+func (l loggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if !verbose {
+		return l.base.RoundTrip(req)
+	}
+	start := time.Now()
+	resp, err := l.base.RoundTrip(req)
+	dur := time.Since(start).Round(time.Millisecond)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[http] %-6s %s → error after %s: %v\n", req.Method, req.URL.Path, dur, err)
+		return resp, err
+	}
+	fmt.Fprintf(os.Stderr, "[http] %-6s %s → %d (%s, req %s resp %s)\n",
+		req.Method, req.URL.Path, resp.StatusCode, dur,
+		byteLen(req.ContentLength), byteLen(resp.ContentLength))
+	return resp, err
+}
+
+// byteLen renders a Content-Length for the verbose log, showing "?" for the
+// unknown (-1) length a chunked/streamed response reports.
+func byteLen(n int64) string {
+	if n < 0 {
+		return "?"
+	}
+	return fmt.Sprintf("%dB", n)
+}
 
 // randomNonce generates a client-random nonce for a signed request.
 func randomNonce() (string, error) {
@@ -39,7 +85,7 @@ func jsonRequest(server, method, path string, body []byte) (*http.Response, erro
 		return nil, fmt.Errorf("building request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	return http.DefaultClient.Do(req)
+	return httpClient.Do(req)
 }
 
 // signedRequest performs a request signed with state's device key, per
@@ -63,7 +109,7 @@ func signedRequest(state *State, method, path string, body []byte) (*http.Respon
 	req.Header.Set(httpsig.HeaderNonce, nonce)
 	req.Header.Set(httpsig.HeaderSignature, sig)
 
-	return http.DefaultClient.Do(req)
+	return httpClient.Do(req)
 }
 
 // federatedSignedRequest sends a request to a DIFFERENT server than
@@ -92,7 +138,7 @@ func federatedSignedRequest(state *State, targetServer, method, path string, bod
 	req.Header.Set(httpsig.HeaderNonce, nonce)
 	req.Header.Set(httpsig.HeaderSignature, sig)
 
-	return http.DefaultClient.Do(req)
+	return httpClient.Do(req)
 }
 
 // newSignedStreamRequest builds (but does not send) a signed GET request,
