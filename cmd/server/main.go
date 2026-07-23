@@ -77,6 +77,12 @@ func run() error {
 		return fmt.Errorf("initializing registration policy: %w", err)
 	}
 
+	// Seeds the runtime federation flag from the env var on first boot; the DB
+	// value is authoritative thereafter (admin-settable via /v1/admin/federation).
+	if err := store.InitFederationEnabled(db, cfg.FederationEnabled); err != nil {
+		return fmt.Errorf("initializing federation setting: %w", err)
+	}
+
 	if err := store.InitVAPIDKeys(db); err != nil {
 		return fmt.Errorf("initializing vapid keys: %w", err)
 	}

@@ -244,3 +244,38 @@ func (a *API) handleSetRegistrationPolicy(w http.ResponseWriter, r *http.Request
 	}
 	writeJSON(w, http.StatusOK, registrationPolicyResponse{Policy: req.Policy})
 }
+
+// handleGetFederationEnabled returns whether this server accepts inbound
+// federated messages. Available to admins and moderators (read-only for the
+// latter) -- same authorization as the registration policy.
+func (a *API) handleGetFederationEnabled(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireAdminOrModerator(w, r); !ok {
+		return
+	}
+	enabled, err := store.GetFederationEnabled(a.DB)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+		return
+	}
+	writeJSON(w, http.StatusOK, federationEnabledResponse{Enabled: enabled})
+}
+
+// handleSetFederationEnabled turns inbound federation on or off at runtime
+// (persisted -- survives a restart). Admin only, mirroring the registration
+// policy's protection.
+func (a *API) handleSetFederationEnabled(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireAdmin(w, r); !ok {
+		return
+	}
+
+	var req setFederationEnabledRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "malformed JSON body")
+		return
+	}
+	if err := store.SetFederationEnabled(a.DB, req.Enabled); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+		return
+	}
+	writeJSON(w, http.StatusOK, federationEnabledResponse{Enabled: req.Enabled})
+}

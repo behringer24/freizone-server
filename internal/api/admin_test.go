@@ -300,6 +300,42 @@ func TestHandleRegistrationPolicyGetAndPut(t *testing.T) {
 	}
 }
 
+func TestHandleFederationEnabledGetAndPut(t *testing.T) {
+	a, db := newTestAPI(t, config.PolicyOpen)
+	admin := newAccountWithRole(t, db, store.RoleAdmin)
+	moderator := newAccountWithRole(t, db, store.RoleModerator)
+
+	// Default (unseeded) reads as enabled.
+	rec := doSignedRequest(t, a.Router(), http.MethodGet, "/v1/admin/federation", nil, admin.deviceID, admin.devicePriv)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp federationEnabledResponse
+	decodeJSON(t, rec, &resp)
+	if !resp.Enabled {
+		t.Errorf("enabled = %v, want true by default", resp.Enabled)
+	}
+
+	// Moderator can read but not write (same protection as registration policy).
+	rec = doSignedRequest(t, a.Router(), http.MethodPut, "/v1/admin/federation", []byte(`{"enabled":false}`), moderator.deviceID, moderator.devicePriv)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("moderator put status = %d, want 403, body = %s", rec.Code, rec.Body.String())
+	}
+
+	// Admin can turn it off; the change persists.
+	rec = doSignedRequest(t, a.Router(), http.MethodPut, "/v1/admin/federation", []byte(`{"enabled":false}`), admin.deviceID, admin.devicePriv)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin put status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+	enabled, err := store.GetFederationEnabled(db)
+	if err != nil {
+		t.Fatalf("GetFederationEnabled() error = %v", err)
+	}
+	if enabled {
+		t.Errorf("persisted enabled = %v, want false", enabled)
+	}
+}
+
 func TestHandleCreateInviteAsModerator(t *testing.T) {
 	a, db := newTestAPI(t, config.PolicyInvite)
 	moderator := newAccountWithRole(t, db, store.RoleModerator)

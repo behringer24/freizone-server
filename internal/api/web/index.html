@@ -139,6 +139,7 @@
     <dl>
       <dt>Address</dt><dd id="host">&hellip;</dd>
       <dt>Registration</dt><dd id="registration">&hellip;</dd>
+      <dt>Federation</dt><dd id="federation">&hellip;</dd>
     </dl>
   </div>
 
@@ -168,6 +169,7 @@
   fetch('/v1/server-status', { headers: { accept: 'application/json' } })
     .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
     .then(function (s) {
+      document.getElementById('federation').textContent = s.federation_enabled ? 'On' : 'Off';
       var el = document.getElementById('registration');
       if (!s.claimed) {
         el.textContent = 'Not set up yet';
@@ -177,6 +179,7 @@
     })
     .catch(function () {
       document.getElementById('registration').textContent = 'unavailable';
+      document.getElementById('federation').textContent = 'unavailable';
     });
 </script>
 </body>

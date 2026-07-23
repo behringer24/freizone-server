@@ -49,6 +49,57 @@ func SetRegistrationPolicy(db DBTX, policy string) error {
 	return nil
 }
 
+// InitFederationEnabled seeds the federation_enabled setting from
+// defaultEnabled (the FREIZONE_FEDERATION_ENABLED env var) the first time
+// it's called, if server_settings doesn't have a value yet -- requires
+// InitRegistrationPolicy to have already created the server_settings row.
+// After the first boot the env var is only a seed; the DB value is
+// authoritative and mutable at runtime via SetFederationEnabled, mirroring
+// the registration-policy model.
+func InitFederationEnabled(db DBTX, defaultEnabled bool) error {
+	var existing sql.NullInt64
+	if err := db.QueryRow(`SELECT federation_enabled FROM server_settings WHERE id = 1`).Scan(&existing); err != nil {
+		return fmt.Errorf("store: checking for existing federation setting: %w", err)
+	}
+	if existing.Valid {
+		return nil
+	}
+	if _, err := db.Exec(`UPDATE server_settings SET federation_enabled = ? WHERE id = 1`, boolToInt(defaultEnabled)); err != nil {
+		return fmt.Errorf("store: seeding federation setting: %w", err)
+	}
+	return nil
+}
+
+// GetFederationEnabled returns whether this server accepts inbound
+// federated messages. An unseeded (NULL) value defaults to true, matching
+// the env default and federation-open-by-design stance.
+func GetFederationEnabled(db DBTX) (bool, error) {
+	var v sql.NullInt64
+	if err := db.QueryRow(`SELECT federation_enabled FROM server_settings WHERE id = 1`).Scan(&v); err != nil {
+		return false, fmt.Errorf("store: reading federation setting: %w", err)
+	}
+	if !v.Valid {
+		return true, nil
+	}
+	return v.Int64 != 0, nil
+}
+
+// SetFederationEnabled updates whether this server accepts inbound
+// federated messages.
+func SetFederationEnabled(db DBTX, enabled bool) error {
+	if _, err := db.Exec(`UPDATE server_settings SET federation_enabled = ? WHERE id = 1`, boolToInt(enabled)); err != nil {
+		return fmt.Errorf("store: setting federation setting: %w", err)
+	}
+	return nil
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 // InitVAPIDKeys generates and persists a server-wide VAPID keypair (RFC
 // 8292) the first time it's called, if server_settings doesn't have one
 // yet -- requires InitRegistrationPolicy to have already created the

@@ -313,9 +313,13 @@ func TestHandleReceiveFederatedMessageRejectsOversizedBody(t *testing.T) {
 	}
 }
 
-func TestHandleReceiveFederatedMessageDisabledByConfig(t *testing.T) {
-	a, _ := newTestAPI(t, config.PolicyOpen)
-	a.Config.FederationEnabled = false
+func TestHandleReceiveFederatedMessageDisabledBySetting(t *testing.T) {
+	a, db := newTestAPI(t, config.PolicyOpen)
+	// The gate is now DB-authoritative (admin-settable at runtime), not the
+	// static config flag.
+	if err := store.SetFederationEnabled(db, false); err != nil {
+		t.Fatalf("SetFederationEnabled() error = %v", err)
+	}
 	bob := registerAccount(t, a)
 	alice := newIdentityKeys(t)
 
