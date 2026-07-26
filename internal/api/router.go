@@ -59,6 +59,11 @@ func (a *API) Router() http.Handler {
 
 	mux.HandleFunc("POST /v1/bootstrap/claim", a.handleBootstrapClaim)
 	mux.HandleFunc("POST /v1/accounts", a.handleRegisterAccount)
+	// Public, not wrapped in a.Auth.Require: like federation/messages, this
+	// handler authenticates itself inline -- with the account's root-key
+	// signature -- because recovery happens precisely when no active device
+	// (which Middleware would look up) exists. See handleRecoverAccount.
+	mux.HandleFunc("POST /v1/accounts/{id}/recover", a.handleRecoverAccount)
 	mux.HandleFunc("GET /v1/accounts/{id}", a.handleGetAccount)
 	mux.Handle("DELETE /v1/accounts/{id}", a.Auth.Require(http.HandlerFunc(a.handleDeleteOwnAccount)))
 	mux.HandleFunc("GET /v1/vapid-public-key", a.handleGetVAPIDPublicKey)

@@ -163,6 +163,25 @@ mode returns the same generic 401** — unknown device, bad signature,
 expired timestamp, replayed nonce, or revoked device are not distinguished
 in the response, to avoid giving an attacker an oracle.
 
+### Self-describing-key variant (public, inline-authenticated endpoints)
+
+A few endpoints authenticate a caller that has **no local device row** to look
+up: a cross-server federation sender (§9), or an account being recovered from
+its seed phrase when no device survives (`POST /v1/accounts/{id}/recover`, §4).
+These reuse the *exact same* canonical string and headers, with two
+differences:
+
+- `Signature-Key-Id` is the **base64-encoded public key that signed the
+  request**, not a device id. The endpoint verifies the signature against that
+  very key and then, separately, establishes that the key is authorized (a
+  device cert chained to the sender's root key for federation; equality with
+  the account's stored `root_pubkey` for recovery — i.e. the request is signed
+  by the account's **root** key, its ultimate authority, which already signs
+  every device cert and revocation, see §2).
+- The nonce is recorded in the persistent `used_nonces` store rather than the
+  device-auth in-memory cache, but the 5-minute skew window and generic-401
+  rule are identical.
+
 ## 4. REST endpoints
 
 All paths are under `/v1/`. All bodies/responses are JSON. Byte fields
@@ -227,6 +246,39 @@ certificate-bearing shape as bootstrap, plus an optional `invite_code`:
 `404` unknown invite code · `410` invite code expired or already used ·
 `409` account or device id collision, or `id_prefix_taken` (see §1's
 id-prefix uniqueness note) -- retry with a freshly generated identity.
+
+### `POST /v1/accounts/{id}/recover` (public — root-key signed)
+Recover an **existing** account after total device loss (SRV-06; client
+companion APP-01). Neither of the normal paths works here: `POST /v1/devices`
+needs an already-active device to sign the request, and `POST /v1/accounts`
+rejects an existing account (`409 account_exists`). Since
+`account_id == hash(root_pubkey)`, restoring the root key from the seed phrase
+restores the same account, and this endpoint lets that restored key mint a new
+device without any surviving device.
+
+Authenticated inline by a **root-key** per-request signature (§3's
+self-describing-key variant): `Signature-Key-Id` is `base64(root_pubkey)` and
+must equal the target account's stored `root_pubkey`; the signature is verified
+against it. The body carries a new device certificate signed by that same root
+key (identical fields to `POST /v1/accounts`, minus `root_pubkey`/`invite_code`
+— the account is named by the path `{id}`):
+```json
+{
+  "device_id": "16hexchars",
+  "device_pubkey": "base64...",
+  "device_cert_issued_at": "2026-07-26T12:00:00Z",
+  "device_cert_signature": "base64..."
+}
+```
+On success the new device is created `active` and **every other device on the
+account is revoked in the same step** (total loss is the premise; old devices
+are assumed gone or compromised). `201` account response (with the new device
+active and the rest `revoked`) · `400` malformed body or invalid device
+certificate · `401` root signature invalid / stale / replayed (generic, per
+§3) · `403` account not active · `404` unknown account · `409` device id
+collision (a repeat recovery must use a fresh device id). Chat history is not
+restored — the server keeps none; peers re-establish ratchet sessions against
+the new device (see §5 / SRV-03).
 
 ### `GET /v1/server-status`
 No auth — lets a client decide which setup path applies before it has any
