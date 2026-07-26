@@ -5,12 +5,15 @@ import (
 	"time"
 )
 
-// NOTE: as of the in-memory replay-cache change, the server no longer uses
-// these functions or the used_nonces table on the request path -- signature
-// replay protection now lives in internal/auth's nonceCache. They are kept
-// (along with the table and its migration) to avoid a destructive schema
-// change; existing rows are harmless and expire logically. Still covered by
-// nonces_test.go as a valid store capability.
+// NOTE: device-signed requests get their replay protection from internal/auth's
+// in-memory nonceCache, not this table. But the PUBLIC, self-authenticating
+// endpoints that run outside that middleware -- root-key-signed account recovery
+// (internal/api/recover.go) and cross-server federation
+// (internal/api/federation.go) -- DO use RecordNonce here on the request path,
+// because their nonces must survive a restart (an attacker who captured such a
+// request could otherwise replay it after a bounce). PurgeExpiredNonces must
+// therefore be run periodically (see cmd/server's runNonceCleanup) or the table
+// grows without bound.
 
 // RecordNonce attempts to record a (device_id, nonce) pair as used. It
 // returns ok=true if this is the first time the pair has been seen, and

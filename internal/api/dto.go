@@ -35,6 +35,18 @@ type addDeviceRequest struct {
 	Signature    string `json:"signature"`
 }
 
+// recoverAccountRequest is the body of POST /v1/accounts/{id}/recover: a new
+// device certificate (signed by the account's root key) to attach to an
+// existing account after total device loss. The account is identified by the
+// path id; the request as a whole is authenticated by a root-key signature
+// (see handleRecoverAccount). Mirrors registerAccountRequest's device fields.
+type recoverAccountRequest struct {
+	DeviceID            string `json:"device_id"`
+	DevicePubKey        string `json:"device_pubkey"`
+	DeviceCertIssuedAt  string `json:"device_cert_issued_at"`
+	DeviceCertSignature string `json:"device_cert_signature"`
+}
+
 type revokeDeviceRequest struct {
 	AccountID string `json:"account_id"`
 	DeviceID  string `json:"device_id"`

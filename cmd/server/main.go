@@ -196,9 +196,13 @@ func formatSetupTokenForDisplay(token string) string {
 }
 
 // runNonceCleanup starts a background goroutine that periodically purges
-// expired signature-replay nonces from the middleware's in-memory cache,
-// until ctx is cancelled. The returned channel is closed once the goroutine
-// has exited.
+// expired signature-replay nonces, until ctx is cancelled. It purges both the
+// middleware's in-memory cache (device-signed requests) AND the persistent
+// used_nonces table (the public root-key-signed recovery and federation
+// endpoints record their nonces there, since those handlers run outside the
+// middleware -- see internal/api/recover.go and federation.go). Without the
+// DB purge that table would grow without bound. The returned channel is closed
+// once the goroutine has exited.
 func runNonceCleanup(ctx context.Context, authMW *auth.Middleware, logger *slog.Logger) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
@@ -210,8 +214,14 @@ func runNonceCleanup(ctx context.Context, authMW *auth.Middleware, logger *slog.
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if n := authMW.PurgeExpiredNonces(time.Now()); n > 0 {
+				now := time.Now()
+				if n := authMW.PurgeExpiredNonces(now); n > 0 {
 					logger.Info("purged expired nonces", "count", n)
+				}
+				if n, err := store.PurgeExpiredNonces(authMW.DB, now); err != nil {
+					logger.Warn("purging persistent nonces failed", "error", err)
+				} else if n > 0 {
+					logger.Info("purged expired persistent nonces", "count", n)
 				}
 			}
 		}
