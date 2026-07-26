@@ -24,5 +24,10 @@ func (a *API) handleGetServerStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
 		return
 	}
-	writeJSON(w, http.StatusOK, serverStatusResponse{Claimed: claimed, RegistrationPolicy: policy})
+	federationEnabled, err := store.GetFederationEnabled(a.DB)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+		return
+	}
+	writeJSON(w, http.StatusOK, serverStatusResponse{Claimed: claimed, RegistrationPolicy: policy, FederationEnabled: federationEnabled})
 }

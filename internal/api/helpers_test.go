@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,6 +17,18 @@ import (
 	"github.com/behringer24/freizone-server/pkg/devicecert"
 	"github.com/behringer24/freizone-server/pkg/httpsig"
 )
+
+// testNonceSeq makes every helper-generated signature nonce unique regardless
+// of clock resolution. The helpers used to derive the nonce from
+// time.Now().String(); two signed requests issued within the same clock tick
+// then collided and the second was rejected as a replay -- a flaky failure the
+// faster DB path (synchronous=NORMAL + single write connection) made frequent.
+// Real clients use random nonces, so this fragility was purely in the tests.
+var testNonceSeq atomic.Uint64
+
+func uniqueTestNonce(deviceID, path string, ts time.Time) string {
+	return "nonce-" + deviceID + "-" + path + "-" + ts.String() + "-" + strconv.FormatUint(testNonceSeq.Add(1), 10)
+}
 
 func b64(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
 
@@ -95,7 +109,7 @@ func doSignedRequest(t *testing.T, handler http.Handler, method, path string, bo
 	req.Header.Set("Content-Type", "application/json")
 
 	ts := time.Now()
-	nonce := "nonce-" + signerDeviceID + "-" + path + "-" + ts.String()
+	nonce := uniqueTestNonce(signerDeviceID, path, ts)
 	sig := httpsig.Sign(method, req.URL.Path, req.URL.RawQuery, body, signerDeviceID, ts, nonce, signerPriv)
 
 	req.Header.Set(httpsig.HeaderKeyID, signerDeviceID)
@@ -128,7 +142,7 @@ func newSignedHTTPRequest(t *testing.T, method, targetURL string, body []byte, s
 	req.Header.Set("Content-Type", "application/json")
 
 	ts := time.Now()
-	nonce := "nonce-" + signerDeviceID + "-" + parsed.Path + "-" + ts.String()
+	nonce := uniqueTestNonce(signerDeviceID, parsed.Path, ts)
 	sig := httpsig.Sign(method, parsed.Path, parsed.RawQuery, body, signerDeviceID, ts, nonce, priv)
 
 	req.Header.Set(httpsig.HeaderKeyID, signerDeviceID)

@@ -28,6 +28,8 @@ func main() {
 		err = runUploadPrekeys(args)
 	case "chat":
 		err = runChat(args)
+	case "loadtest":
+		err = runLoadtest(args)
 	case "-h", "-help", "--help", "help":
 		printUsage()
 		return
@@ -50,7 +52,9 @@ Usage:
   devclient bootstrap -server URL -datadir DIR -token TOKEN
   devclient register  -server URL -datadir DIR [-invite CODE]
   devclient upload-prekeys -datadir DIR [-count N]
-  devclient chat -datadir DIR -to ACCOUNT_ID [-auto-reply]
+  devclient chat -datadir DIR -to ACCOUNT_ID [-auto-reply] [-receipts both|delivered|off] [-verbose]
+  devclient loadtest -datadir DIR -to ACCOUNT_ID [-count N] [-concurrency N] [-drain-datadir DIR]
 
+Every subcommand accepts -verbose to log all server requests.
 Run a subcommand with -h for its flags.`)
 }

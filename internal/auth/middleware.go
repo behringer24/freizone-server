@@ -24,12 +24,24 @@ type Middleware struct {
 	Logger *slog.Logger
 	// Now returns the current time; overridable in tests.
 	Now func() time.Time
+	// nonces is the in-memory signature-replay guard. It replaces a
+	// per-request write to the used_nonces table (the hottest write path):
+	// nonces are purely ephemeral (5-min TTL) and need not survive a restart.
+	nonces *nonceCache
 }
 
 // NewMiddleware builds a Middleware backed by db, logging authentication
-// failures (at Warn level, with detail) to logger.
+// failures (at Warn level, with detail) to logger. The nonce replay cache is
+// created internally, so callers (and tests) need not manage it.
 func NewMiddleware(db store.DBTX, logger *slog.Logger) *Middleware {
-	return &Middleware{DB: db, Logger: logger, Now: time.Now}
+	return &Middleware{DB: db, Logger: logger, Now: time.Now, nonces: newNonceCache()}
+}
+
+// PurgeExpiredNonces drops replay-cache entries whose skew window has passed,
+// returning the number removed. Intended to be called periodically from the
+// server's cleanup ticker to keep the cache bounded during idle periods.
+func (m *Middleware) PurgeExpiredNonces(now time.Time) int {
+	return m.nonces.purgeExpired(now)
 }
 
 // Require wraps next so it only runs for requests with a valid signature,
@@ -90,11 +102,7 @@ func (m *Middleware) authenticate(r *http.Request) (Identity, error) {
 	// expires_at = ts + MaxClockSkew: once real time has moved this far past
 	// ts, a replay of this exact timestamp would already be rejected by the
 	// skew check above, making the nonce record safe to purge.
-	ok, err := store.RecordNonce(m.DB, headers.KeyID, headers.Nonce, ts, ts.Add(MaxClockSkew))
-	if err != nil {
-		return Identity{}, fmt.Errorf("auth: recording nonce: %w", err)
-	}
-	if !ok {
+	if ok := m.nonces.record(headers.KeyID, headers.Nonce, now, ts.Add(MaxClockSkew)); !ok {
 		return Identity{}, errors.New("auth: replayed nonce")
 	}
 

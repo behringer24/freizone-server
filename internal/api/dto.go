@@ -129,6 +129,15 @@ type setRegistrationPolicyRequest struct {
 type serverStatusResponse struct {
 	Claimed            bool   `json:"claimed"`
 	RegistrationPolicy string `json:"registration_policy"`
+	FederationEnabled  bool   `json:"federation_enabled"`
+}
+
+type federationEnabledResponse struct {
+	Enabled bool `json:"enabled"`
+}
+
+type setFederationEnabledRequest struct {
+	Enabled bool `json:"enabled"`
 }
 
 type accountResponse struct {

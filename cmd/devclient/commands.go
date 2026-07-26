@@ -10,9 +10,11 @@ func runBootstrap(args []string) error {
 	server := fs.String("server", "http://127.0.0.1:8080", "server base URL")
 	dataDir := fs.String("datadir", "./devclient-data", "local state directory")
 	token := fs.String("token", "", "one-time setup token printed by the server on first boot")
+	verboseFlag := fs.Bool("verbose", false, "log every request to the server")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	verbose = *verboseFlag
 	if *token == "" {
 		return fmt.Errorf("bootstrap: -token is required")
 	}
@@ -39,9 +41,11 @@ func runRegister(args []string) error {
 	server := fs.String("server", "http://127.0.0.1:8080", "server base URL")
 	dataDir := fs.String("datadir", "./devclient-data", "local state directory")
 	invite := fs.String("invite", "", "invite code (required if the server's registration policy is 'invite')")
+	verboseFlag := fs.Bool("verbose", false, "log every request to the server")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	verbose = *verboseFlag
 
 	state, err := newIdentity(*server)
 	if err != nil {
@@ -69,9 +73,11 @@ func runUploadPrekeys(args []string) error {
 	fs := flag.NewFlagSet("upload-prekeys", flag.ExitOnError)
 	dataDir := fs.String("datadir", "./devclient-data", "local state directory")
 	count := fs.Int("count", defaultOneTimePrekeyBatch, "number of one-time prekeys to generate and upload")
+	verboseFlag := fs.Bool("verbose", false, "log every request to the server")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	verbose = *verboseFlag
 
 	path := statePath(*dataDir)
 	state, err := LoadState(path)

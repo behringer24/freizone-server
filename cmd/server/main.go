@@ -77,6 +77,12 @@ func run() error {
 		return fmt.Errorf("initializing registration policy: %w", err)
 	}
 
+	// Seeds the runtime federation flag from the env var on first boot; the DB
+	// value is authoritative thereafter (admin-settable via /v1/admin/federation).
+	if err := store.InitFederationEnabled(db, cfg.FederationEnabled); err != nil {
+		return fmt.Errorf("initializing federation setting: %w", err)
+	}
+
 	if err := store.InitVAPIDKeys(db); err != nil {
 		return fmt.Errorf("initializing vapid keys: %w", err)
 	}
@@ -129,7 +135,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	nonceCleanupDone := runNonceCleanup(ctx, db, logger)
+	nonceCleanupDone := runNonceCleanup(ctx, authMW, logger)
 	messageCleanupDone := runMessageCleanup(ctx, db, logger)
 
 	serveErr := make(chan error, 1)
@@ -190,9 +196,10 @@ func formatSetupTokenForDisplay(token string) string {
 }
 
 // runNonceCleanup starts a background goroutine that periodically purges
-// expired signature-replay nonces, until ctx is cancelled. The returned
-// channel is closed once the goroutine has exited.
-func runNonceCleanup(ctx context.Context, db *sql.DB, logger *slog.Logger) <-chan struct{} {
+// expired signature-replay nonces from the middleware's in-memory cache,
+// until ctx is cancelled. The returned channel is closed once the goroutine
+// has exited.
+func runNonceCleanup(ctx context.Context, authMW *auth.Middleware, logger *slog.Logger) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -203,12 +210,7 @@ func runNonceCleanup(ctx context.Context, db *sql.DB, logger *slog.Logger) <-cha
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				n, err := store.PurgeExpiredNonces(db, time.Now())
-				if err != nil {
-					logger.Warn("nonce cleanup failed", "error", err)
-					continue
-				}
-				if n > 0 {
+				if n := authMW.PurgeExpiredNonces(time.Now()); n > 0 {
 					logger.Info("purged expired nonces", "count", n)
 				}
 			}
