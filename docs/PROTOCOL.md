@@ -561,6 +561,20 @@ unauthenticated, so anyone can exhaust a device's one-time-prekey pool —
 degrades forward secrecy for that session's first message, not
 confidentiality. Revisit before any real deployment.
 
+**Session recovery / re-key (client behavior):** a `prekey` block is normally
+only meaningful when the recipient has no existing session with that sender
+(first contact). A client MAY also accept one when a session **already**
+exists — e.g. the sender manually reset their local session after a ratchet
+desync — but only as a proposal: it must attempt a fresh responder
+establishment from it and adopt the resulting session **only if it actually
+decrypts** the accompanying message, falling back to the existing session
+otherwise (a stale/redelivered `prekey` block must not be able to disrupt a
+still-healthy session). This is safe because responder establishment always
+re-verifies the sender's full self-certifying cert chain (§2, §5) — accepting
+a re-key is not a new trust decision, just a repeat of the same one. See
+freizone-app's `AppSession.resetSecureSession` / `processIncomingMessage` for
+a reference implementation.
+
 ## 6. Message envelope & queue
 
 A message's `payload` (§7) is an opaque JSON blob the server never parses —
