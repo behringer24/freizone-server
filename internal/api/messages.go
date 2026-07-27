@@ -104,9 +104,20 @@ func (a *API) queueAndNotify(msg store.Message, recipientDevice *store.Device) {
 func (a *API) wakeDevice(device *store.Device) {
 	switch {
 	case device.Push != nil:
-		go notifyPush(a.PushClient, a.Logger, a.VAPIDPublicKey, a.VAPIDPrivateKey, *device.Push)
+		go a.notifyPush(device.DeviceID, *device.Push)
 	case device.PushTarget != nil && a.Config.PushGatewayURL != "":
-		go notifyPushViaGateway(a.PushClient, a.Logger, a.Config.PushGatewayURL, a.RelayPubKey, a.RelayPrivKey, *device.PushTarget)
+		go a.notifyPushViaGateway(device.DeviceID, *device.PushTarget)
+	case device.PushTarget != nil:
+		// The device asked to be woken through a gateway, but this server
+		// has none configured (FREIZONE_PUSH_GATEWAY_URL), so the wake is
+		// dropped. Warn rather than stay silent: from the outside this is
+		// indistinguishable from push being broken -- the device simply
+		// never hears about new messages until it reconnects -- and the
+		// cause is a deployment gap only the operator can close.
+		if a.Logger != nil {
+			a.Logger.Warn("push: device has a push target but no push gateway is configured; wake dropped",
+				"device_id", device.DeviceID, "platform", device.PushTarget.Platform)
+		}
 	}
 }
 

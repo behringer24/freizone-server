@@ -3,13 +3,11 @@ package api
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"time"
 
@@ -36,13 +34,14 @@ const pushNotifyTimeout = 10 * time.Second
 //
 // Failures are logged, never surfaced -- the durable queue and a future
 // poll/SSE reconnect are the actual delivery guarantee; this is only a
-// convenience wake-up. logger may be nil (as in tests), same convention
-// as elsewhere in this package.
+// convenience wake-up. a.Logger may be nil (as in tests), same convention
+// as elsewhere in this package. The one failure that is acted on is a
+// permanently gone subscription (see dropDeadSubscription).
 //
 // Deliberately uses context.Background(), not the triggering request's
 // context: this runs in its own goroutine after the HTTP handler has
 // already responded, so the request's context would already be canceled.
-func notifyPush(client webpush.HTTPClient, logger *slog.Logger, vapidPublicKey, vapidPrivateKey string, sub store.PushSubscription) {
+func (a *API) notifyPush(deviceID string, sub store.PushSubscription) {
 	ctx, cancel := context.WithTimeout(context.Background(), pushNotifyTimeout)
 	defer cancel()
 
@@ -50,21 +49,48 @@ func notifyPush(client webpush.HTTPClient, logger *slog.Logger, vapidPublicKey, 
 		Endpoint: sub.Endpoint,
 		Keys:     webpush.Keys{P256dh: sub.P256dh, Auth: sub.Auth},
 	}, &webpush.Options{
-		HTTPClient:      client,
+		HTTPClient:      a.PushClient,
 		Subscriber:      "mailto:admin@localhost",
-		VAPIDPublicKey:  vapidPublicKey,
-		VAPIDPrivateKey: vapidPrivateKey,
+		VAPIDPublicKey:  a.VAPIDPublicKey,
+		VAPIDPrivateKey: a.VAPIDPrivateKey,
 		TTL:             60,
 	})
 	if err != nil {
-		if logger != nil {
-			logger.Debug("push: wake request failed", "error", err)
+		if a.Logger != nil {
+			a.Logger.Debug("push: wake request failed", "error", err)
 		}
 		return
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 300 && logger != nil {
-		logger.Debug("push: wake request rejected", "status", resp.StatusCode)
+
+	// 404/410 from a push service means the subscription is permanently
+	// gone (the browser/distributor dropped it), per the Web Push
+	// protocol's own guidance to stop sending to it.
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+		a.dropDeadSubscription(deviceID, resp.StatusCode)
+		return
+	}
+	if resp.StatusCode >= 300 && a.Logger != nil {
+		a.Logger.Debug("push: wake request rejected", "status", resp.StatusCode)
+	}
+}
+
+// dropDeadSubscription clears a device's Web Push subscription after the
+// push service reported it permanently gone. Without this, every future
+// message to that device would keep paying for a wake request that can
+// never arrive, and the device would look push-capable while being
+// unreachable. The device itself is untouched: it stays active and keeps
+// receiving messages over SSE/poll, and re-registers a fresh subscription
+// on its next app start.
+func (a *API) dropDeadSubscription(deviceID string, status int) {
+	if err := store.SetDevicePushSubscription(a.DB, deviceID, nil); err != nil {
+		if a.Logger != nil {
+			a.Logger.Warn("push: clearing dead subscription failed", "device_id", deviceID, "error", err)
+		}
+		return
+	}
+	if a.Logger != nil {
+		a.Logger.Info("push: dropped dead web push subscription", "device_id", deviceID, "status", status)
 	}
 }
 
@@ -84,56 +110,85 @@ func notifyPush(client webpush.HTTPClient, logger *slog.Logger, vapidPublicKey, 
 // server to look up (see freizone-gateway's README for why).
 //
 // Failures are logged, never surfaced -- same convention as notifyPush.
+// The one failure that is acted on is a permanently dead token, which the
+// gateway reports as 410 Gone (see dropDeadPushTarget).
 // Deliberately uses context.Background(), not the triggering request's
 // context, for the same reason: this runs in its own goroutine after the
 // HTTP handler has already responded.
-func notifyPushViaGateway(client *http.Client, logger *slog.Logger, gatewayURL string, relayPubKey ed25519.PublicKey, relayPrivKey ed25519.PrivateKey, target store.PushTarget) {
+func (a *API) notifyPushViaGateway(deviceID string, target store.PushTarget) {
 	ctx, cancel := context.WithTimeout(context.Background(), pushNotifyTimeout)
 	defer cancel()
 
 	body, err := json.Marshal(map[string]string{"platform": target.Platform, "token": target.Token})
 	if err != nil {
-		if logger != nil {
-			logger.Debug("push: marshaling gateway request failed", "error", err)
+		if a.Logger != nil {
+			a.Logger.Debug("push: marshaling gateway request failed", "error", err)
 		}
 		return
 	}
 
 	const path = "/v1/push/send"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, gatewayURL+path, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.Config.PushGatewayURL+path, bytes.NewReader(body))
 	if err != nil {
-		if logger != nil {
-			logger.Debug("push: building gateway request failed", "error", err)
+		if a.Logger != nil {
+			a.Logger.Debug("push: building gateway request failed", "error", err)
 		}
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	keyID := base64.StdEncoding.EncodeToString(relayPubKey)
+	keyID := base64.StdEncoding.EncodeToString(a.RelayPubKey)
 	ts := time.Now()
 	nonce, err := randomNonce()
 	if err != nil {
-		if logger != nil {
-			logger.Debug("push: generating gateway request nonce failed", "error", err)
+		if a.Logger != nil {
+			a.Logger.Debug("push: generating gateway request nonce failed", "error", err)
 		}
 		return
 	}
-	sig := httpsig.Sign(http.MethodPost, path, "", body, keyID, ts, nonce, relayPrivKey)
+	sig := httpsig.Sign(http.MethodPost, path, "", body, keyID, ts, nonce, a.RelayPrivKey)
 	req.Header.Set(httpsig.HeaderKeyID, keyID)
 	req.Header.Set(httpsig.HeaderTimestamp, httpsig.FormatTimestamp(ts))
 	req.Header.Set(httpsig.HeaderNonce, nonce)
 	req.Header.Set(httpsig.HeaderSignature, sig)
 
-	resp, err := client.Do(req)
+	resp, err := a.PushClient.Do(req)
 	if err != nil {
-		if logger != nil {
-			logger.Debug("push: gateway request failed", "error", err)
+		if a.Logger != nil {
+			a.Logger.Debug("push: gateway request failed", "error", err)
 		}
 		return
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 300 && logger != nil {
-		logger.Debug("push: gateway request rejected", "status", resp.StatusCode)
+
+	// 410 Gone is the gateway's signal that the upstream service
+	// permanently rejected this token (app uninstalled, data cleared,
+	// wrong sender) -- distinct from a 502, which just means this attempt
+	// failed and the token may still be fine.
+	if resp.StatusCode == http.StatusGone {
+		a.dropDeadPushTarget(deviceID, target.Platform)
+		return
+	}
+	if resp.StatusCode >= 300 && a.Logger != nil {
+		a.Logger.Debug("push: gateway request rejected", "status", resp.StatusCode)
+	}
+}
+
+// dropDeadPushTarget clears a device's FCM/APNs registration after the
+// gateway reported the token permanently invalid. Same reasoning as
+// dropDeadSubscription: the device stays active and reachable over
+// SSE/poll, and registers a fresh token on its next app start -- what's
+// removed is only the dead wake address, which would otherwise be
+// retried on every single message forever.
+func (a *API) dropDeadPushTarget(deviceID, platform string) {
+	if err := store.SetDevicePushTarget(a.DB, deviceID, nil); err != nil {
+		if a.Logger != nil {
+			a.Logger.Warn("push: clearing dead push target failed", "device_id", deviceID, "error", err)
+		}
+		return
+	}
+	if a.Logger != nil {
+		a.Logger.Info("push: dropped dead push target", "device_id", deviceID, "platform", platform)
 	}
 }
 
