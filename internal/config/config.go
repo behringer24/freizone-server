@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -38,6 +39,14 @@ type Config struct {
 	DBPath               string
 	RegistrationPolicy   RegistrationPolicy
 	MessageRetentionDays int
+
+	// LogLevel is the minimum severity written to the log ("debug",
+	// "info", "warn", "error"; defaults to info). Mainly here so the
+	// best-effort push paths -- whose individual failures are deliberately
+	// logged at debug, since the durable queue is the real delivery
+	// guarantee -- can be made visible while diagnosing a delivery
+	// problem, without a rebuild.
+	LogLevel slog.Level
 
 	// PushGatewayURL is the base URL of a freizone-gateway instance this
 	// server relays FCM/APNs push-wake requests to (see internal/api/
@@ -86,6 +95,7 @@ const (
 	envFederationEnabled    = "FREIZONE_FEDERATION_ENABLED"
 	envMaxRequestBodyBytes  = "FREIZONE_MAX_REQUEST_BODY_BYTES"
 	envMaxQueuedMessages    = "FREIZONE_MAX_QUEUED_MESSAGES_PER_DEVICE"
+	envLogLevel             = "FREIZONE_LOG_LEVEL"
 )
 
 const defaultMessageRetentionDays = 14
@@ -130,6 +140,12 @@ func Load(getenv func(string) string) (*Config, error) {
 		retentionDays = parsed
 	}
 	cfg.MessageRetentionDays = retentionDays
+
+	logLevel, err := parseLogLevel(getenv(envLogLevel))
+	if err != nil {
+		return nil, err
+	}
+	cfg.LogLevel = logLevel
 
 	federationEnabled := true
 	if v := getenv(envFederationEnabled); v != "" {
@@ -208,4 +224,23 @@ func orDefault(v, def string) string {
 		return def
 	}
 	return v
+}
+
+// parseLogLevel maps the level names an operator would reasonably type
+// (case-insensitively) onto slog levels, defaulting to info when unset.
+func parseLogLevel(v string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "":
+		return slog.LevelInfo, nil
+	case "debug":
+		return slog.LevelDebug, nil
+	case "info":
+		return slog.LevelInfo, nil
+	case "warn", "warning":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	default:
+		return 0, fmt.Errorf("%s: invalid value %q (must be one of: debug, info, warn, error)", envLogLevel, v)
+	}
 }
