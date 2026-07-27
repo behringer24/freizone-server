@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/behringer24/freizone-server/internal/config"
+	"github.com/behringer24/freizone-server/internal/store"
 	"github.com/behringer24/freizone-server/pkg/httpsig"
 )
 
@@ -483,6 +485,149 @@ func TestHandleSendMessageSkipsGatewayPushWhenGatewayURLUnset(t *testing.T) {
 		t.Fatal("gateway push request was sent despite no PushGatewayURL being configured")
 	case <-time.After(300 * time.Millisecond):
 	}
+}
+
+// waitForPushTarget polls bob's device until its push target matches want
+// (nil for "cleared"), since the wake -- and therefore any cleanup it
+// triggers -- runs in its own goroutine after the send has already
+// responded.
+func waitForPushTarget(t *testing.T, db *sql.DB, deviceID string, wantCleared bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		device, err := store.GetDevice(db, deviceID)
+		if err != nil {
+			t.Fatalf("GetDevice() error = %v", err)
+		}
+		if (device.PushTarget == nil) == wantCleared {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	state := "cleared"
+	if !wantCleared {
+		state = "kept"
+	}
+	t.Fatalf("push target was not %s within the timeout", state)
+}
+
+func TestGatewayGoneDropsDeadPushTarget(t *testing.T) {
+	a, db := newTestAPI(t, config.PolicyOpen)
+	alice := registerAccount(t, a)
+	bob := registerAccount(t, a)
+
+	// 410 Gone is the gateway's "this token is permanently dead" signal
+	// (app uninstalled / data cleared), so the registration must be
+	// dropped rather than retried on every future message.
+	fakeGateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusGone)
+	}))
+	defer fakeGateway.Close()
+	a.PushClient = fakeGateway.Client()
+	a.Config.PushGatewayURL = fakeGateway.URL
+
+	setTargetBody, _ := json.Marshal(setPushTargetRequest{Platform: strPtr("fcm"), Token: strPtr("dead-token")})
+	if rec := doSignedRequest(t, a.Router(), http.MethodPut, "/v1/devices/"+bob.deviceID+"/push-target", setTargetBody, bob.deviceID, bob.devicePriv); rec.Code != http.StatusOK {
+		t.Fatalf("set push target status = %d, want 200", rec.Code)
+	}
+
+	if rec := doSignedRequest(t, a.Router(), http.MethodPost, "/v1/messages", sendMessageBody(t, "msg1", bob.deviceID, `{}`), alice.deviceID, alice.devicePriv); rec.Code != http.StatusAccepted {
+		t.Fatalf("send status = %d, want 202", rec.Code)
+	}
+
+	waitForPushTarget(t, db, bob.deviceID, true)
+
+	// The device itself must survive: it's still a valid device that can
+	// receive over SSE/poll and re-register a fresh token later.
+	device, err := store.GetDevice(db, bob.deviceID)
+	if err != nil {
+		t.Fatalf("GetDevice() error = %v", err)
+	}
+	if device.Status != store.DeviceStatusActive {
+		t.Errorf("device status = %q, want it to stay active", device.Status)
+	}
+}
+
+func TestGatewayTransientFailureKeepsPushTarget(t *testing.T) {
+	a, db := newTestAPI(t, config.PolicyOpen)
+	alice := registerAccount(t, a)
+	bob := registerAccount(t, a)
+
+	// 502 means this attempt failed upstream, not that the token is dead --
+	// dropping the registration here would silently disable push for a
+	// perfectly good device on any transient FCM hiccup.
+	hitCh := make(chan struct{}, 1)
+	fakeGateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		select {
+		case hitCh <- struct{}{}:
+		default:
+		}
+	}))
+	defer fakeGateway.Close()
+	a.PushClient = fakeGateway.Client()
+	a.Config.PushGatewayURL = fakeGateway.URL
+
+	setTargetBody, _ := json.Marshal(setPushTargetRequest{Platform: strPtr("fcm"), Token: strPtr("live-token")})
+	if rec := doSignedRequest(t, a.Router(), http.MethodPut, "/v1/devices/"+bob.deviceID+"/push-target", setTargetBody, bob.deviceID, bob.devicePriv); rec.Code != http.StatusOK {
+		t.Fatalf("set push target status = %d, want 200", rec.Code)
+	}
+
+	if rec := doSignedRequest(t, a.Router(), http.MethodPost, "/v1/messages", sendMessageBody(t, "msg1", bob.deviceID, `{}`), alice.deviceID, alice.devicePriv); rec.Code != http.StatusAccepted {
+		t.Fatalf("send status = %d, want 202", rec.Code)
+	}
+
+	select {
+	case <-hitCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for gateway push request")
+	}
+
+	device, err := store.GetDevice(db, bob.deviceID)
+	if err != nil {
+		t.Fatalf("GetDevice() error = %v", err)
+	}
+	if device.PushTarget == nil {
+		t.Error("push target was dropped on a transient 502; only a 410 may drop it")
+	}
+}
+
+func TestWebPushGoneDropsDeadSubscription(t *testing.T) {
+	a, db := newTestAPI(t, config.PolicyOpen)
+	alice := registerAccount(t, a)
+	bob := registerAccount(t, a)
+
+	// A push service answering 410 (or 404) means the subscription is
+	// permanently gone, per the Web Push protocol -- stop sending to it.
+	// TLS because handleSetPushEndpoint only accepts https:// endpoints.
+	fakeDistributor := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusGone)
+	}))
+	defer fakeDistributor.Close()
+	a.PushClient = fakeDistributor.Client()
+
+	p256dh, authSecret := generateTestPushSubscriptionKeys(t)
+	setEndpointBody, _ := json.Marshal(setPushEndpointRequest{Endpoint: &fakeDistributor.URL, P256dh: &p256dh, Auth: &authSecret})
+	if rec := doSignedRequest(t, a.Router(), http.MethodPut, "/v1/devices/"+bob.deviceID+"/push-endpoint", setEndpointBody, bob.deviceID, bob.devicePriv); rec.Code != http.StatusOK {
+		t.Fatalf("set push endpoint status = %d, want 200", rec.Code)
+	}
+
+	if rec := doSignedRequest(t, a.Router(), http.MethodPost, "/v1/messages", sendMessageBody(t, "msg1", bob.deviceID, `{}`), alice.deviceID, alice.devicePriv); rec.Code != http.StatusAccepted {
+		t.Fatalf("send status = %d, want 202", rec.Code)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		device, err := store.GetDevice(db, bob.deviceID)
+		if err != nil {
+			t.Fatalf("GetDevice() error = %v", err)
+		}
+		if device.Push == nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("dead web push subscription was not cleared within the timeout")
 }
 
 func strPtr(s string) *string { return &s }

@@ -44,7 +44,7 @@ func run() error {
 		return fmt.Errorf("loading configuration: %w", err)
 	}
 
-	logger := logging.New(os.Stdout, logging.FormatJSON, slog.LevelInfo)
+	logger := logging.New(os.Stdout, logging.FormatJSON, cfg.LogLevel)
 
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		return fmt.Errorf("creating data directory: %w", err)
