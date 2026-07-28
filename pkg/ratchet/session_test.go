@@ -2,6 +2,7 @@ package ratchet
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -255,5 +256,161 @@ func TestEncryptFailsWithoutSendingChain(t *testing.T) {
 	// Bob has not received anything yet, so he has no sending chain.
 	if _, _, err := bob.Encrypt([]byte("too early")); err == nil {
 		t.Error("expected Encrypt() to fail before any receiving chain has been established")
+	}
+}
+
+// --- Resilience against redelivery and undecryptable messages -------------
+//
+// Delivery is at-least-once (see ErrDuplicateMessage), and the transport can
+// hand a client a message it has already processed, one from a chain the
+// session has ratcheted past, or a corrupted one. None of those may cost the
+// session its ability to carry the conversation -- that is what turned a
+// single stray envelope into a permanently broken chat.
+
+func TestDecryptRejectsDuplicateWithoutBreakingSession(t *testing.T) {
+	p := setupParties(t, true)
+	alice, bob := mustInitiateAndRespond(t, p)
+
+	h, c, err := alice.Encrypt([]byte("first"))
+	if err != nil {
+		t.Fatalf("alice.Encrypt() error = %v", err)
+	}
+	if _, err := bob.Decrypt(h, c); err != nil {
+		t.Fatalf("bob.Decrypt(first) error = %v", err)
+	}
+
+	// The very same envelope again, as a redelivery would hand it over.
+	if _, err := bob.Decrypt(h, c); !errors.Is(err, ErrDuplicateMessage) {
+		t.Errorf("bob.Decrypt(duplicate) error = %v, want ErrDuplicateMessage", err)
+	}
+
+	// The conversation must continue unaffected -- before the duplicate was
+	// rejected explicitly, it consumed the *next* message key and every
+	// subsequent message failed to authenticate.
+	h2, c2, err := alice.Encrypt([]byte("second"))
+	if err != nil {
+		t.Fatalf("alice.Encrypt() error = %v", err)
+	}
+	got, err := bob.Decrypt(h2, c2)
+	if err != nil {
+		t.Fatalf("bob.Decrypt(second, after duplicate) error = %v", err)
+	}
+	if string(got) != "second" {
+		t.Errorf("got %q, want %q", got, "second")
+	}
+}
+
+func TestFailedDecryptLeavesSessionUsable(t *testing.T) {
+	p := setupParties(t, true)
+	alice, bob := mustInitiateAndRespond(t, p)
+
+	h, c, err := alice.Encrypt([]byte("good"))
+	if err != nil {
+		t.Fatalf("alice.Encrypt() error = %v", err)
+	}
+
+	// Corrupt the ciphertext so the AEAD rejects it, and hand Bob the
+	// tampered copy first. Decrypt must not advance his state on failure.
+	tampered := make([]byte, len(c))
+	copy(tampered, c)
+	tampered[len(tampered)-1] ^= 0xff
+	if _, err := bob.Decrypt(h, tampered); err == nil {
+		t.Fatal("expected Decrypt() to reject tampered ciphertext")
+	}
+
+	// The untampered original must still decrypt afterwards.
+	got, err := bob.Decrypt(h, c)
+	if err != nil {
+		t.Fatalf("bob.Decrypt(original, after tampered) error = %v", err)
+	}
+	if string(got) != "good" {
+		t.Errorf("got %q, want %q", got, "good")
+	}
+}
+
+func TestStragglerFromOldChainDecryptsThenRedeliveryIsHarmless(t *testing.T) {
+	p := setupParties(t, true)
+	alice, bob := mustInitiateAndRespond(t, p)
+
+	// Alice sends one Bob never receives -- lost in transit for now.
+	staleHeader, staleCipher, err := alice.Encrypt([]byte("lost in transit"))
+	if err != nil {
+		t.Fatalf("alice.Encrypt() error = %v", err)
+	}
+
+	// The conversation moves on and ratchets past that chain: Bob receives a
+	// later one (buffering the straggler's key), replies (DH step on his
+	// side), and Alice answers (DH step on hers).
+	deliver := func(from, to *Session, body string) {
+		t.Helper()
+		h, c, err := from.Encrypt([]byte(body))
+		if err != nil {
+			t.Fatalf("Encrypt(%q) error = %v", body, err)
+		}
+		if _, err := to.Decrypt(h, c); err != nil {
+			t.Fatalf("Decrypt(%q) error = %v", body, err)
+		}
+	}
+	deliver(alice, bob, "alice 2")
+	deliver(bob, alice, "bob 1")
+	deliver(alice, bob, "alice 3")
+
+	// The straggler finally arrives. Its key was buffered when the chain was
+	// skipped past, so it still decrypts -- late delivery must not lose a
+	// message.
+	got, err := bob.Decrypt(staleHeader, staleCipher)
+	if err != nil {
+		t.Fatalf("bob.Decrypt(straggler) error = %v", err)
+	}
+	if string(got) != "lost in transit" {
+		t.Errorf("got %q, want %q", got, "lost in transit")
+	}
+
+	// Now the dangerous part: the same straggler redelivered. Its buffered key
+	// is consumed and its header names a superseded chain, so the ratchet
+	// treats it as a new remote key and attempts a DH step from stale
+	// material. That must fail without touching the session -- previously it
+	// rewound DHr, zeroed the counters and rerolled DHs/CKs/RK in place,
+	// destroying a perfectly healthy session over a duplicate.
+	if _, err := bob.Decrypt(staleHeader, staleCipher); err == nil {
+		t.Fatal("expected Decrypt() to reject a straggler whose key was already consumed")
+	}
+
+	// The conversation must be entirely unaffected.
+	deliver(alice, bob, "still talking")
+	deliver(bob, alice, "and replying")
+}
+
+func TestRedeliveredMessageDoesNotStrandLaterOnes(t *testing.T) {
+	p := setupParties(t, true)
+	alice, bob := mustInitiateAndRespond(t, p)
+
+	// Three messages, delivered as 1, 2, then 2 again (a duplicate landing
+	// between real ones -- the shape at-least-once delivery actually produces).
+	var hs []Header
+	var cs [][]byte
+	for i := 0; i < 3; i++ {
+		h, c, err := alice.Encrypt([]byte{byte('a' + i)})
+		if err != nil {
+			t.Fatalf("alice.Encrypt() error = %v", err)
+		}
+		hs = append(hs, h)
+		cs = append(cs, c)
+	}
+
+	for _, i := range []int{0, 1} {
+		if _, err := bob.Decrypt(hs[i], cs[i]); err != nil {
+			t.Fatalf("bob.Decrypt(%d) error = %v", i, err)
+		}
+	}
+	if _, err := bob.Decrypt(hs[1], cs[1]); !errors.Is(err, ErrDuplicateMessage) {
+		t.Errorf("bob.Decrypt(duplicate) error = %v, want ErrDuplicateMessage", err)
+	}
+	got, err := bob.Decrypt(hs[2], cs[2])
+	if err != nil {
+		t.Fatalf("bob.Decrypt(third, after duplicate) error = %v", err)
+	}
+	if string(got) != "c" {
+		t.Errorf("got %q, want %q", got, "c")
 	}
 }
