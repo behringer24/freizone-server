@@ -49,8 +49,29 @@ so the next outgoing message re-establishes X3DH, with a visible
 desynced conversation once **both** participants run a build with the
 receive-path change — a one-sided reset alone did not work before this.
 
+**Root causes of *permanent* desync closed 2026-07-28**, found while chasing
+a "no background push notifications" report back to its actual source (the
+messages simply never decrypted): (1) `pkg/ratchet.Session.Decrypt` mutated
+the session step-by-step with no rollback, so a single undecryptable message
+(a duplicate, a stale straggler, a corrupted envelope) left it permanently
+wedged — `Decrypt` now works on a clone and commits only once the message
+authenticates, and rejects an outright duplicate before it can consume the
+next message key; (2) freizone-app's background push isolate and foreground
+session both applied a whole-profile last-writer-wins save, so a resume that
+raced a push-driven decrypt silently rolled the ratchet back by however many
+messages the wake had just processed — an exclusive cross-isolate lock now
+serializes each account's load-decrypt-save sequence; (3) redelivered
+messages (delivery is at-least-once) were processed a second time, which for
+a redelivered X3DH initial meant rebuilding and overwriting the already-
+advanced session — freizone-app now tracks processed message ids and skips
+a repeat. Verified end-to-end on real devices after resetting two sessions
+this had already broken.
+
 **Still open:** automatic detection (repeated decrypt failure → auto-discard
-→ fresh X3DH) instead of requiring the user to notice and manually reset.
+→ fresh X3DH) instead of requiring the user to notice and manually reset --
+a UX nicety now, not a correctness gap: with the above fixed, a *desync in
+the first place* should be rare rather than something the app merely
+recovers well from.
 
 ### SRV-04 — Authenticate the prekey-bundle claim
 Status: planned
@@ -63,7 +84,7 @@ Incremental completeness of the REST surface. No concrete gap known; tracked so
 detail work has a home.
 
 ### SRV-06 — Root-key-authenticated device recovery
-Status: in progress · Also affects: freizone-app (APP-01)
+Status: done · Also affects: freizone-app (APP-01)
 Companion to APP-01 (seed recovery). Today a device can only be added to an
 existing account by a request signed by an *already-active* device
 (`POST /v1/devices`, devices.go), and re-registering an existing account is
@@ -89,5 +110,8 @@ new signing format was needed — the root signature covers the whole body
 (the new device cert) and a fresh timestamp+nonce make it replay-proof. On
 success it adds the new device and revokes every other device in one
 root-authenticated step (revoke-all-others: total loss is the premise). See
-PROTOCOL §3 (self-describing-key variant) and §4. **Still open:** the app-side
-seed backup/restore UI (APP-01) that drives this endpoint.
+PROTOCOL §3 (self-describing-key variant) and §4. **App-side seed
+backup/restore UI shipped and verified end-to-end 2026-07-27** (APP-01,
+freizone-app) — same account id/short id restored, old device revoked,
+account role (admin/moderator) intact since it lives on the account row, not
+the device.
