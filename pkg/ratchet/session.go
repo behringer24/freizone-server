@@ -87,13 +87,52 @@ func (s *Session) Encrypt(plaintext []byte) (Header, []byte, error) {
 	return header, ciphertext, nil
 }
 
+// ErrDuplicateMessage reports a message the session has already moved past:
+// its number is behind the current receiving chain and no buffered key is
+// held for it, so it was either already decrypted or deliberately skipped.
+// Delivery is at-least-once (the server keeps a message queued until the
+// recipient explicitly deletes it), so redelivery is normal, not an attack --
+// callers should treat this as "already handled, drop it", not as a failure.
+// Reported before any state is touched, so the session stays usable.
+var ErrDuplicateMessage = errors.New("ratchet: duplicate message")
+
 // Decrypt authenticates and decrypts ciphertext given its header,
 // performing a DH ratchet step first if the header carries a new remote
 // ratchet public key (this is also how a responder's very first received
 // message bootstraps its receiving -- and, in turn, sending -- chain).
+//
+// Atomic: the session is advanced only if the message actually
+// authenticates. Every step of the ratchet is irreversible -- a DH step
+// discards the previous DHs keypair outright -- so advancing s directly and
+// failing halfway (a duplicate, a straggler from a chain we've already
+// ratcheted past, a corrupted envelope) left the session in a state its peer
+// could no longer talk to, permanently breaking the conversation over one
+// bad message. Working on a copy and committing only on success means an
+// undecryptable message costs nothing but itself.
 func (s *Session) Decrypt(header Header, ciphertext []byte) ([]byte, error) {
+	work := s.clone()
+	plaintext, err := work.decrypt(header, ciphertext)
+	if err != nil {
+		return nil, err
+	}
+	*s = *work
+	return plaintext, nil
+}
+
+// decrypt is Decrypt's body, mutating the receiver as it goes. Only ever
+// called on a throwaway clone (see Decrypt).
+func (s *Session) decrypt(header Header, ciphertext []byte) ([]byte, error) {
 	if mk, ok := s.trySkippedMessageKey(header); ok {
 		return openMessage(mk, ciphertext, s.AD, header)
+	}
+
+	// Already past this message on the current chain, with no buffered key
+	// for it (the branch above would have caught that): a redelivery. Reject
+	// it cheaply and explicitly -- without this, the code below would derive
+	// the *next* message key for an old message, burning it and leaving the
+	// receiving chain one step ahead of the sender forever.
+	if headerMatchesDHr(header, s.DHr) && header.N < s.Nr {
+		return nil, ErrDuplicateMessage
 	}
 
 	if !headerMatchesDHr(header, s.DHr) {
@@ -116,6 +155,21 @@ func (s *Session) Decrypt(header Header, ciphertext []byte) ([]byte, error) {
 	s.Nr++
 
 	return openMessage(mk, ciphertext, s.AD, header)
+}
+
+// clone copies s deeply enough to advance the copy without touching the
+// original. The byte slices and ecdh keys are always replaced wholesale by
+// the ratchet rather than written through, so copying the struct covers
+// them; only Skipped is mutated in place and needs a real copy.
+func (s *Session) clone() *Session {
+	c := *s
+	if s.Skipped != nil {
+		c.Skipped = make(map[skippedKey][]byte, len(s.Skipped))
+		for k, v := range s.Skipped {
+			c.Skipped[k] = v
+		}
+	}
+	return &c
 }
 
 // sessionJSON is Session's on-disk representation: ecdh keys don't marshal
