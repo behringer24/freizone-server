@@ -142,6 +142,10 @@ type serverStatusResponse struct {
 	Claimed            bool   `json:"claimed"`
 	RegistrationPolicy string `json:"registration_policy"`
 	FederationEnabled  bool   `json:"federation_enabled"`
+	// Blob transport capability (SRV-07), so a sender can size an
+	// attachment to the *recipient* server's limit before uploading.
+	BlobsEnabled bool  `json:"blobs_enabled"`
+	MaxBlobBytes int64 `json:"max_blob_bytes"`
 }
 
 type federationEnabledResponse struct {
@@ -297,4 +301,15 @@ func accountResponseFrom(acc *store.Account, devices []store.Device) accountResp
 		resp.Devices = append(resp.Devices, deviceResponseFrom(d))
 	}
 	return resp
+}
+
+// blobUploadResponse is returned once an encrypted attachment has been
+// stored (see blobs.go). The sender puts BlobID into the end-to-end
+// encrypted message so the recipient can fetch it; ExpiresAt lets a client
+// warn about (or re-upload) an attachment whose retention window is nearly
+// up.
+type blobUploadResponse struct {
+	BlobID    string `json:"blob_id"`
+	Size      int64  `json:"size"`
+	ExpiresAt string `json:"expires_at"`
 }

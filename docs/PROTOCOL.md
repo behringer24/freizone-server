@@ -182,6 +182,32 @@ differences:
   device-auth in-memory cache, but the 5-minute skew window and generic-401
   rule are identical.
 
+### Streamed-body variant (`Blob-Digest`)
+
+The canonical string ends in `sha256(body)`, which normally means the server
+must buffer the whole request before it can authenticate it. That is fine for
+a chat message and unacceptable for a multi-megabyte blob upload (§10), so
+those routes — and **only** those — take the body hash from a header instead:
+
+| Header | Value |
+|---|---|
+| `Blob-Digest` | `sha256=<lowercase hex>` (a bare hex digest is also accepted) |
+
+The client signs exactly the same canonical string, with that digest as its
+last field. The server then:
+
+1. verifies the signature from the headers alone, **before reading any body**
+   — so a forged or unauthorized upload costs no disk at all;
+2. streams the body to storage while hashing it, and rejects it with `400
+   digest_mismatch` (discarding what it wrote) if the bytes do not match the
+   signed digest.
+
+This keeps the body cryptographically bound to the signature: a caller can
+only store bytes it actually signed for. The variant is enabled per route on
+the server (`POST /v1/blobs`); on every other endpoint a `Blob-Digest` header
+is ignored and the body itself is hashed, so it can never be used to
+substitute an unsigned body elsewhere.
+
 ## 4. REST endpoints
 
 All paths are under `/v1/`. All bodies/responses are JSON. Byte fields
@@ -934,7 +960,96 @@ delivery transaction across members), account portability/migrating
 servers, and server discovery — not needed, since an address already
 names the exact server.
 
-## 10. Chat invite QR codes (`freizone://chat`)
+## 10. Encrypted blob transport (attachments)
+
+Messages carry text; anything larger — an image, later video or audio —
+travels out of band as a **blob**. The message itself only carries a
+reference plus the key to decrypt it, inside the end-to-end encrypted
+payload, so the server learns no more about an attachment than it does about
+a message: it stores ciphertext it cannot read.
+
+**A blob lives on the recipient's server**, not the sender's. This mirrors
+the direction messages already travel (§9: the sender pushes to the
+recipient's server), and means a recipient only ever fetches from its own,
+trusted server — it never has to contact a stranger's server and reveal its
+IP to an operator it has no relationship with. The cost is that the upload
+route, like federated messages, accepts uploads from senders who never
+registered here, and is defended the same way: the federation kill switch,
+the blocklist, per-device quotas, and a retention window.
+
+Flow:
+
+1. Sender encrypts the attachment with a **fresh random key** (not derived
+   from the ratchet, so re-downloading still works after a session reset).
+2. Sender uploads the ciphertext to the **recipient's** server and gets a
+   `blob_id`.
+3. Sender sends a normal message whose encrypted payload carries the
+   `blob_id` and the key.
+4. Recipient decrypts the message, fetches the blob from **its own** server,
+   and decrypts it locally.
+
+### Endpoints
+
+| Method | Path | Auth |
+|---|---|---|
+| `POST` | `/v1/blobs?recipient_device_id=…` | device signature (§3) + `Blob-Digest` |
+| `POST` | `/v1/federation/blobs?recipient_device_id=…` | self-describing key (§3) + `Blob-Digest` |
+| `GET` | `/v1/blobs/{blob_id}` | device signature (§3), recipient only |
+| `DELETE` | `/v1/blobs/{blob_id}` | device signature (§3), recipient only |
+
+Upload bodies are `application/octet-stream` — raw ciphertext, not base64
+(the server never parses it, and base64 would add a third). They are
+authenticated by the streamed-body variant in §3, so the signature is checked
+before any bytes are read and the stored bytes are verified against the
+signed digest.
+
+On the federated route the sender's identity moves from JSON fields into
+headers, since the body is raw bytes: `Freizone-Sender-Account-Id`,
+`-Root-Pub-Key`, `-Device-Id`, `-Device-Pub-Key`, `-Cert-Issued-At`,
+`-Cert-Signature`. They are verified exactly as §9 verifies a federated
+message sender.
+
+Success returns `201` with `{"blob_id", "size", "expires_at"}`.
+
+`blob_id` is 32 random bytes, hex-encoded — deliberately **not** a content
+hash, which would let anyone holding a file test whether someone else
+uploaded the same one, and would turn the id into an existence probe.
+
+### Retrieval and errors
+
+`GET` serves the ciphertext via range-capable responses, so an interrupted
+download can resume. A blob that does not exist and one belonging to another
+device both answer `404`, so the endpoint cannot be used to discover blob ids.
+
+| Status | Meaning |
+|---|---|
+| `400 digest_mismatch` | body did not match the signed `Blob-Digest` |
+| `401` | signature/auth failure (generic, as everywhere) |
+| `403` | federated sender is blocked |
+| `404` | blobs disabled, unknown/inactive recipient device, or unknown/not-yours blob |
+| `413 payload_too_large` | over `FREIZONE_MAX_BLOB_BYTES` |
+| `429 blob_quota_exceeded` | recipient device is at its blob count or byte quota |
+
+### Limits and lifetime
+
+Operator-configurable: `FREIZONE_MAX_BLOB_BYTES` (default 8 MiB),
+`FREIZONE_MAX_BLOB_BYTES_PER_DEVICE` (128 MiB), `FREIZONE_MAX_BLOBS_PER_DEVICE`
+(200), `FREIZONE_BLOB_RETENTION_DAYS` (defaults to the message retention
+window and may not be shorter, so a blob outlives the message referencing
+it), `FREIZONE_BLOBS_ENABLED`, `FREIZONE_BLOB_DIR`.
+
+Because these are the *recipient* server's limits and a federated sender
+cannot know them in advance, `GET /v1/server-status` (§4) advertises
+`blobs_enabled` and `max_blob_bytes` — a sender sizes or recompresses an
+attachment against those rather than discovering them via a `413` after
+uploading.
+
+Blobs are deleted when the recipient `DELETE`s them, when the retention
+window expires, or when their recipient device is removed (cascade). They
+are **not** deleted on download: a client may reinstall, or fetch a
+thumbnail first and the full image later.
+
+## 11. Chat invite QR codes (`freizone://chat`)
 
 Client-side convention, not a server endpoint — the counterpart to §8's
 `freizone://join`, but for contact initiation rather than server

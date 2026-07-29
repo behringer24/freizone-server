@@ -29,12 +29,32 @@ const (
 	HeaderSignature = "Signature"
 )
 
+// HeaderBodyDigest carries the hex SHA-256 of the request body, so a large
+// streamed body can be authenticated without buffering it -- see
+// CanonicalStringWithBodyDigest.
+const HeaderBodyDigest = "Blob-Digest"
+
 // CanonicalString builds the exact newline-joined byte sequence that gets
 // signed for a request:
 //
 //	METHOD\npath\nrawQuery\ntimestamp\nnonce\nkeyID\nsha256_hex(body)
 func CanonicalString(method, path, rawQuery, timestamp, nonce, keyID string, body []byte) string {
 	bodyHash := sha256.Sum256(body)
+	return CanonicalStringWithBodyDigest(method, path, rawQuery, timestamp, nonce, keyID, hex.EncodeToString(bodyHash[:]))
+}
+
+// CanonicalStringWithBodyDigest is CanonicalString for a caller that already
+// knows the body's hex SHA-256 and does not want to hold the body itself.
+//
+// This is what makes the blob transport signable: the canonical string ends
+// in the body hash, which normally means buffering the whole request to
+// authenticate it -- unacceptable for multi-megabyte uploads. Instead the
+// client states the digest in [HeaderBodyDigest], the server verifies the
+// signature over that claim *before reading a byte*, and only then streams
+// the body through a hasher to confirm the bytes match what was signed.
+// A forged signature is therefore rejected at zero storage cost, and a body
+// that does not match its signed digest never becomes a stored blob.
+func CanonicalStringWithBodyDigest(method, path, rawQuery, timestamp, nonce, keyID, bodyDigestHex string) string {
 	return strings.Join([]string{
 		method,
 		path,
@@ -42,7 +62,7 @@ func CanonicalString(method, path, rawQuery, timestamp, nonce, keyID string, bod
 		timestamp,
 		nonce,
 		keyID,
-		hex.EncodeToString(bodyHash[:]),
+		bodyDigestHex,
 	}, "\n")
 }
 

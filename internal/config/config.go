@@ -78,6 +78,40 @@ type Config struct {
 	// requires no registration, anyone who can mint a free Ed25519
 	// identity) could flood a device's queue without bound.
 	MaxQueuedMessagesPerDevice int
+
+	// BlobsEnabled controls whether the encrypted blob transport
+	// (internal/api/blobs.go, SRV-07) accepts uploads at all -- the same
+	// kind of operator kill switch FederationEnabled is for federation.
+	// Turning it off leaves existing blobs downloadable until they expire.
+	BlobsEnabled bool
+
+	// BlobDir is where blob ciphertext files live, defaulting to a "blobs"
+	// subdirectory of DataDir. Deliberately the filesystem rather than a
+	// SQLite column: the driver has no incremental blob I/O, so storing
+	// them in the database would materialize whole files in memory on the
+	// single-writer connection that also serves authentication.
+	BlobDir string
+
+	// MaxBlobBytes caps a single uploaded blob. This is what makes the
+	// blob transport possible at all: MaxRequestBodyBytes is far too small
+	// for a photo, so the blob routes carry their own, much larger limit
+	// (see internal/server/middleware.go's per-path overrides). Separate
+	// knob so raising it never widens the limit on every other route.
+	MaxBlobBytes int64
+
+	// MaxBlobBytesPerDevice and MaxBlobsPerDevice cap how much a single
+	// recipient device may have stored at once. Both are needed because
+	// the federated upload route, like federated messages, accepts uploads
+	// from senders who never registered here -- without a quota that is an
+	// unbounded disk-exhaustion surface.
+	MaxBlobBytesPerDevice int64
+	MaxBlobsPerDevice     int
+
+	// BlobRetentionDays is how long an unclaimed blob is kept. Defaults to
+	// MessageRetentionDays and is validated not to be shorter, since a
+	// blob must outlive the queued message that references it -- otherwise
+	// a recipient who comes back late finds the message but not its image.
+	BlobRetentionDays int
 }
 
 const (
@@ -96,6 +130,13 @@ const (
 	envMaxRequestBodyBytes  = "FREIZONE_MAX_REQUEST_BODY_BYTES"
 	envMaxQueuedMessages    = "FREIZONE_MAX_QUEUED_MESSAGES_PER_DEVICE"
 	envLogLevel             = "FREIZONE_LOG_LEVEL"
+
+	envBlobsEnabled          = "FREIZONE_BLOBS_ENABLED"
+	envBlobDir               = "FREIZONE_BLOB_DIR"
+	envMaxBlobBytes          = "FREIZONE_MAX_BLOB_BYTES"
+	envMaxBlobBytesPerDevice = "FREIZONE_MAX_BLOB_BYTES_PER_DEVICE"
+	envMaxBlobsPerDevice     = "FREIZONE_MAX_BLOBS_PER_DEVICE"
+	envBlobRetentionDays     = "FREIZONE_BLOB_RETENTION_DAYS"
 )
 
 const defaultMessageRetentionDays = 14
@@ -110,6 +151,21 @@ const defaultMaxRequestBodyBytes int64 = 512 * 1024
 // since this is a backstop against unbounded flooding, not a realistic
 // usage cap.
 const defaultMaxQueuedMessagesPerDevice = 1000
+
+// defaultMaxBlobBytes (8 MiB) comfortably fits a client-compressed photo
+// (clients downscale to roughly 1600px before uploading, landing well under
+// 1 MiB) with room for the occasional larger one, without inviting arbitrary
+// file hosting.
+const defaultMaxBlobBytes int64 = 8 * 1024 * 1024
+
+// defaultMaxBlobBytesPerDevice / defaultMaxBlobsPerDevice bound what one
+// recipient device can hold at once -- the blob counterpart to
+// defaultMaxQueuedMessagesPerDevice, and likewise a flood backstop rather
+// than an expected usage level.
+const (
+	defaultMaxBlobBytesPerDevice int64 = 128 * 1024 * 1024
+	defaultMaxBlobsPerDevice           = 200
+)
 
 // Load reads configuration from the process environment.
 func Load(getenv func(string) string) (*Config, error) {
@@ -177,6 +233,64 @@ func Load(getenv func(string) string) (*Config, error) {
 	}
 	cfg.MaxQueuedMessagesPerDevice = maxQueuedMessages
 
+	blobsEnabled := true
+	if v := getenv(envBlobsEnabled); v != "" {
+		parsed, err := strconv.ParseBool(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: invalid value %q (must be true or false)", envBlobsEnabled, v)
+		}
+		blobsEnabled = parsed
+	}
+	cfg.BlobsEnabled = blobsEnabled
+
+	blobDir := getenv(envBlobDir)
+	if blobDir == "" {
+		blobDir = filepath.Join(cfg.DataDir, "blobs")
+	}
+	cfg.BlobDir = blobDir
+
+	maxBlobBytes := defaultMaxBlobBytes
+	if v := getenv(envMaxBlobBytes); v != "" {
+		parsed, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("%s: invalid value %q (must be a whole number of bytes): %w", envMaxBlobBytes, v, err)
+		}
+		maxBlobBytes = parsed
+	}
+	cfg.MaxBlobBytes = maxBlobBytes
+
+	maxBlobBytesPerDevice := defaultMaxBlobBytesPerDevice
+	if v := getenv(envMaxBlobBytesPerDevice); v != "" {
+		parsed, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("%s: invalid value %q (must be a whole number of bytes): %w", envMaxBlobBytesPerDevice, v, err)
+		}
+		maxBlobBytesPerDevice = parsed
+	}
+	cfg.MaxBlobBytesPerDevice = maxBlobBytesPerDevice
+
+	maxBlobsPerDevice := defaultMaxBlobsPerDevice
+	if v := getenv(envMaxBlobsPerDevice); v != "" {
+		parsed, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: invalid value %q (must be a whole number): %w", envMaxBlobsPerDevice, v, err)
+		}
+		maxBlobsPerDevice = parsed
+	}
+	cfg.MaxBlobsPerDevice = maxBlobsPerDevice
+
+	// Defaults to the message retention window: a blob exists to be fetched
+	// by the message that references it, so the two lifetimes belong together.
+	blobRetentionDays := cfg.MessageRetentionDays
+	if v := getenv(envBlobRetentionDays); v != "" {
+		parsed, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: invalid value %q (must be a whole number of days): %w", envBlobRetentionDays, v, err)
+		}
+		blobRetentionDays = parsed
+	}
+	cfg.BlobRetentionDays = blobRetentionDays
+
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
@@ -214,6 +328,38 @@ func (c *Config) validate() error {
 
 	if c.MaxQueuedMessagesPerDevice <= 0 {
 		return fmt.Errorf("%s must be a positive number, got %d", envMaxQueuedMessages, c.MaxQueuedMessagesPerDevice)
+	}
+
+	if c.MaxBlobBytes <= 0 {
+		return fmt.Errorf("%s must be a positive number of bytes, got %d", envMaxBlobBytes, c.MaxBlobBytes)
+	}
+
+	if c.MaxBlobBytesPerDevice <= 0 {
+		return fmt.Errorf("%s must be a positive number of bytes, got %d", envMaxBlobBytesPerDevice, c.MaxBlobBytesPerDevice)
+	}
+
+	// A per-device quota below the single-blob limit would reject every
+	// upload at that size -- an operator raising one and not the other would
+	// otherwise get a server that silently accepts nothing.
+	if c.MaxBlobBytesPerDevice < c.MaxBlobBytes {
+		return fmt.Errorf("%s (%d) must be at least %s (%d), otherwise no blob of the maximum size could ever be stored",
+			envMaxBlobBytesPerDevice, c.MaxBlobBytesPerDevice, envMaxBlobBytes, c.MaxBlobBytes)
+	}
+
+	if c.MaxBlobsPerDevice <= 0 {
+		return fmt.Errorf("%s must be a positive number, got %d", envMaxBlobsPerDevice, c.MaxBlobsPerDevice)
+	}
+
+	if c.BlobRetentionDays <= 0 {
+		return fmt.Errorf("%s must be a positive number of days, got %d", envBlobRetentionDays, c.BlobRetentionDays)
+	}
+
+	// A blob has to outlive the message pointing at it: the recipient learns
+	// the blob id only by decrypting that message, so expiring blobs sooner
+	// would leave retrievable messages referencing images that are already gone.
+	if c.BlobRetentionDays < c.MessageRetentionDays {
+		return fmt.Errorf("%s (%d) must not be shorter than %s (%d), or a message could outlive the blob it references",
+			envBlobRetentionDays, c.BlobRetentionDays, envMessageRetentionDays, c.MessageRetentionDays)
 	}
 
 	return nil

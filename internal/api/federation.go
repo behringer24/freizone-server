@@ -4,18 +4,11 @@
 package api
 
 import (
-	"crypto/ed25519"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
-	"time"
 
-	"github.com/behringer24/freizone-server/internal/auth"
 	"github.com/behringer24/freizone-server/internal/store"
-	"github.com/behringer24/freizone-server/pkg/address"
-	"github.com/behringer24/freizone-server/pkg/devicecert"
-	"github.com/behringer24/freizone-server/pkg/httpsig"
 )
 
 // handleReceiveFederatedMessage accepts an encrypted message envelope from
@@ -61,95 +54,17 @@ func (a *API) handleReceiveFederatedMessage(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	senderRootPub, err := decodeBase64Key(req.SenderRootPubKey, ed25519.PublicKeySize)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "invalid sender_root_pub_key: "+err.Error())
-		return
-	}
-	if valid, err := address.Verify(req.SenderAccountID, senderRootPub); err != nil || !valid {
-		writeError(w, http.StatusBadRequest, "invalid_request", "sender_account_id does not match sender_root_pub_key")
-		return
-	}
-
-	senderDevicePub, err := decodeBase64Key(req.SenderDeviceCert.DevicePubKey, ed25519.PublicKeySize)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "invalid sender_device_cert.device_pub_key: "+err.Error())
-		return
-	}
-	certIssuedAt, err := time.Parse(time.RFC3339, req.SenderDeviceCert.IssuedAt)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "invalid sender_device_cert.issued_at")
-		return
-	}
-	certSig, err := decodeBase64Key(req.SenderDeviceCert.Signature, ed25519.SignatureSize)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "invalid sender_device_cert.signature")
-		return
-	}
-	cert := &devicecert.DeviceCertificate{
-		AccountID:    req.SenderAccountID,
-		DeviceID:     req.SenderDeviceCert.DeviceID,
-		DevicePubKey: senderDevicePub,
-		IssuedAt:     certIssuedAt,
-		Signature:    certSig,
-	}
-	if err := cert.Verify(senderRootPub); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_certificate", "sender device certificate signature is invalid")
-		return
-	}
-
-	blocked, err := store.IsFederationBlocked(a.DB, req.SenderAccountID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
-		return
-	}
-	if blocked {
-		writeError(w, http.StatusForbidden, "forbidden", "sender is blocked on this server")
-		return
-	}
-
-	headers, err := httpsig.ParseRequestHeaders(r)
-	if err != nil {
-		writeError(w, http.StatusUnauthorized, "unauthorized", "authentication failed")
-		return
-	}
-	// Binds the two independently-supplied facts together: the signature
-	// proves possession of the key named in Signature-Key-Id, and the
-	// certificate proves that same key is certified under the claimed
-	// account -- so Signature-Key-Id must literally be that key, the same
-	// self-describing-key convention freizone-gateway already uses.
-	if headers.KeyID != base64.StdEncoding.EncodeToString(senderDevicePub) {
-		writeError(w, http.StatusUnauthorized, "unauthorized", "authentication failed")
-		return
-	}
-	ts, err := httpsig.ParseTimestamp(headers.Timestamp)
-	if err != nil {
-		writeError(w, http.StatusUnauthorized, "unauthorized", "authentication failed")
+	sender, ok := a.verifyFederatedSender(w, r, federatedSenderClaim{
+		AccountID:   req.SenderAccountID,
+		RootPubKey:  req.SenderRootPubKey,
+		DeviceCert:  req.SenderDeviceCert,
+		BodyDigest:  "", // JSON body: digest is computed from the bytes below
+		RequestBody: body,
+	})
+	if !ok {
 		return
 	}
 	now := a.Now()
-	if !httpsig.WithinSkew(ts, now, auth.MaxClockSkew) {
-		writeError(w, http.StatusUnauthorized, "unauthorized", "authentication failed")
-		return
-	}
-	canonical := httpsig.CanonicalStringFromRequest(r, headers, body)
-	if err := httpsig.Verify(canonical, headers.Signature, senderDevicePub); err != nil {
-		writeError(w, http.StatusUnauthorized, "unauthorized", "authentication failed")
-		return
-	}
-	// expires_at = ts + MaxClockSkew, same reasoning as internal/auth's own
-	// nonce bookkeeping: once real time has moved this far past ts, a
-	// replay of this exact timestamp is already rejected by the skew check
-	// above, making the record safe to purge.
-	nonceOK, err := store.RecordNonce(a.DB, headers.KeyID, headers.Nonce, ts, ts.Add(auth.MaxClockSkew))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
-		return
-	}
-	if !nonceOK {
-		writeError(w, http.StatusUnauthorized, "unauthorized", "authentication failed")
-		return
-	}
 
 	recipientDevice, err := store.GetDevice(a.DB, req.RecipientDeviceID)
 	if err != nil {
@@ -186,8 +101,8 @@ func (a *API) handleReceiveFederatedMessage(w http.ResponseWriter, r *http.Reque
 
 	msg := store.Message{
 		MessageID:          req.MessageID,
-		SenderAccountID:    req.SenderAccountID,
-		SenderDeviceID:     req.SenderDeviceCert.DeviceID,
+		SenderAccountID:    sender.AccountID,
+		SenderDeviceID:     sender.DeviceID,
 		RecipientAccountID: recipientDevice.AccountID,
 		RecipientDeviceID:  req.RecipientDeviceID,
 		Payload:            string(req.Payload),

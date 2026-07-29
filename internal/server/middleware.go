@@ -3,6 +3,7 @@ package server
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -39,6 +40,18 @@ func (w *statusWriter) Flush() {
 	}
 }
 
+// BodyLimitOverride raises (or lowers) the request-body cap for one route
+// prefix. Needed because the cap is applied here, as the outermost body
+// wrapper -- a handler can only ever tighten what it receives, never widen
+// it, so a route that legitimately carries more than a chat message (the
+// blob transport, see internal/api/blobs.go) has to be declared up front.
+type BodyLimitOverride struct {
+	// PathPrefix is matched against the request path with strings.HasPrefix,
+	// so "/v1/blobs" also covers "/v1/blobs/{id}".
+	PathPrefix string
+	MaxBytes   int64
+}
+
 // withMaxBody caps every request body at maxBytes, rejecting anything
 // larger (the handler's own body-read -- json.Decode or io.ReadAll --
 // gets a *http.MaxBytesError instead of the full oversized body) rather
@@ -46,12 +59,26 @@ func (w *statusWriter) Flush() {
 // disables the cap (kept out of validated Config -- see
 // internal/config -- so this is just defense against a caller
 // misconfiguring it directly).
-func withMaxBody(next http.Handler, maxBytes int64) http.Handler {
-	if maxBytes <= 0 {
+//
+// Requests matching an entry in overrides get that entry's cap instead of
+// the global one. Keeping the exception here, rather than letting each
+// handler decide, means the limit still applies before any handler runs and
+// there is exactly one place that answers "how big may this request be".
+func withMaxBody(next http.Handler, maxBytes int64, overrides []BodyLimitOverride) http.Handler {
+	if maxBytes <= 0 && len(overrides) == 0 {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+		limit := maxBytes
+		for _, o := range overrides {
+			if strings.HasPrefix(r.URL.Path, o.PathPrefix) {
+				limit = o.MaxBytes
+				break
+			}
+		}
+		if limit > 0 {
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
+		}
 		next.ServeHTTP(w, r)
 	})
 }
