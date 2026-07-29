@@ -1045,9 +1045,17 @@ attachment against those rather than discovering them via a `413` after
 uploading.
 
 Blobs are deleted when the recipient `DELETE`s them, when the retention
-window expires, or when their recipient device is removed (cascade). They
-are **not** deleted on download: a client may reinstall, or fetch a
-thumbnail first and the full image later.
+window expires, or when their recipient device is removed (cascade).
+
+The server does **not** delete on `GET`: a read proves nothing about whether
+the client decrypted and stored the bytes, and range requests make "finished
+downloading" ambiguous anyway. Instead the recipient is expected to `DELETE`
+the blob once it has the plaintext safely on disk — the same
+process-then-remove contract as the message queue (§5). Retention is the
+backstop for blobs whose recipient never comes back.
+
+Only the recipient can retrieve a blob, so a sender cannot re-fetch what it
+uploaded; its own copy is whatever it kept locally at send time.
 
 ## 11. Chat invite QR codes (`freizone://chat`)
 
