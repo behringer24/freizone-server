@@ -29,5 +29,15 @@ func (a *API) handleGetServerStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
 		return
 	}
-	writeJSON(w, http.StatusOK, serverStatusResponse{Claimed: claimed, RegistrationPolicy: policy, FederationEnabled: federationEnabled})
+	// Advertised so a sender can size (or recompress) an attachment before
+	// uploading, instead of discovering a foreign server's limit by getting
+	// a 413 after pushing the whole thing -- the recipient's server is the
+	// one that stores blobs, and its limits are not the sender's to guess.
+	writeJSON(w, http.StatusOK, serverStatusResponse{
+		Claimed:            claimed,
+		RegistrationPolicy: policy,
+		FederationEnabled:  federationEnabled,
+		BlobsEnabled:       a.Config.BlobsEnabled,
+		MaxBlobBytes:       a.Config.MaxBlobBytes,
+	})
 }

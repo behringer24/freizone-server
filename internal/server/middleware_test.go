@@ -121,7 +121,7 @@ func TestWithMaxBodyAllowsBodyAtOrUnderLimit(t *testing.T) {
 	handler := withMaxBody(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, readErr = io.ReadAll(r.Body)
 		w.WriteHeader(http.StatusOK)
-	}), 10)
+	}), 10, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/foo", strings.NewReader("0123456789")) // exactly 10 bytes
 	rec := httptest.NewRecorder()
@@ -140,7 +140,7 @@ func TestWithMaxBodyRejectsOversizedBody(t *testing.T) {
 	handler := withMaxBody(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, readErr = io.ReadAll(r.Body)
 		w.WriteHeader(http.StatusOK)
-	}), 10)
+	}), 10, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/foo", strings.NewReader("this body is longer than ten bytes"))
 	rec := httptest.NewRecorder()
@@ -163,7 +163,7 @@ func TestWithMaxBodyZeroDisablesTheLimit(t *testing.T) {
 		readErr = err
 		bodyLen = len(body)
 		w.WriteHeader(http.StatusOK)
-	}), 0)
+	}), 0, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/foo", strings.NewReader("an arbitrarily long body, unbounded when maxBytes <= 0"))
 	rec := httptest.NewRecorder()
@@ -174,5 +174,80 @@ func TestWithMaxBodyZeroDisablesTheLimit(t *testing.T) {
 	}
 	if bodyLen == 0 {
 		t.Error("expected the full body to be readable with the limit disabled")
+	}
+}
+
+// The blob transport only works because a route prefix can carry a larger
+// body than the global cap -- and the global cap must keep applying strictly
+// everywhere else, since it is the flood defense for unauthenticated routes.
+
+func TestWithMaxBodyOverrideRaisesLimitForMatchingPrefix(t *testing.T) {
+	var readErr error
+	var bodyLen int
+	handler := withMaxBody(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		readErr, bodyLen = err, len(body)
+		w.WriteHeader(http.StatusOK)
+	}), 10, []BodyLimitOverride{{PathPrefix: "/v1/blobs", MaxBytes: 1000}})
+
+	body := strings.Repeat("x", 500) // far over the global 10, under the override
+	req := httptest.NewRequest(http.MethodPost, "/v1/blobs", strings.NewReader(body))
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if readErr != nil {
+		t.Errorf("unexpected read error under the override limit: %v", readErr)
+	}
+	if bodyLen != len(body) {
+		t.Errorf("read %d bytes, want %d", bodyLen, len(body))
+	}
+}
+
+func TestWithMaxBodyOverrideStillEnforcesItsOwnLimit(t *testing.T) {
+	var readErr error
+	handler := withMaxBody(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, readErr = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}), 10, []BodyLimitOverride{{PathPrefix: "/v1/blobs", MaxBytes: 100}})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/blobs", strings.NewReader(strings.Repeat("x", 500)))
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	var maxBytesErr *http.MaxBytesError
+	if !errors.As(readErr, &maxBytesErr) {
+		t.Errorf("error = %v, want *http.MaxBytesError -- a raised limit is still a limit", readErr)
+	}
+}
+
+func TestWithMaxBodyOverrideDoesNotLeakToOtherRoutes(t *testing.T) {
+	var readErr error
+	handler := withMaxBody(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, readErr = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}), 10, []BodyLimitOverride{{PathPrefix: "/v1/blobs", MaxBytes: 100000}})
+
+	// A non-blob route must still get the small global cap, or declaring a
+	// blob override would quietly widen the whole API's flood surface.
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(strings.Repeat("x", 500)))
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	var maxBytesErr *http.MaxBytesError
+	if !errors.As(readErr, &maxBytesErr) {
+		t.Errorf("error = %v, want *http.MaxBytesError on a route with no override", readErr)
+	}
+}
+
+func TestWithMaxBodyOverrideCoversSubPaths(t *testing.T) {
+	var readErr error
+	handler := withMaxBody(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, readErr = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}), 10, []BodyLimitOverride{{PathPrefix: "/v1/blobs", MaxBytes: 1000}})
+
+	// "/v1/blobs/{id}" must inherit the prefix's limit, not the global one.
+	req := httptest.NewRequest(http.MethodDelete, "/v1/blobs/abc123", strings.NewReader(strings.Repeat("x", 500)))
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if readErr != nil {
+		t.Errorf("unexpected read error on a sub-path of the override prefix: %v", readErr)
 	}
 }

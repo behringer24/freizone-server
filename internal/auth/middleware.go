@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/behringer24/freizone-server/internal/store"
@@ -28,6 +29,24 @@ type Middleware struct {
 	// per-request write to the used_nonces table (the hottest write path):
 	// nonces are purely ephemeral (5-min TTL) and need not survive a restart.
 	nonces *nonceCache
+	// StreamedBodyPaths are routes whose bodies are too large to buffer for
+	// authentication (the blob upload), written as "METHOD /path/prefix".
+	// On these, and ONLY these, the canonical string's body hash is taken
+	// from the client's Blob-Digest header instead of from the body itself,
+	// so the signature can be checked before reading anything -- see
+	// authenticate.
+	//
+	// Deliberately an explicit allowlist rather than "honour the header
+	// whenever it appears": on a normal route, trusting a claimed digest
+	// would let a caller sign one body and send another, breaking the
+	// body-to-signature binding every other endpoint relies on. A route
+	// listed here MUST verify the body against the signed digest as it
+	// reads it (blobstore.Put does).
+	//
+	// The method is part of the entry because it is specifically the upload
+	// that streams: a GET or DELETE under the same path prefix has no body
+	// and must keep authenticating the ordinary way.
+	StreamedBodyPaths []string
 }
 
 // NewMiddleware builds a Middleware backed by db, logging authentication
@@ -88,13 +107,27 @@ func (m *Middleware) authenticate(r *http.Request) (Identity, error) {
 		return Identity{}, errors.New("auth: device is not active")
 	}
 
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		return Identity{}, fmt.Errorf("auth: reading body: %w", err)
+	var canonical string
+	if m.isStreamedBodyRequest(r) {
+		// Body left unread: the handler streams it straight to disk while
+		// hashing, and rejects it if the bytes don't match this digest. The
+		// header is mandatory here -- falling back to reading the body would
+		// reintroduce exactly the buffering this avoids.
+		digest := r.Header.Get(httpsig.HeaderBodyDigest)
+		if digest == "" {
+			return Identity{}, errors.New("auth: missing body digest header on a streamed-body route")
+		}
+		digest = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(digest), "sha256="))
+		canonical = httpsig.CanonicalStringWithBodyDigest(
+			r.Method, r.URL.Path, r.URL.RawQuery, headers.Timestamp, headers.Nonce, headers.KeyID, digest)
+	} else {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			return Identity{}, fmt.Errorf("auth: reading body: %w", err)
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		canonical = httpsig.CanonicalStringFromRequest(r, headers, body)
 	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-
-	canonical := httpsig.CanonicalStringFromRequest(r, headers, body)
 	if err := httpsig.Verify(canonical, headers.Signature, device.DevicePubKey); err != nil {
 		return Identity{}, err
 	}
@@ -115,4 +148,23 @@ func (m *Middleware) authenticate(r *http.Request) (Identity, error) {
 	}
 
 	return Identity{AccountID: device.AccountID, DeviceID: device.DeviceID, Role: account.Role}, nil
+}
+
+// isStreamedBodyRequest reports whether r is one of the routes whose body is
+// authenticated by digest rather than by reading it (see StreamedBodyPaths).
+// Entries are "METHOD /path/prefix"; an entry without a method matches any.
+func (m *Middleware) isStreamedBodyRequest(r *http.Request) bool {
+	for _, entry := range m.StreamedBodyPaths {
+		method, prefix, hasMethod := strings.Cut(entry, " ")
+		if !hasMethod {
+			if strings.HasPrefix(r.URL.Path, entry) {
+				return true
+			}
+			continue
+		}
+		if r.Method == method && strings.HasPrefix(r.URL.Path, prefix) {
+			return true
+		}
+	}
+	return false
 }

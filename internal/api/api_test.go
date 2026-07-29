@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/behringer24/freizone-server/internal/auth"
+	"github.com/behringer24/freizone-server/internal/blobstore"
 	"github.com/behringer24/freizone-server/internal/config"
 	"github.com/behringer24/freizone-server/internal/store"
 )
@@ -41,13 +42,33 @@ func newTestAPI(t *testing.T, policy config.RegistrationPolicy) (*API, *sql.DB) 
 		t.Fatalf("GetRelayIdentity() error = %v", err)
 	}
 
-	cfg := &config.Config{RegistrationPolicy: policy, MessageRetentionDays: 14, FederationEnabled: true, MaxQueuedMessagesPerDevice: 1000}
+	cfg := &config.Config{
+		RegistrationPolicy:         policy,
+		MessageRetentionDays:       14,
+		FederationEnabled:          true,
+		MaxQueuedMessagesPerDevice: 1000,
+		BlobsEnabled:               true,
+		MaxBlobBytes:               8 * 1024 * 1024,
+		MaxBlobBytesPerDevice:      128 * 1024 * 1024,
+		MaxBlobsPerDevice:          200,
+		BlobRetentionDays:          14,
+	}
 	authMW := auth.NewMiddleware(db, nil)
+	// Matches cmd/server: the blob upload authenticates against the client's
+	// stated body digest rather than by buffering the body.
+	authMW.StreamedBodyPaths = []string{"POST /v1/blobs"}
 	a := New(db, cfg, authMW, nil)
 	a.Now = func() time.Time { return time.Now() }
 	a.VAPIDPublicKey = vapidPublicKey
 	a.VAPIDPrivateKey = vapidPrivateKey
 	a.RelayPubKey = relayPub
 	a.RelayPrivKey = relayPriv
+
+	blobs, err := blobstore.New(filepath.Join(t.TempDir(), "blobs"))
+	if err != nil {
+		t.Fatalf("blobstore.New() error = %v", err)
+	}
+	a.Blobs = blobs
+
 	return a, db
 }

@@ -30,6 +30,10 @@ type Options struct {
 	Logger           *slog.Logger
 	// MaxRequestBodyBytes caps every request body -- see withMaxBody.
 	MaxRequestBodyBytes int64
+	// BodyLimitOverrides raises that cap for specific route prefixes (the
+	// blob transport), since the cap is applied outside the handler and so
+	// cannot be widened from within one.
+	BodyLimitOverrides []BodyLimitOverride
 }
 
 // Server wraps one or two http.Server instances, depending on TLS mode.
@@ -40,7 +44,7 @@ type Server struct {
 
 // New builds a Server for opts. It does not start listening.
 func New(opts Options) (*Server, error) {
-	wrapped := withLogging(withRecover(withMaxBody(opts.Handler, opts.MaxRequestBodyBytes), opts.Logger), opts.Logger)
+	wrapped := withLogging(withRecover(withMaxBody(opts.Handler, opts.MaxRequestBodyBytes, opts.BodyLimitOverrides), opts.Logger), opts.Logger)
 
 	switch opts.TLSMode {
 	case config.TLSModeOff:

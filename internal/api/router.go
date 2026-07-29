@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/behringer24/freizone-server/internal/auth"
+	"github.com/behringer24/freizone-server/internal/blobstore"
 	"github.com/behringer24/freizone-server/internal/config"
 )
 
@@ -36,6 +37,10 @@ type API struct {
 	// notifyPushViaGateway), set by main.go after store.InitRelayIdentity.
 	RelayPubKey  ed25519.PublicKey
 	RelayPrivKey ed25519.PrivateKey
+	// Blobs stores encrypted attachment ciphertext (see blobs.go), set by
+	// main.go. Nil disables the blob routes -- they answer 404, the same as
+	// an operator turning BlobsEnabled off.
+	Blobs *blobstore.Store
 }
 
 // New builds an API with the given dependencies.
@@ -99,6 +104,17 @@ func (a *API) Router() http.Handler {
 	// federation.go) instead of the local-device-lookup Middleware
 	// performs -- a foreign sender has no local device row to look up.
 	mux.HandleFunc("POST /v1/federation/messages", a.handleReceiveFederatedMessage)
+	// Blob transport (SRV-07). The upload's body is raw ciphertext, far over
+	// the global body cap -- see the per-path override in cmd/server/main.go
+	// and the streamed-body authentication in internal/auth.
+	mux.Handle("POST /v1/blobs", a.Auth.Require(http.HandlerFunc(a.handleUploadBlob)))
+	// Public for the same reason as federation/messages: a sender on another
+	// server has no local device row for the middleware to resolve, so this
+	// handler verifies its identity chain inline.
+	mux.HandleFunc("POST /v1/federation/blobs", a.handleUploadFederatedBlob)
+	mux.Handle("GET /v1/blobs/{blob_id}", a.Auth.Require(http.HandlerFunc(a.handleDownloadBlob)))
+	mux.Handle("DELETE /v1/blobs/{blob_id}", a.Auth.Require(http.HandlerFunc(a.handleDeleteBlob)))
+
 	mux.Handle("GET /v1/messages", a.Auth.Require(http.HandlerFunc(a.handleListMessages)))
 	mux.Handle("DELETE /v1/messages/{message_id}", a.Auth.Require(http.HandlerFunc(a.handleDeleteMessage)))
 	mux.Handle("GET /v1/messages/stream", a.Auth.Require(http.HandlerFunc(a.handleMessageStream)))
