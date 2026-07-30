@@ -203,10 +203,13 @@ last field. The server then:
    signed digest.
 
 This keeps the body cryptographically bound to the signature: a caller can
-only store bytes it actually signed for. The variant is enabled per route on
-the server (`POST /v1/blobs`); on every other endpoint a `Blob-Digest` header
-is ignored and the body itself is hashed, so it can never be used to
-substitute an unsigned body elsewhere.
+only store bytes it actually signed for. The variant applies to the two blob
+upload routes and nowhere else: `POST /v1/blobs` has it enabled per route in
+the authentication middleware, and `POST /v1/federation/blobs` — which is not
+behind that middleware, since a federated sender has no device row to look up
+(§9) — performs the equivalent check inline in its handler. On every other
+endpoint a `Blob-Digest` header is ignored and the body itself is hashed, so
+it can never be used to substitute an unsigned body elsewhere.
 
 ## 4. REST endpoints
 
@@ -314,7 +317,13 @@ even with an invite code (the invite-code check in `POST /v1/accounts` is
 never reached while the policy is `closed`).
 `200`:
 ```json
-{ "claimed": true, "registration_policy": "open", "federation_enabled": true }
+{
+  "claimed": true,
+  "registration_policy": "open",
+  "federation_enabled": true,
+  "blobs_enabled": true,
+  "max_blob_bytes": 8388608
+}
 ```
 `claimed` is whether the one-time setup token has already been used
 (i.e. an admin exists) — not sensitive, same trust level as the
@@ -325,6 +334,15 @@ whether their own users may reach other servers at all — with it off, a
 peer's replies would be blocked inbound, so an honest client won't start or
 send into such a cross-server conversation (older servers omit the field;
 clients treat its absence as `true`).
+
+`blobs_enabled` and `max_blob_bytes` describe this server's attachment
+transport (§10), so a sender can size an attachment to what the *recipient's*
+server will actually take instead of discovering the limit as a `413`
+mid-upload. Note the absence rule is the opposite of `federation_enabled`'s:
+a server that omits `blobs_enabled` predates §10 and has no blob endpoints at
+all, so clients must treat its absence as **off**, not on. `max_blob_bytes`
+absent or `0` means "no limit stated" — an oversized upload then still fails
+server-side, as it would have anyway.
 
 ### `GET /v1/accounts/{id}`
 No auth — a public key directory, analogous to a keyserver. `200`:
@@ -478,10 +496,12 @@ hand out.
 `403` if the caller is neither admin nor moderator.
 
 ### Server admin endpoints
-The user list and role changes are available to admins and moderators
-alike (moderators also get invite creation, documented above); blocking,
-deleting, and changing the registration policy are admin-only, so
-privilege escalation and account removal can never come from a moderator.
+Moderators get read-only visibility plus invite creation: the account list,
+the current registration policy, the federation switch (all `GET`), and
+`POST /v1/admin/invites` (documented above). Everything that *changes* an
+account or the server — role changes, blocking, deleting, setting the
+registration policy, toggling federation — is admin-only, so privilege
+escalation and account removal can never come from a moderator.
 Every one of these (except `GET`) that targets an admin account rejects
 the change with `409 last_admin` if it would leave the server with zero
 active admins.
@@ -709,9 +729,11 @@ Enqueues a message envelope (§6) for a recipient device.
 `404` unknown/inactive recipient device · `409` `message_id` already used ·
 `429` recipient device's queue is already at `FREIZONE_MAX_QUEUED_MESSAGES_PER_DEVICE`
 (§9) · `413` request body exceeds `FREIZONE_MAX_REQUEST_BODY_BYTES` (enforced
-as middleware ahead of every route, so in practice a same-server signed
-request this large is rejected by the auth middleware's own body read
-first, surfacing as the generic `401` §3 already documents for every
+as middleware ahead of every route *except* the two blob upload routes, which
+are capped by `FREIZONE_MAX_BLOB_BYTES` instead — see §10 — since an
+attachment is legitimately far larger than any message; so in practice a
+same-server signed request this large is rejected by the auth middleware's own
+body read first, surfacing as the generic `401` §3 already documents for every
 auth failure, rather than this `413`).
 
 If the recipient device has no live SSE stream (`GET /v1/messages/stream`)
@@ -987,6 +1009,52 @@ Flow:
    `blob_id` and the key.
 4. Recipient decrypts the message, fetches the blob from **its own** server,
    and decrypts it locally.
+
+### The attachment reference (client-to-client)
+
+Step 3's reference is a client-to-client contract, not something the server
+ever parses — it lives inside the encrypted payload envelope of §6, in that
+envelope's `attachments` list. Documented here for the same reason the
+envelope itself is: anyone writing a second client needs it to interoperate.
+
+```json
+{
+  "kind": "image",
+  "alg": "aes-256-gcm",
+  "blob_id": "64 hex chars",
+  "key": "base64 (32 bytes)",
+  "mime": "image/jpeg",
+  "size": 214512,
+  "w": 1600,
+  "h": 1200,
+  "thumb": "base64 (optional, ≤ 2 KiB)"
+}
+```
+
+- `kind` — `"image"` today. An unrecognized kind must render as an
+  unsupported-attachment placeholder rather than break the message, which is
+  what lets video/audio be added without a format change.
+- `alg` — a string rather than an implied cipher, so changing ciphers stays
+  additive.
+- `key` — this blob's own symmetric key, freshly generated per attachment and
+  deliberately **not** ratchet-derived, so the picture stays decryptable after
+  a secure-session reset (§5) discards ratchet state.
+- `size`, `w`, `h` — the pixel dimensions let a client reserve the final
+  aspect ratio before the blob has downloaded, so a transcript does not reflow
+  as pictures arrive.
+- `thumb` — an optional inline preview, small enough to ride inside the
+  message itself (**at most 2 KiB**), shown blurred until the real blob lands.
+  The cap must be enforced when *decoding* as well as encoding: otherwise a
+  buggy or hostile peer could inflate the receiver's stored history through
+  this field.
+- Deliberately absent: any `server` field (a blob always lives on the
+  recipient's own server, so the fetching client already knows where to look)
+  and any filename (it would leak device paths and camera details for no
+  benefit).
+
+A malformed entry — no `blob_id`, no `key`, an oversized `thumb` — should be
+dropped on its own rather than failing the whole message: the text still
+deserves to arrive.
 
 ### Endpoints
 
