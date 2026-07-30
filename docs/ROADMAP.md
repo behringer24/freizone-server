@@ -221,11 +221,23 @@ default (consumed in `app_session.dart`); the reserved-but-forward-compatible
 `attachments` field in `MessageContent` (freizone-app), so an old client's
 JSON parser ignores fields it doesn't understand instead of failing.
 
-**Not yet audited:** whether `blobs_enabled`/`max_blob_bytes` (shipped with
-SRV-07) are actually consumed anywhere client-side yet — they aren't as of
-this writing, since the app-side image UI (APP-04) hasn't been built. Once
-it is, this is the first real test of the pattern for a feature that isn't
-just on/off but has a numeric limit. Worth a pass over existing endpoints/UI
-to check none of them silently assume a capability instead of checking for
-it, before the surface area grows further (groups/SRV-01, multi-device/
-SRV-02).
+`blobs_enabled`/`max_blob_bytes` were the first test of this pattern for a
+capability that isn't just on/off but carries a numeric limit, and they went
+unconsumed for a while after SRV-07 shipped: APP-04's first version simply
+assumed attachments worked. Now closed — the app reads both, and does so
+from the **recipient's** server rather than its own, since that is where a
+blob is stored. A peer whose server has attachments off gets no picture
+button at all, and one over the size cap is refused with the actual limit
+named instead of a bare `413`. An unreachable or erroring status call means
+*unknown*, never *unsupported*, so the feature isn't hidden by a hiccup.
+
+Note the default differs from `federation_enabled` on purpose: an absent
+`blobs_enabled` means **off**, because a server that doesn't advertise the
+field predates SRV-07 and has no blob endpoints — whereas absent
+`federation_enabled` means on, because federation predates its own flag.
+The rule is "fall back to what that specific field's absence actually
+implies", not one global default.
+
+**Still worth doing:** a pass over existing endpoints/UI to check none of
+them silently assume a capability instead of checking for it, before the
+surface area grows further (groups/SRV-01, multi-device/SRV-02).
