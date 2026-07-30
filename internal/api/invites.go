@@ -27,6 +27,12 @@ func (a *API) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	now := a.Now()
+
+	// An explicit expires_at wins; otherwise the operator's configured
+	// default applies. Leaving a code valid forever is what would make
+	// guessing one worth attempting, so "no expiry" is only reachable by
+	// setting FREIZONE_INVITE_EXPIRY_DAYS=0 deliberately.
 	var expiresAt *time.Time
 	if req.ExpiresAt != nil && *req.ExpiresAt != "" {
 		t, err := time.Parse(time.RFC3339, *req.ExpiresAt)
@@ -35,9 +41,12 @@ func (a *API) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		expiresAt = &t
+	} else if a.Config.InviteExpiryDays > 0 {
+		t := now.AddDate(0, 0, a.Config.InviteExpiryDays)
+		expiresAt = &t
 	}
 
-	code, err := store.CreateInviteCode(a.DB, identity.AccountID, expiresAt, a.Now())
+	code, err := store.CreateInviteCode(a.DB, identity.AccountID, expiresAt, now)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
 		return

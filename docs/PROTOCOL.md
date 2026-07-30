@@ -485,15 +485,46 @@ vice versa) — a device uses exactly one wake mechanism at a time. `200
 ### `POST /v1/admin/invites` (signed, admin or moderator)
 Issues a single-use invite code (for the `invite` registration policy) —
 typically rendered by the app as a QR code (see §8) for the caller to
-hand out.
+hand out, but short enough to read aloud or write down.
 ```json
-{ "expires_at": "optional RFC3339, omit for a code that never expires" }
+{ "expires_at": "optional RFC3339; omitted means the server's default expiry" }
 ```
 `201`:
 ```json
-{ "code": "...", "expires_at": "optional" }
+{ "code": "ABCD-EFGH-JKMN", "expires_at": "optional" }
 ```
 `403` if the caller is neither admin nor moderator.
+
+**Code format.** 12 symbols of Crockford Base32 — the alphabet
+`0123456789ABCDEFGHJKMNPQRSTVWXYZ`, which omits `I`, `L`, `O` and `U` —
+returned grouped in fours for legibility. That is 60 bits of entropy.
+
+A redeemed code is **normalized before comparison**, so a client may send
+whatever the user actually typed and need not clean it up first:
+
+- case is ignored;
+- `-`, `_`, spaces, tabs and newlines are stripped, so the grouped display
+  form and the compact form a QR carries are the same code;
+- `I` and `L` are read as `1`, and `O` as `0` — unambiguous precisely
+  because the alphabet cannot produce those letters, so encountering one can
+  only mean a misread digit. `U` is left alone: nothing it plausibly stands
+  for, so it simply fails to match rather than being rewritten.
+
+The server stores only a SHA-256 hash of the normalized code, as it does for
+the setup token (§3) — a leaked database yields no working invites. Nothing
+needs the plaintext after this response, since there is deliberately no
+endpoint that lists codes; the flip side is that a lost code cannot be shown
+again and must be reissued.
+
+**Why 12 symbols and not the setup token's 8.** The token gets away with 40
+bits because it is a singleton protected by a lockout counter
+(`MaxSetupTokenAttempts`). Neither applies here: many invite codes are
+outstanding at once and *any* unused one grants registration, so a guesser
+need not target a particular code, and a failed guess identifies no code to
+lock out. The length therefore has to do the work the token's lockout does.
+Codes also carry a default expiry (`FREIZONE_INVITE_EXPIRY_DAYS`, 14 days),
+because an unbounded window is what would make guessing worth attempting at
+all.
 
 ### Server admin endpoints
 Moderators get read-only visibility plus invite creation: the account list,
@@ -823,7 +854,12 @@ freizone://join?server=<url>&code=<invite code>
 - `code` (optional): a single-use invite code from `POST
   /v1/admin/invites`. Omitted entirely when the target server's
   registration policy is `open` (no code needed) — a QR for an `open`
-  server carries only `server`.
+  server carries only `server`. Best encoded in the **compact** form
+  (`ABCDEFGHJKMN`) rather than the grouped form the endpoint returns
+  (`ABCD-EFGH-JKMN`): the code redeems either way, since the server
+  normalizes it (§4), so dropping the hyphens is purely about keeping the QR
+  sparse. A scanner must not assume the compact form, though — normalization
+  means a QR produced by another client with hyphens in it is equally valid.
 
 There's no case for an unclaimed (not-yet-bootstrapped) server: bootstrap
 needs a one-time setup token, which isn't part of this format, since QR

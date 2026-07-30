@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/behringer24/freizone-server/pkg/humancode"
 )
 
 func TestInitSetupTokenGeneratesOnce(t *testing.T) {
@@ -82,8 +84,8 @@ func TestGenerateSetupTokenFormat(t *testing.T) {
 		t.Errorf("len(token) = %d, want %d", len(token), setupTokenSymbols)
 	}
 	for _, c := range token {
-		if !strings.ContainsRune(setupTokenAlphabet, c) {
-			t.Errorf("token %q contains character %q outside setupTokenAlphabet", token, c)
+		if !strings.ContainsRune(humancode.Alphabet, c) {
+			t.Errorf("token %q contains character %q outside humancode.Alphabet", token, c)
 		}
 	}
 }

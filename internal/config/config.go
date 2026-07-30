@@ -40,6 +40,14 @@ type Config struct {
 	RegistrationPolicy   RegistrationPolicy
 	MessageRetentionDays int
 
+	// InviteExpiryDays is how long a newly issued registration invite code
+	// stays valid when the caller doesn't specify its own expiry. An
+	// unbounded window is what makes guessing a code worth attempting at
+	// all, so this defaults to a fixed period rather than "never". 0 means
+	// no default expiry -- an explicit operator choice to go back to
+	// codes that live until used.
+	InviteExpiryDays int
+
 	// LogLevel is the minimum severity written to the log ("debug",
 	// "info", "warn", "error"; defaults to info). Mainly here so the
 	// best-effort push paths -- whose individual failures are deliberately
@@ -125,6 +133,7 @@ const (
 	envDBPath               = "FREIZONE_DB_PATH"
 	envRegistrationPolicy   = "FREIZONE_REGISTRATION_POLICY"
 	envMessageRetentionDays = "FREIZONE_MESSAGE_RETENTION_DAYS"
+	envInviteExpiryDays     = "FREIZONE_INVITE_EXPIRY_DAYS"
 	envPushGatewayURL       = "FREIZONE_PUSH_GATEWAY_URL"
 	envFederationEnabled    = "FREIZONE_FEDERATION_ENABLED"
 	envMaxRequestBodyBytes  = "FREIZONE_MAX_REQUEST_BODY_BYTES"
@@ -140,6 +149,12 @@ const (
 )
 
 const defaultMessageRetentionDays = 14
+
+// defaultInviteExpiryDays bounds how long an unredeemed invite code stays
+// guessable. Two weeks is long enough to hand someone a code out of band and
+// have them get around to it, short enough that a code left lying around
+// stops mattering.
+const defaultInviteExpiryDays = 14
 
 // defaultMaxRequestBodyBytes (512 KiB) is generous for a single E2E chat
 // message (ciphertext + header, base64-encoded) while still bounding a
@@ -196,6 +211,16 @@ func Load(getenv func(string) string) (*Config, error) {
 		retentionDays = parsed
 	}
 	cfg.MessageRetentionDays = retentionDays
+
+	inviteExpiryDays := defaultInviteExpiryDays
+	if v := getenv(envInviteExpiryDays); v != "" {
+		parsed, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: invalid value %q (must be a whole number of days): %w", envInviteExpiryDays, v, err)
+		}
+		inviteExpiryDays = parsed
+	}
+	cfg.InviteExpiryDays = inviteExpiryDays
 
 	logLevel, err := parseLogLevel(getenv(envLogLevel))
 	if err != nil {
@@ -320,6 +345,11 @@ func (c *Config) validate() error {
 
 	if c.MessageRetentionDays <= 0 {
 		return fmt.Errorf("%s must be a positive number of days, got %d", envMessageRetentionDays, c.MessageRetentionDays)
+	}
+
+	// 0 is meaningful here (no default expiry), so only negatives are wrong.
+	if c.InviteExpiryDays < 0 {
+		return fmt.Errorf("%s must not be negative, got %d", envInviteExpiryDays, c.InviteExpiryDays)
 	}
 
 	if c.MaxRequestBodyBytes <= 0 {
