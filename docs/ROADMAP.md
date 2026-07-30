@@ -166,3 +166,66 @@ server's limits instead of discovering them via a 413. See PROTOCOL §10.
 
 **Still open:** the app-side image UI that uses this (APP-04), and
 resumable/chunked uploads (only needed once video lands).
+
+### SRV-08 — Moderator global block/unblock via Server Admin
+Status: planned · Also affects: freizone-app
+`POST /v1/accounts/{id}/block` and `/unblock` (`handleBlockAccount`/
+`handleUnblockAccount`, `internal/api/admin.go`) already disable the account
+**server-wide** — `internal/auth`'s middleware rejects every request from a
+disabled account, so this is already a global block, not a per-viewer one.
+But both are gated `requireAdmin`; moderators currently see the Server Admin
+Users list fully read-only (no tap targets at all, per the comment atop
+`admin_screen.dart`), so they can't use it at all.
+
+Widen just the block/unblock gate to `requireAdminOrModerator` (role changes
+and delete stay `requireAdmin` — those are more consequential and rarer).
+Client-side: give moderators the same per-row action for block/unblock
+(still no set-role/delete). Since freizone-app also has a personal,
+per-contact block (`peer_profile_screen.dart`, "Block this contact" —
+affects only the blocking user's own view of that contact, nothing
+server-side), relabel the admin-page actions to **"Block for all"** /
+**"Unblock for all"** so the scope is unambiguous next to the personal one.
+
+### SRV-09 — Admin user-list activity signals (pending messages, quota)
+Status: planned · Also affects: freizone-app
+The Server Admin Users list (`admin_screen.dart`) shows only role and blocked
+status per account (`AdminAccountSummary`: id, role, status, created_at) —
+nothing that distinguishes an active account from an abandoned one. Add, per
+account: queued/pending message count and the age of its oldest pending
+message (`store.ListPendingMessages` is per-*device* today; needs aggregating
+across an account's devices), plus attachment/blob quota usage
+(`store.BlobUsage`, also per-device, SRV-07) shown as e.g. "3.2/50 MB". The
+goal is spotting unused accounts, not live monitoring, so this can ride the
+same request that already lists accounts rather than need push updates.
+
+### SRV-12 — Forward/backward compatibility as a standing constraint
+Status: planned · Also affects: freizone-app
+Federation means any app-version/server-version combination is permanently
+in the field — a new feature must degrade gracefully rather than assume the
+peer app, the user's own server, or a remote federated server already knows
+about it. Policy (see also `freizone-claude/freizone-shared.md`): capability
+is *discovered*, never assumed, via explicit status fields (`GET
+/v1/server-status`'s `federation_enabled`, `blobs_enabled`, `max_blob_bytes`)
+or by whether an optional response field is present at all — an absent
+field falls back to its documented default (precedent: a pre-federation-flag
+server omits `federation_enabled`, treated as `true`) rather than crashing
+or silently misbehaving. When a feature genuinely isn't available on the
+other side, either hide the affected UI or tell the user plainly why (e.g.
+"this contact's app can't receive images yet") — never fail silently. A
+**baseline feature set needs no per-call capability check**: everything
+already shipped as of today, including image attachments once APP-04/SRV-07
+land end-to-end — only features newer than that need a discovery step.
+
+Already following this pattern: `federation_enabled`'s absence-means-true
+default (consumed in `app_session.dart`); the reserved-but-forward-compatible
+`attachments` field in `MessageContent` (freizone-app), so an old client's
+JSON parser ignores fields it doesn't understand instead of failing.
+
+**Not yet audited:** whether `blobs_enabled`/`max_blob_bytes` (shipped with
+SRV-07) are actually consumed anywhere client-side yet — they aren't as of
+this writing, since the app-side image UI (APP-04) hasn't been built. Once
+it is, this is the first real test of the pattern for a feature that isn't
+just on/off but has a numeric limit. Worth a pass over existing endpoints/UI
+to check none of them silently assume a capability instead of checking for
+it, before the surface area grows further (groups/SRV-01, multi-device/
+SRV-02).
