@@ -117,7 +117,7 @@ account role (admin/moderator) intact since it lives on the account row, not
 the device.
 
 ### SRV-07 — Encrypted blob transport (attachments)
-Status: in progress · Also affects: freizone-app (APP-04)
+Status: done · Also affects: freizone-app (APP-04)
 Out-of-band transport for message attachments, so multimedia messaging
 (APP-04) doesn't have to ride inside a message payload. A blob is opaque
 ciphertext the server cannot read; the message carries only a reference and
@@ -164,13 +164,18 @@ daily sweeps orphan files. `GET /v1/server-status` advertises `blobs_enabled`
 and `max_blob_bytes` so a sender can size an attachment to the recipient
 server's limits instead of discovering them via a 413. See PROTOCOL §10.
 
-**Still open:** the app-side image UI that uses this (APP-04), and
-resumable/chunked uploads (only needed once video lands).
+**Complete as of 2026-07-30.** The app-side UI that consumes this shipped
+with freizone-app 0.12.0–0.12.3 (APP-04 phase 1): pick from the gallery,
+encrypt, upload to the recipient's server, render in the bubble, view
+full-screen, and delete the blob once it is stored locally. The one item
+originally listed as still open here — resumable/chunked uploads — is only
+needed once video lands and now has its own entry, **SRV-11**.
 
 ### SRV-08 — Moderator global block/unblock via Server Admin
 Status: planned · Also affects: freizone-app
-`POST /v1/accounts/{id}/block` and `/unblock` (`handleBlockAccount`/
-`handleUnblockAccount`, `internal/api/admin.go`) already disable the account
+`POST /v1/admin/accounts/{id}/block` and `/unblock` (`handleBlockAccount`/
+`handleUnblockAccount`, `internal/api/admin.go`, routed in
+`internal/api/router.go`) already disable the account
 **server-wide** — `internal/auth`'s middleware rejects every request from a
 disabled account, so this is already a global block, not a per-viewer one.
 But both are gated `requireAdmin`; moderators currently see the Server Admin
@@ -198,8 +203,11 @@ across an account's devices), plus attachment/blob quota usage
 goal is spotting unused accounts, not live monitoring, so this can ride the
 same request that already lists accounts rather than need push updates.
 
-### SRV-12 — Forward/backward compatibility as a standing constraint
+### SRV-10 — Forward/backward compatibility as a standing constraint
 Status: planned · Also affects: freizone-app
+(Renumbered from SRV-12 on 2026-07-30 to close an accidental gap in the
+codes; SRV-10 and SRV-11 had never been issued. Older notes or commit
+messages may still say SRV-12.)
 Federation means any app-version/server-version combination is permanently
 in the field — a new feature must degrade gracefully rather than assume the
 peer app, the user's own server, or a remote federated server already knows
@@ -211,15 +219,23 @@ field falls back to its documented default (precedent: a pre-federation-flag
 server omits `federation_enabled`, treated as `true`) rather than crashing
 or silently misbehaving. When a feature genuinely isn't available on the
 other side, either hide the affected UI or tell the user plainly why (e.g.
-"this contact's app can't receive images yet") — never fail silently. A
-**baseline feature set needs no per-call capability check**: everything
-already shipped as of today, including image attachments once APP-04/SRV-07
-land end-to-end — only features newer than that need a discovery step.
+"this contact's app can't receive images yet") — never fail silently.
+
+A **baseline feature set needs no per-call capability check**: everything
+already shipped and in the field, only newer features need a discovery step.
+Attachments are the deliberate exception to that, even though they have
+shipped — not because they are new, but because the server that has to
+support them is the *recipient's*, which this client never controls and
+whose operator may have them switched off or capped differently (see the
+`blobs_enabled` discussion below). "Already shipped" only makes something
+baseline when it is a property of *our* side.
 
 Already following this pattern: `federation_enabled`'s absence-means-true
-default (consumed in `app_session.dart`); the reserved-but-forward-compatible
-`attachments` field in `MessageContent` (freizone-app), so an old client's
-JSON parser ignores fields it doesn't understand instead of failing.
+default (consumed in `app_session.dart`); and the `attachments` list in
+`MessageContent` (freizone-app), which was carried as a reserved, always-empty
+field from the day the v1 envelope was introduced — so when APP-04 finally
+filled it, no format change was needed and builds predating it still render
+the caption instead of failing to parse.
 
 `blobs_enabled`/`max_blob_bytes` were the first test of this pattern for a
 capability that isn't just on/off but carries a numeric limit, and they went
@@ -241,3 +257,25 @@ implies", not one global default.
 **Still worth doing:** a pass over existing endpoints/UI to check none of
 them silently assume a capability instead of checking for it, before the
 surface area grows further (groups/SRV-01, multi-device/SRV-02).
+
+### SRV-11 — Resumable/chunked blob uploads
+Status: planned · Blocks: APP-04 phase 2 (video)
+Split out of SRV-07, which shipped without it. A blob upload is one shot
+today: `POST /v1/blobs` streams the whole ciphertext in a single request,
+verified against the `Blob-Digest` the client signed up front (PROTOCOL §3,
+§10). That is fine for photos — they are capped at a few MiB after the
+downscale — but a video is large enough that a dropped connection at 90%
+means starting over, and mobile connections drop.
+
+Needs a protocol addition, not just a server change: some way to open an
+upload, send ranges, and commit it, while keeping SRV-07's two guarantees —
+that the signature is verified *before* any bytes are written, so a forged
+upload costs no disk, and that the stored bytes are exactly what was signed.
+A per-range digest, or a session whose overall digest is stated at open time
+and enforced at commit, are the obvious candidates. The abandoned-upload
+sweep that already exists (hourly ticker) is what would reclaim a session
+the client never commits.
+
+Deliberately not started: it is only worth designing alongside video
+(APP-04 phase 2), since the chunk size and resume semantics should be driven
+by a real payload rather than guessed at.
