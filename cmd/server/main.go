@@ -26,6 +26,11 @@ import (
 const (
 	nonceCleanupInterval   = 10 * time.Minute
 	messageCleanupInterval = 1 * time.Hour
+	// inviteCleanupInterval is generous on purpose: invite expiry is measured
+	// in days, and nothing depends on an expired code disappearing promptly
+	// -- it is already unusable the moment it expires. This only reclaims the
+	// row.
+	inviteCleanupInterval = 6 * time.Hour
 
 	blobCleanupInterval = 1 * time.Hour
 	// blobCleanupBatchSize bounds one expiry pass: each blob costs a file
@@ -172,6 +177,7 @@ func run() error {
 	nonceCleanupDone := runNonceCleanup(ctx, authMW, logger)
 	messageCleanupDone := runMessageCleanup(ctx, db, logger)
 	blobCleanupDone := runBlobCleanup(ctx, db, blobs, logger)
+	inviteCleanupDone := runInviteCleanup(ctx, db, logger)
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.ListenAndServe() }()
@@ -196,6 +202,7 @@ func run() error {
 	<-nonceCleanupDone
 	<-messageCleanupDone
 	<-blobCleanupDone
+	<-inviteCleanupDone
 	return nil
 }
 
@@ -364,6 +371,34 @@ func sweepOrphanBlobs(db *sql.DB, blobs *blobstore.Store) (int, error) {
 // runMessageCleanup starts a background goroutine that periodically purges
 // message-queue entries past their retention window, until ctx is
 // cancelled. The returned channel is closed once the goroutine has exited.
+// runInviteCleanup starts a background goroutine that periodically removes
+// invite codes which expired without being redeemed. Redeemed codes are left
+// alone deliberately -- see store.PurgeExpiredInviteCodes.
+func runInviteCleanup(ctx context.Context, db *sql.DB, logger *slog.Logger) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(inviteCleanupInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				n, err := store.PurgeExpiredInviteCodes(db, time.Now())
+				if err != nil {
+					logger.Warn("invite cleanup failed", "error", err)
+					continue
+				}
+				if n > 0 {
+					logger.Info("purged expired invite codes", "count", n)
+				}
+			}
+		}
+	}()
+	return done
+}
+
 func runMessageCleanup(ctx context.Context, db *sql.DB, logger *slog.Logger) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {

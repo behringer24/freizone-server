@@ -516,6 +516,16 @@ needs the plaintext after this response, since there is deliberately no
 endpoint that lists codes; the flip side is that a lost code cannot be shown
 again and must be reissued.
 
+**What is retained.** A code that expires without being redeemed is deleted
+by a periodic sweep: it can never be accepted again, so the row is dead
+weight. A **redeemed** code's row is kept, and with it `created_by` and
+`used_by` — i.e. which account issued the invite and which account joined
+with it. That pairing is retained deliberately, as the one piece of
+moderation history this server keeps ("who let that account in?"); it is
+never exposed through any endpoint, so only the operator can see it. Deleting
+either account clears its side (the issuer's invites cascade away, a joiner's
+reference is set to null).
+
 **Why 12 symbols and not the setup token's 8.** The token gets away with 40
 bits because it is a singleton protected by a lockout counter
 (`MaxSetupTokenAttempts`). Neither applies here: many invite codes are

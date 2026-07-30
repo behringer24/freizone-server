@@ -83,6 +83,31 @@ func inviteCodeHash(code string) string {
 	return hashToken(humancode.Normalize(code))
 }
 
+// PurgeExpiredInviteCodes deletes invite codes that expired without ever
+// being redeemed, returning the number of rows removed. An expired unused
+// code can never be accepted again (ConsumeInviteCode's WHERE clause already
+// rejects it), so the row is pure dead weight.
+//
+// Deliberately narrow on both counts:
+//
+//   - `used_at IS NULL` — a redeemed code is kept, on purpose. Its row records
+//     who issued the invite and who joined with it, which is the one piece of
+//     moderation history this server keeps ("who let that account in?").
+//   - `expires_at IS NOT NULL` — a code issued while
+//     FREIZONE_INVITE_EXPIRY_DAYS was 0 has no expiry and is meant to live
+//     until redeemed, so it must not be swept up by a later config change.
+func PurgeExpiredInviteCodes(db DBTX, now time.Time) (int64, error) {
+	res, err := db.Exec(
+		`DELETE FROM invite_codes
+		 WHERE used_at IS NULL AND expires_at IS NOT NULL AND expires_at <= ?`,
+		formatTime(now),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("store: purging expired invite codes: %w", err)
+	}
+	return res.RowsAffected()
+}
+
 // GetInviteCode looks up an invite code, accepting it in any form a person
 // might have typed it (see humancode.Normalize). It returns ErrNotFound if
 // no such code exists.

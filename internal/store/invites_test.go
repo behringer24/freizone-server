@@ -198,3 +198,103 @@ func TestConsumeInviteCodeStillRejectsAWrongCode(t *testing.T) {
 		t.Errorf("ConsumeInviteCode(wrong code) error = %v, want ErrNotFound", err)
 	}
 }
+
+func TestPurgeExpiredInviteCodes(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now()
+	mustCreateAccount(t, db, "admin1")
+	mustCreateAccount(t, db, "joiner")
+
+	past := now.Add(-time.Hour)
+	future := now.Add(24 * time.Hour)
+
+	// 1. Expired and never redeemed -- the only case that should go.
+	expiredUnused, err := CreateInviteCode(db, "admin1", &past, now.Add(-48*time.Hour))
+	if err != nil {
+		t.Fatalf("CreateInviteCode() error = %v", err)
+	}
+	// 2. Expired but redeemed before it lapsed: kept, because the row is the
+	//    record of who invited whom.
+	expiredUsed, err := CreateInviteCode(db, "admin1", &past, now.Add(-48*time.Hour))
+	if err != nil {
+		t.Fatalf("CreateInviteCode() error = %v", err)
+	}
+	if err := ConsumeInviteCode(db, expiredUsed, "joiner", now.Add(-2*time.Hour)); err != nil {
+		t.Fatalf("ConsumeInviteCode() error = %v", err)
+	}
+	// 3. Still valid: obviously kept.
+	stillValid, err := CreateInviteCode(db, "admin1", &future, now)
+	if err != nil {
+		t.Fatalf("CreateInviteCode() error = %v", err)
+	}
+	// 4. No expiry at all (issued while FREIZONE_INVITE_EXPIRY_DAYS=0): kept,
+	//    since it is meant to live until redeemed.
+	neverExpires, err := CreateInviteCode(db, "admin1", nil, now)
+	if err != nil {
+		t.Fatalf("CreateInviteCode() error = %v", err)
+	}
+
+	n, err := PurgeExpiredInviteCodes(db, now)
+	if err != nil {
+		t.Fatalf("PurgeExpiredInviteCodes() error = %v", err)
+	}
+	if n != 1 {
+		t.Errorf("purged %d rows, want exactly 1 (the expired unused code)", n)
+	}
+
+	if _, err := GetInviteCode(db, expiredUnused); !errors.Is(err, ErrNotFound) {
+		t.Errorf("expired unused code: GetInviteCode error = %v, want ErrNotFound", err)
+	}
+	for name, code := range map[string]string{
+		"expired but redeemed": expiredUsed,
+		"still valid":          stillValid,
+		"never expires":        neverExpires,
+	} {
+		if _, err := GetInviteCode(db, code); err != nil {
+			t.Errorf("%s code was removed (error = %v), want it kept", name, err)
+		}
+	}
+}
+
+func TestPurgeExpiredInviteCodesKeepsWhoInvitedWhom(t *testing.T) {
+	// The point of keeping redeemed rows: the pairing survives the purge.
+	db := newTestDB(t)
+	now := time.Now()
+	mustCreateAccount(t, db, "admin1")
+	mustCreateAccount(t, db, "joiner")
+
+	past := now.Add(-time.Hour)
+	code, err := CreateInviteCode(db, "admin1", &past, now.Add(-48*time.Hour))
+	if err != nil {
+		t.Fatalf("CreateInviteCode() error = %v", err)
+	}
+	if err := ConsumeInviteCode(db, code, "joiner", now.Add(-2*time.Hour)); err != nil {
+		t.Fatalf("ConsumeInviteCode() error = %v", err)
+	}
+
+	if _, err := PurgeExpiredInviteCodes(db, now); err != nil {
+		t.Fatalf("PurgeExpiredInviteCodes() error = %v", err)
+	}
+
+	inv, err := GetInviteCode(db, code)
+	if err != nil {
+		t.Fatalf("GetInviteCode() after purge error = %v", err)
+	}
+	if inv.CreatedByAccountID != "admin1" {
+		t.Errorf("CreatedByAccountID = %q, want %q", inv.CreatedByAccountID, "admin1")
+	}
+	if inv.UsedByAccountID == nil || *inv.UsedByAccountID != "joiner" {
+		t.Errorf("UsedByAccountID = %v, want %q", inv.UsedByAccountID, "joiner")
+	}
+}
+
+func TestPurgeExpiredInviteCodesOnAnEmptyTable(t *testing.T) {
+	db := newTestDB(t)
+	n, err := PurgeExpiredInviteCodes(db, time.Now())
+	if err != nil {
+		t.Fatalf("PurgeExpiredInviteCodes() error = %v", err)
+	}
+	if n != 0 {
+		t.Errorf("purged %d rows from an empty table, want 0", n)
+	}
+}
