@@ -1,29 +1,28 @@
 package store
 
 import (
-	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
-	"unicode"
+
+	"github.com/behringer24/freizone-server/pkg/humancode"
 )
 
-// setupTokenAlphabet is Crockford's Base32 alphabet: excludes I, L, O, U
-// (easily confused with 1, 1, 0, and misread as profanity) so the token is
-// easy to transcribe by hand or read aloud. Its size (32 = 2^5) means each
-// symbol carries exactly 5 bits with no modulo bias.
-const setupTokenAlphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
-
-// setupTokenSymbols * 5 bits = 40 bits of entropy. That's far less than the
-// 256 bits this token used to carry, but the token is a single-use,
+// setupTokenSymbols * 5 bits = 40 bits of entropy (see pkg/humancode for the
+// alphabet and why it is the one it is). That's far less than the 256 bits
+// this token used to carry, but the token is a single-use,
 // server-side-locked-out secret (see MaxSetupTokenAttempts below), not a
 // long-term key -- it only has to resist online guessing for the short
 // window between server start and the admin's claim, not offline brute
 // force. 8 symbols is short enough to type into a phone without a QR code.
+//
+// Note this reasoning does NOT carry over to invite codes, which are longer
+// on purpose: there are many of them outstanding at once and no per-code
+// lockout is possible, so their length has to do the work this token's
+// lockout does. See inviteCodeSymbols in invites.go.
 const setupTokenSymbols = 8
 
 // MaxSetupTokenAttempts caps failed claim attempts before the token is
@@ -64,42 +63,20 @@ func InitSetupToken(db DBTX, now time.Time) (token string, created bool, err err
 	return token, true, nil
 }
 
-// generateSetupToken picks setupTokenSymbols random symbols from
-// setupTokenAlphabet using exactly 5 random bits per symbol (bias-free
-// since the alphabet size is a power of two).
 func generateSetupToken() (string, error) {
-	const bits = setupTokenSymbols * 5
-	raw := make([]byte, (bits+7)/8)
-	if _, err := rand.Read(raw); err != nil {
+	token, err := humancode.Generate(setupTokenSymbols)
+	if err != nil {
 		return "", fmt.Errorf("store: generating setup token: %w", err)
 	}
-
-	var acc uint64
-	for _, b := range raw {
-		acc = acc<<8 | uint64(b)
-	}
-
-	buf := make([]byte, setupTokenSymbols)
-	for i := setupTokenSymbols - 1; i >= 0; i-- {
-		buf[i] = setupTokenAlphabet[acc&0x1f]
-		acc >>= 5
-	}
-	return string(buf), nil
+	return token, nil
 }
 
-// NormalizeSetupToken strips cosmetic separators/whitespace and uppercases
-// a setup token, so a dash-grouped or hand-retyped token ("abcd-1234")
-// matches the canonical form used for hashing/comparison.
+// NormalizeSetupToken makes a hand-retyped token match the canonical form
+// used for hashing and comparison -- case, cosmetic separators and the
+// digit/letter confusions the alphabet was chosen to avoid. See
+// humancode.Normalize for exactly what is forgiven and why.
 func NormalizeSetupToken(token string) string {
-	var sb strings.Builder
-	for _, c := range token {
-		switch c {
-		case '-', ' ', '\t', '\n', '\r':
-			continue
-		}
-		sb.WriteRune(unicode.ToUpper(c))
-	}
-	return sb.String()
+	return humancode.Normalize(token)
 }
 
 // ResetSetupToken deletes any existing setup token row, so the next

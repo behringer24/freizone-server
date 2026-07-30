@@ -45,6 +45,7 @@ func newTestAPI(t *testing.T, policy config.RegistrationPolicy) (*API, *sql.DB) 
 	cfg := &config.Config{
 		RegistrationPolicy:         policy,
 		MessageRetentionDays:       14,
+		InviteExpiryDays:           14,
 		FederationEnabled:          true,
 		MaxQueuedMessagesPerDevice: 1000,
 		BlobsEnabled:               true,
