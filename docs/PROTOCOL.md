@@ -716,7 +716,7 @@ confidentiality. Revisit before any real deployment.
 **Session recovery / re-key (client behavior):** a `prekey` block is normally
 only meaningful when the recipient has no existing session with that sender
 (first contact). A client MAY also accept one when a session **already**
-exists — e.g. the sender manually reset their local session after a ratchet
+exists — e.g. the sender reset their local session after a ratchet
 desync — but only as a proposal: it must attempt a fresh responder
 establishment from it and adopt the resulting session **only if it actually
 decrypts** the accompanying message, falling back to the existing session
@@ -726,6 +726,51 @@ re-verifies the sender's full self-certifying cert chain (§2, §5) — acceptin
 a re-key is not a new trust decision, just a repeat of the same one. See
 freizone-app's `AppSession.resetSecureSession` / `processIncomingMessage` for
 a reference implementation.
+
+Because a re-key must ride on *some* message, a client that has just discarded
+its session SHOULD send the invisible `rekey` control envelope (§6) rather than
+wait for the user to type something. What a desync breaks is **receiving**: the
+peer keeps sending into a session this side can no longer read, and no action of
+theirs will change that until a fresh `prekey` block from this side re-points
+them at a working session.
+
+**Detecting a desync (client behavior).** `Session.Decrypt` classifies its
+failures (`pkg/ratchet`'s `FailureCode`), and only some of them say anything
+about the session:
+
+| Code | Meaning | Evidence of desync |
+| --- | --- | --- |
+| `duplicate_message` | Redelivery of an envelope already decrypted. Delivery is at-least-once (§7), so this is routine. | no |
+| `authentication_failed` | The AEAD tag didn't verify — the message key derived here is not the one the sender used. | yes |
+| `too_many_skipped` | The header's message number is too far ahead of this side's receiving chain to bridge. | yes |
+| `no_receiving_chain` | A message for a chain that doesn't exist here yet. | yes |
+| *(none)* | Anything else — a malformed header, corrupt persisted state. No diagnosis. | no |
+
+A **single** such failure is not proof: an envelope can fail once because it
+raced a session change. Repetition is, since decrypting the same ciphertext
+against the same session is deterministic — so a client SHOULD count failures
+per envelope, give up on one after a few attempts (dropping it from the queue,
+§7), and only then count it as one unit of evidence against the *session*.
+A separate case carries the same weight and produces no error at all: an
+envelope with **no `prekey` block from a sender there is no session for**, which
+is what a client whose own session state was lost or rolled back sees. Any
+successful decrypt clears the evidence — it is the only proof the session works.
+
+On enough evidence a client MAY discard its session and re-key as above. Two
+rules keep that from making things worse:
+
+- **Order it.** If both sides re-key at once, each adopts a responder session
+  built from the other's `prekey` block while discarding the initiator session
+  the other just adopted — leaving both broken again, symmetrically, every
+  round. Ordering is derived from data both sides already have: the **lower**
+  `account_id` re-keys immediately, the higher one only if that hasn't fixed
+  things within a grace period.
+- **Space it.** Each re-key consumes one of the peer's one-time prekeys, so a
+  client MUST bound how often it will re-key with the same peer.
+
+Recovery is lossy — anything still queued on the old chain becomes
+undecryptable — so it is a last resort, and a client SHOULD record it visibly
+in the conversation rather than silently.
 
 ## 6. Message envelope & queue
 
@@ -752,8 +797,49 @@ defined here purely as a client-to-client contract, implemented in
 
 `prekey` is present **only** on the first message of a new session (Signal
 calls this shape a "PreKeySignalMessage" vs. a plain "SignalMessage" for
-everything after); `one_time_prekey_id` is omitted if none was used.
-`header` is the Double Ratchet header (§5) and is always present.
+everything after), or when re-keying an existing one (§5);
+`one_time_prekey_id` is omitted if none was used. `header` is the Double
+Ratchet header (§5) and is always present.
+
+### The plaintext inside (client-to-client)
+
+What `ciphertext` decrypts to is a JSON object whose `v` selects the shape.
+Nothing here ever reaches the server; it is documented so independent clients
+interoperate, and implemented in freizone-app (`lib/state/`).
+
+| `v` | Shape | Shown to the user |
+| --- | --- | --- |
+| absent / not JSON | Legacy: the raw bytes are the message text. | yes |
+| `1` | Chat content — text, message id, reply reference, attachment references (§10). | yes |
+| `2` | Delivery/read receipt. | no |
+| `3` | Session re-key signal (below). | no |
+
+`v: 1` is frozen: ordinary chat messages never change shape, so every later
+control envelope gets its own version. A client that meets a `v` it does not
+know MUST NOT fail the message — it renders a neutral "newer feature"
+placeholder, which is also what a client predating a control envelope will show
+for one. That is the accepted cost of the scheme: an older peer displays a
+placeholder for a message that should have been invisible, rather than silently
+mishandling it.
+
+**Session re-key signal (`v: 3`)** — the invisible carrier for a re-key (§5):
+
+```json
+{
+  "v": 3,
+  "kind": "rekey",
+  "reason": "decrypt_failures | user_requested | unspecified"
+}
+```
+
+It deliberately carries nothing else. Its entire purpose is that sending *any*
+message right after discarding the local session puts a fresh `prekey` block on
+the wire; this payload is what goes inside so the recovery costs no visible
+message. A recipient MUST NOT store or notify it, and MUST still delete it from
+its queue (§7) like any other processed envelope. `reason` is informational —
+useful for wording the transcript marker (a recovery the user triggered reads
+differently from one the app performed) and for diagnostics; an unrecognized
+value is treated as `unspecified` and never affects any security decision.
 
 ## 7. Message REST endpoints
 
