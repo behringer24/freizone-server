@@ -71,6 +71,63 @@ func TestHandleListAccountsAsAdminAndModerator(t *testing.T) {
 	}
 }
 
+// SRV-09: the list is what an operator uses to tell a live account from an
+// abandoned one, so the activity figures have to survive the trip to the wire
+// -- and be there, as zeroes, for an account with nothing going on. A missing
+// field would be indistinguishable from an older server.
+func TestHandleListAccountsCarriesActivitySignals(t *testing.T) {
+	a, db := newTestAPI(t, config.PolicyOpen)
+	admin := newAccountWithRole(t, db, store.RoleAdmin)
+	alice := registerAccount(t, a)
+	bob := registerAccount(t, a)
+
+	rec := doSignedRequest(t, a.Router(), http.MethodPost, "/v1/messages",
+		sendMessageBody(t, "msg1", bob.deviceID, `{"ciphertext":"abc"}`), alice.deviceID, alice.devicePriv)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("send status = %d, want 202, body = %s", rec.Code, rec.Body.String())
+	}
+
+	rec = doSignedRequest(t, a.Router(), http.MethodGet, "/v1/admin/accounts", nil, admin.deviceID, admin.devicePriv)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp []adminAccountResponse
+	decodeJSON(t, rec, &resp)
+
+	byID := make(map[string]adminAccountResponse, len(resp))
+	for _, acc := range resp {
+		byID[acc.ID] = acc
+	}
+
+	recipient := byID[bob.accountID]
+	if recipient.PendingMessages != 1 {
+		t.Errorf("recipient pending = %d, want 1", recipient.PendingMessages)
+	}
+	if recipient.OldestPendingAt == nil {
+		t.Error("recipient oldest_pending_at is absent, want the queued message's sent_at")
+	}
+	// The quota the usage is shown against is the per-device limit times the
+	// account's devices -- that is where it is actually enforced.
+	if want := a.Config.MaxBlobBytesPerDevice; recipient.BlobBytesLimit != want {
+		t.Errorf("recipient blob limit = %d, want %d for one device", recipient.BlobBytesLimit, want)
+	}
+	if recipient.DeviceCount != 1 {
+		t.Errorf("recipient device count = %d, want 1", recipient.DeviceCount)
+	}
+
+	// The sender's own queue is empty: present and zero, not omitted.
+	sender := byID[alice.accountID]
+	if sender.PendingMessages != 0 {
+		t.Errorf("sender pending = %d, want 0", sender.PendingMessages)
+	}
+	if sender.OldestPendingAt != nil {
+		t.Errorf("sender oldest_pending_at = %q, want absent for an empty queue", *sender.OldestPendingAt)
+	}
+	if sender.BlobBytes != 0 || sender.BlobCount != 0 {
+		t.Errorf("sender blobs = (%d, %d), want (0, 0)", sender.BlobCount, sender.BlobBytes)
+	}
+}
+
 func TestHandleSetAccountRolePromotesAndDemotes(t *testing.T) {
 	a, db := newTestAPI(t, config.PolicyOpen)
 	admin := newAccountWithRole(t, db, store.RoleAdmin)
