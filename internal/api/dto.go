@@ -85,15 +85,46 @@ type adminAccountResponse struct {
 	Role      string `json:"role"`
 	Status    string `json:"status"`
 	CreatedAt string `json:"created_at"`
+
+	// Activity signals (SRV-09), so the list can distinguish an account in
+	// use from an abandoned one. Always present, zero when there is nothing
+	// queued or stored -- an absent field would be indistinguishable from an
+	// older server that doesn't send these at all, and "0 pending" is a
+	// meaningful answer where "unknown" is not.
+	PendingMessages int `json:"pending_messages"`
+	// OldestPendingAt is omitted rather than zero-valued when the queue is
+	// empty: there is no such timestamp, and a client rendering an age from
+	// it would otherwise print something absurd.
+	OldestPendingAt *string `json:"oldest_pending_at,omitempty"`
+	BlobCount       int     `json:"blob_count"`
+	BlobBytes       int64   `json:"blob_bytes"`
+	// BlobBytesLimit is what BlobBytes is measured against: the per-device
+	// quota times the account's device count, since that is where the limit
+	// is actually enforced. Computed here rather than left to the client,
+	// which has no business knowing the server's config. Zero for an account
+	// with no devices, which a client must read as "no meaningful limit"
+	// rather than "limit of nothing".
+	BlobBytesLimit int64 `json:"blob_bytes_limit"`
+	DeviceCount    int   `json:"device_count"`
 }
 
-func adminAccountResponseFrom(acc store.Account) adminAccountResponse {
-	return adminAccountResponse{
-		ID:        acc.ID,
-		Role:      string(acc.Role),
-		Status:    acc.Status,
-		CreatedAt: acc.CreatedAt.UTC().Format(time.RFC3339),
+func adminAccountResponseFrom(acc store.Account, activity store.AccountActivity, maxBlobBytesPerDevice int64) adminAccountResponse {
+	resp := adminAccountResponse{
+		ID:              acc.ID,
+		Role:            string(acc.Role),
+		Status:          acc.Status,
+		CreatedAt:       acc.CreatedAt.UTC().Format(time.RFC3339),
+		PendingMessages: activity.PendingMessages,
+		BlobCount:       activity.BlobCount,
+		BlobBytes:       activity.BlobBytes,
+		BlobBytesLimit:  maxBlobBytesPerDevice * int64(activity.DeviceCount),
+		DeviceCount:     activity.DeviceCount,
 	}
+	if !activity.OldestPendingAt.IsZero() {
+		oldest := activity.OldestPendingAt.UTC().Format(time.RFC3339)
+		resp.OldestPendingAt = &oldest
+	}
+	return resp
 }
 
 type setAccountRoleRequest struct {

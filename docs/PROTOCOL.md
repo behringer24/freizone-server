@@ -558,11 +558,31 @@ the change with `409 last_admin` if it would leave the server with zero
 active admins.
 
 - **`GET /v1/admin/accounts`** (signed, admin or moderator) — the full
-  account list.
+  account list, each entry carrying the activity signals that distinguish an
+  account in use from an abandoned one.
   `200`:
   ```json
-  [{ "id": "...", "role": "user|moderator|admin", "status": "active|disabled", "created_at": "..." }]
+  [{
+    "id": "...", "role": "user|moderator|admin", "status": "active|disabled", "created_at": "...",
+    "pending_messages": 3, "oldest_pending_at": "...",
+    "blob_count": 2, "blob_bytes": 3355443, "blob_bytes_limit": 268435456, "device_count": 2
+  }]
   ```
+  The counts are summed across the account's devices. `oldest_pending_at` is
+  **omitted** when the queue is empty (there is no such timestamp); every
+  other field is always present, zero rather than absent, so a client can
+  tell "nothing queued" from an older server that doesn't report this at all.
+  `blob_bytes_limit` is the per-device quota (`FREIZONE_MAX_BLOB_BYTES_PER_DEVICE`)
+  times `device_count`, because that is where the limit is actually enforced —
+  it is therefore 0 for an account with no devices, which means "no meaningful
+  limit", not "a limit of nothing", and it moves as devices are added or
+  revoked. Revoked devices count: a revoked device keeps its blobs until its
+  row is deleted, so excluding it could put usage above its own limit.
+
+  These are aggregates only — how much is waiting and how much is stored,
+  never who an account talks to or what it sends. Moderators see them along
+  with the rest of the list; the whole point is being able to clean up a
+  server without being an admin.
 - **`POST /v1/admin/accounts/{id}/role`** (signed, admin only) — `{"role": "user|moderator|admin"}`.
   `200 {"status":"ok"}` · `400` invalid role · `404` unknown account ·
   `409 last_admin` demoting the server's only remaining admin.

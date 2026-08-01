@@ -52,9 +52,16 @@ func (a *API) wouldRemoveLastActiveAdmin(target *store.Account) (bool, error) {
 	return count <= 1, nil
 }
 
-// handleListAccounts returns every registered account. Available to
-// admins and moderators alike; the app also uses this to discover its own
-// role (a 403 here means "hide the admin area entirely").
+// handleListAccounts returns every registered account, each with the activity
+// signals the admin UI uses to tell a live account from an abandoned one
+// (SRV-09). Available to admins and moderators alike; the app also uses this
+// to discover its own role (a 403 here means "hide the admin area entirely").
+//
+// The activity summary rides this request rather than getting an endpoint of
+// its own: the goal is spotting unused accounts, not live monitoring, so it
+// wants exactly the refresh cadence the list already has. It costs two
+// aggregate queries for the whole server (see store.AccountActivityByAccount),
+// not one per account.
 func (a *API) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireAdminOrModerator(w, r); !ok {
 		return
@@ -65,10 +72,17 @@ func (a *API) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
 		return
 	}
+	activity, err := store.AccountActivityByAccount(a.DB)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+		return
+	}
 
 	resp := make([]adminAccountResponse, 0, len(accounts))
 	for _, acc := range accounts {
-		resp = append(resp, adminAccountResponseFrom(acc))
+		// A missing entry is the zero value: an account with nothing queued,
+		// nothing stored and no devices yet.
+		resp = append(resp, adminAccountResponseFrom(acc, activity[acc.ID], a.Config.MaxBlobBytesPerDevice))
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
