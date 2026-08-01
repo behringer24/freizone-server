@@ -13,7 +13,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 
@@ -135,10 +134,10 @@ func (s *Session) skipMessageKeys(until uint32) error {
 		return nil
 	}
 	if until-s.Nr > maxSkippedMessageKeys {
-		return errors.New("ratchet: too many skipped messages")
+		return ErrTooManySkipped
 	}
 	if s.CKr == nil {
-		return errors.New("ratchet: no receiving chain established yet")
+		return ErrNoReceivingChain
 	}
 
 	dhKey := ""

@@ -64,7 +64,11 @@ func openMessage(mk, ciphertext, sessionAD []byte, header Header) ([]byte, error
 	ad := append(append([]byte{}, sessionAD...), header.Bytes()...)
 	plaintext, err := gcm.Open(nil, nonce, ciphertext, ad)
 	if err != nil {
-		return nil, fmt.Errorf("ratchet: message authentication failed: %w", err)
+		// Wrapped around the sentinel, not around err: the GCM failure carries
+		// no information worth keeping (it is always the same opaque "message
+		// authentication failed"), whereas ErrAuthentication is what callers
+		// match on to recognise a desync (see FailureCode).
+		return nil, fmt.Errorf("%w: %v", ErrAuthentication, err)
 	}
 	return plaintext, nil
 }
