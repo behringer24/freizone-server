@@ -63,7 +63,8 @@ func (a *API) wouldRemoveLastActiveAdmin(target *store.Account) (bool, error) {
 // aggregate queries for the whole server (see store.AccountActivityByAccount),
 // not one per account.
 func (a *API) handleListAccounts(w http.ResponseWriter, r *http.Request) {
-	if _, ok := requireAdminOrModerator(w, r); !ok {
+	caller, ok := requireAdminOrModerator(w, r)
+	if !ok {
 		return
 	}
 
@@ -78,11 +79,27 @@ func (a *API) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Who invited whom is the one account-to-account link this server keeps
+	// (SRV-14), and it goes no further than admins -- a moderator gets the
+	// aggregate activity figures but not the social thread between accounts.
+	// Not queried at all for them, so the distinction is enforced by what the
+	// handler asks for and not only by what it serializes.
+	var inviters map[string]string
+	if caller.Role == store.RoleAdmin {
+		inviters, err = store.InviterByAccount(a.DB)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+			return
+		}
+	}
+
 	resp := make([]adminAccountResponse, 0, len(accounts))
 	for _, acc := range accounts {
 		// A missing entry is the zero value: an account with nothing queued,
 		// nothing stored and no devices yet.
-		resp = append(resp, adminAccountResponseFrom(acc, activity[acc.ID], a.Config.MaxBlobBytesPerDevice))
+		resp = append(resp, adminAccountResponseFrom(
+			acc, activity[acc.ID], a.Config.MaxBlobBytesPerDevice, inviters[acc.ID],
+		))
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

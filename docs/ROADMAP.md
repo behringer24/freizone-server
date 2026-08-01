@@ -439,10 +439,10 @@ Deliberately narrow, on two counts:
 - **Redeemed codes are kept.** Their row records `created_by` and `used_by`
   — which account issued an invite and which account joined with it. That is
   the one piece of moderation history this server keeps, and worth having
-  when an account turns out to be a problem. It is never exposed through any
-  endpoint (there is no invite-list route), so only the operator can read it,
-  and deleting either account clears its side already (cascade / set-null,
-  from migration 0005).
+  when an account turns out to be a problem. Deleting either account clears
+  its side already (cascade / set-null, from migration 0005). There is still
+  no invite-list route; SRV-14 later exposed the `created_by` half — and only
+  that half — as `invited_by` on the admin account list, to admins alone.
 - **Codes with no expiry are left alone**, so flipping
   `FREIZONE_INVITE_EXPIRY_DAYS` to a non-zero value cannot retroactively
   sweep away codes that were issued to live until redeemed.
@@ -453,3 +453,33 @@ That would fit the project's minimal-retention stance better — this table is
 now the only one holding anything indefinitely — but the moderation value of
 knowing who invited whom was judged the higher good. Worth revisiting if a
 public server ever makes the invite graph large enough to matter.
+
+### SRV-14 — Expose who invited an account (admin only)
+Status: done · Also affects: freizone-app (APP-11)
+`invite_codes.created_by_account_id` records which account issued the invite
+another joined with, and SRV-13 keeps redeemed rows precisely so that history
+survives — but nothing could read it short of opening the database. The
+admin-side user detail view (APP-11) is the place it is actually useful: when
+an account turns out to be a problem, the next question is who vouched for it.
+
+`store.InviterByAccount` aggregates it in one query and `GET /v1/admin/accounts`
+carries it as `invited_by`, alongside SRV-09's activity signals.
+
+**Admins only, and deliberately narrower than everything else on that
+endpoint.** A moderator gets the activity figures but not this: queue lengths
+and stored bytes are aggregates about one account, whereas "who invited whom"
+is a link *between* accounts — the only one this server holds — and that is a
+different kind of thing to hand out. The handler doesn't even run the query for
+a non-admin caller, so the rule is enforced by what it asks for rather than
+only by what it serializes.
+
+Only the `created_by` half is exposed, never `used_by`: an admin looking at an
+account can see who vouched for it, and cannot enumerate everyone a given
+account brought in. The reverse direction would be the same data read as a
+recruitment graph, and nothing needs it yet.
+
+Absent means "not known here", never "registered openly" — the field is equally
+missing for an account that needed no invite and for one whose inviter has since
+been deleted, since the invite row cascades with its creator. Documented that
+way in PROTOCOL §4, because a client that read absence as "joined openly" would
+be quietly wrong on every server that has ever deleted an account.

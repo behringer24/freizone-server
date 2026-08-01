@@ -128,6 +128,74 @@ func TestHandleListAccountsCarriesActivitySignals(t *testing.T) {
 	}
 }
 
+// SRV-14: who invited whom is the one account-to-account link this server
+// keeps, so it goes to admins and stops there -- a moderator gets the activity
+// figures without the social thread between accounts.
+func TestHandleListAccountsInviterIsAdminOnly(t *testing.T) {
+	a, db := newTestAPI(t, config.PolicyInvite)
+	admin := newAccountWithRole(t, db, store.RoleAdmin)
+	moderator := newAccountWithRole(t, db, store.RoleModerator)
+
+	code, err := store.CreateInviteCode(db, admin.accountID, nil, time.Now())
+	if err != nil {
+		t.Fatalf("CreateInviteCode() error = %v", err)
+	}
+	invitee := newIdentityKeys(t)
+	rec := doRequest(t, a.Router(), http.MethodPost, "/v1/accounts", registerBodyT(t, invitee, &code))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("register status = %d, want 201, body = %s", rec.Code, rec.Body.String())
+	}
+
+	listAs := func(caller identityKeys) map[string]adminAccountResponse {
+		t.Helper()
+		rec := doSignedRequest(t, a.Router(), http.MethodGet, "/v1/admin/accounts", nil, caller.deviceID, caller.devicePriv)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+		}
+		var resp []adminAccountResponse
+		decodeJSON(t, rec, &resp)
+		byID := make(map[string]adminAccountResponse, len(resp))
+		for _, acc := range resp {
+			byID[acc.ID] = acc
+		}
+		return byID
+	}
+
+	asAdmin := listAs(admin)[invitee.accountID]
+	if asAdmin.InvitedBy == nil {
+		t.Fatal("admin sees no invited_by, want the inviting account")
+	}
+	if *asAdmin.InvitedBy != admin.accountID {
+		t.Errorf("invited_by = %q, want %q", *asAdmin.InvitedBy, admin.accountID)
+	}
+
+	if got := listAs(moderator)[invitee.accountID]; got.InvitedBy != nil {
+		t.Errorf("moderator sees invited_by = %q, want it withheld", *got.InvitedBy)
+	}
+	// Withholding it must not have withheld the rest.
+	if got := listAs(moderator)[invitee.accountID]; got.ID != invitee.accountID || got.DeviceCount != 1 {
+		t.Errorf("moderator's entry = %+v, want the account with its device count intact", got)
+	}
+}
+
+// Absent is "not known here", never "registered openly" -- the same field is
+// empty for an account that needed no invite and for one whose inviter has
+// since been deleted (the invite row cascades with them).
+func TestHandleListAccountsOmitsInviterWhenThereIsNone(t *testing.T) {
+	a, db := newTestAPI(t, config.PolicyOpen)
+	admin := newAccountWithRole(t, db, store.RoleAdmin)
+	openJoiner := registerAccount(t, a)
+
+	rec := doSignedRequest(t, a.Router(), http.MethodGet, "/v1/admin/accounts", nil, admin.deviceID, admin.devicePriv)
+	var resp []adminAccountResponse
+	decodeJSON(t, rec, &resp)
+	for _, acc := range resp {
+		if acc.ID == openJoiner.accountID && acc.InvitedBy != nil {
+			t.Errorf("invited_by = %q for an account that registered openly, want absent", *acc.InvitedBy)
+		}
+	}
+}
+
 func TestHandleSetAccountRolePromotesAndDemotes(t *testing.T) {
 	a, db := newTestAPI(t, config.PolicyOpen)
 	admin := newAccountWithRole(t, db, store.RoleAdmin)

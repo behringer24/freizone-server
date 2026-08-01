@@ -118,3 +118,39 @@ func AccountActivityByAccount(db DBTX) (map[string]AccountActivity, error) {
 
 	return activity, nil
 }
+
+// InviterByAccount maps each account that joined with an invite to the account
+// that issued it (SRV-14), for accounts where both sides still exist.
+//
+// Absent for an account that registered under an open policy -- there was no
+// invite -- and, importantly, also for one whose *inviter* has since been
+// deleted: `invite_codes.created_by_account_id` cascades, so the row goes with
+// them and the origin is gone for good. Callers must treat a missing entry as
+// "not known", never as "nobody".
+//
+// The one place the server holds a link between two accounts, so it is read
+// only where that is the point: exposed to admins alone (see
+// handleListAccounts), and never joined against anything else.
+func InviterByAccount(db DBTX) (map[string]string, error) {
+	rows, err := db.Query(
+		`SELECT used_by_account_id, created_by_account_id
+		   FROM invite_codes WHERE used_by_account_id IS NOT NULL`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: listing invite origins: %w", err)
+	}
+	defer rows.Close()
+
+	inviters := make(map[string]string)
+	for rows.Next() {
+		var invitee, inviter string
+		if err := rows.Scan(&invitee, &inviter); err != nil {
+			return nil, fmt.Errorf("store: scanning invite origin: %w", err)
+		}
+		inviters[invitee] = inviter
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: listing invite origins: %w", err)
+	}
+	return inviters, nil
+}

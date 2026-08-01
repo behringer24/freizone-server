@@ -565,7 +565,8 @@ active admins.
   [{
     "id": "...", "role": "user|moderator|admin", "status": "active|disabled", "created_at": "...",
     "pending_messages": 3, "oldest_pending_at": "...",
-    "blob_count": 2, "blob_bytes": 3355443, "blob_bytes_limit": 268435456, "device_count": 2
+    "blob_count": 2, "blob_bytes": 3355443, "blob_bytes_limit": 268435456, "device_count": 2,
+    "invited_by": "..."
   }]
   ```
   The counts are summed across the account's devices. `oldest_pending_at` is
@@ -583,6 +584,16 @@ active admins.
   never who an account talks to or what it sends. Moderators see them along
   with the rest of the list; the whole point is being able to clean up a
   server without being an admin.
+
+  `invited_by` is the exception: the account that issued the invite this one
+  joined with, and **sent to admins only** — a moderator's response omits the
+  field entirely, and the server doesn't even look it up for them. It is the
+  one account-to-account link this server holds, which is a different kind of
+  thing from a queue length. Omitted whenever there is nothing to say, and a
+  client must read that as "not known here" rather than "registered openly":
+  the field is equally absent for an account that needed no invite and for one
+  whose inviter has since been deleted, since the invite row cascades with its
+  creator.
 - **`POST /v1/admin/accounts/{id}/role`** (signed, admin only) — `{"role": "user|moderator|admin"}`.
   `200 {"status":"ok"}` · `400` invalid role · `404` unknown account ·
   `409 last_admin` demoting the server's only remaining admin.

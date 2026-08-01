@@ -106,9 +106,17 @@ type adminAccountResponse struct {
 	// rather than "limit of nothing".
 	BlobBytesLimit int64 `json:"blob_bytes_limit"`
 	DeviceCount    int   `json:"device_count"`
+
+	// InvitedBy is the account that issued the invite this one joined with
+	// (SRV-14). Sent to admins only, and omitted rather than empty whenever
+	// there is nothing to say: open registration, or an inviter who has since
+	// been deleted (the invite row cascades with them). A caller therefore
+	// cannot read its absence as "registered openly" -- only as "not known
+	// here".
+	InvitedBy *string `json:"invited_by,omitempty"`
 }
 
-func adminAccountResponseFrom(acc store.Account, activity store.AccountActivity, maxBlobBytesPerDevice int64) adminAccountResponse {
+func adminAccountResponseFrom(acc store.Account, activity store.AccountActivity, maxBlobBytesPerDevice int64, invitedBy string) adminAccountResponse {
 	resp := adminAccountResponse{
 		ID:              acc.ID,
 		Role:            string(acc.Role),
@@ -123,6 +131,9 @@ func adminAccountResponseFrom(acc store.Account, activity store.AccountActivity,
 	if !activity.OldestPendingAt.IsZero() {
 		oldest := activity.OldestPendingAt.UTC().Format(time.RFC3339)
 		resp.OldestPendingAt = &oldest
+	}
+	if invitedBy != "" {
+		resp.InvitedBy = &invitedBy
 	}
 	return resp
 }
