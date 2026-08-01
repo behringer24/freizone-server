@@ -25,10 +25,9 @@ func requireAdminOrModerator(w http.ResponseWriter, r *http.Request) (auth.Ident
 }
 
 // requireAdmin is the shared gate for admin-only endpoints: granting
-// roles, blocking/unblocking, deleting accounts, and changing the
-// registration policy. Deliberately stricter than invite creation, so
-// privilege escalation and account removal can never come from a
-// moderator.
+// roles, deleting accounts, and changing the registration policy.
+// Deliberately stricter than invite creation, so privilege escalation and
+// account removal can never come from a moderator.
 func requireAdmin(w http.ResponseWriter, r *http.Request) (auth.Identity, bool) {
 	identity, ok := auth.IdentityFromContext(r.Context())
 	if !ok || identity.Role != store.RoleAdmin {
@@ -124,18 +123,21 @@ func (a *API) handleSetAccountRole(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleBlockAccount temporarily disables an account -- internal/auth's
-// Middleware rejects every request from a disabled account. Admin only.
+// Middleware rejects every request from a disabled account. Admin, or a
+// moderator acting on a regular member (SRV-08).
 func (a *API) handleBlockAccount(w http.ResponseWriter, r *http.Request) {
 	a.setAccountStatus(w, r, store.AccountStatusDisabled)
 }
 
-// handleUnblockAccount restores a previously blocked account. Admin only.
+// handleUnblockAccount restores a previously blocked account. Same
+// authorization as blocking.
 func (a *API) handleUnblockAccount(w http.ResponseWriter, r *http.Request) {
 	a.setAccountStatus(w, r, store.AccountStatusActive)
 }
 
 func (a *API) setAccountStatus(w http.ResponseWriter, r *http.Request, status string) {
-	if _, ok := requireAdmin(w, r); !ok {
+	caller, ok := requireAdminOrModerator(w, r)
+	if !ok {
 		return
 	}
 	id := r.PathValue("id")
@@ -147,6 +149,19 @@ func (a *API) setAccountStatus(w http.ResponseWriter, r *http.Request, status st
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+		return
+	}
+
+	// A moderator may only act on regular members. Blocking is removal by
+	// another name -- a disabled account cannot make a single authenticated
+	// request -- so letting a moderator block a moderator or an admin would
+	// hand them exactly the power the permission model reserves for admins
+	// (docs/PROTOCOL.md §4). The last-admin guard below is no substitute: it
+	// only refuses the *final* admin, so on a server with two it would happily
+	// let a moderator disable one of them.
+	if caller.Role != store.RoleAdmin && target.Role != store.RoleUser {
+		writeError(w, http.StatusForbidden, "forbidden",
+			"moderators can only block or unblock regular members")
 		return
 	}
 

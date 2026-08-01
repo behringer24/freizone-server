@@ -183,6 +183,93 @@ func TestHandleBlockAccountPreventsAuthenticationThenUnblockRestoresIt(t *testin
 	}
 }
 
+// SRV-08: the global block is the one account-changing action a moderator
+// gets, so that moderating a server doesn't require handing out admin.
+func TestHandleBlockAccountAsModerator(t *testing.T) {
+	a, db := newTestAPI(t, config.PolicyOpen)
+	newAccountWithRole(t, db, store.RoleAdmin) // so the last-admin guard is never what answers
+	moderator := newAccountWithRole(t, db, store.RoleModerator)
+	user := registerAccount(t, a)
+
+	rec := doSignedRequest(t, a.Router(), http.MethodPost, "/v1/admin/accounts/"+user.accountID+"/block",
+		nil, moderator.deviceID, moderator.devicePriv)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("block status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+	acc, err := store.GetAccount(db, user.accountID)
+	if err != nil {
+		t.Fatalf("GetAccount() error = %v", err)
+	}
+	if acc.Status != store.AccountStatusDisabled {
+		t.Errorf("status = %q, want %q", acc.Status, store.AccountStatusDisabled)
+	}
+
+	rec = doSignedRequest(t, a.Router(), http.MethodPost, "/v1/admin/accounts/"+user.accountID+"/unblock",
+		nil, moderator.deviceID, moderator.devicePriv)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unblock status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// The guard that keeps SRV-08 from becoming a privilege escalation: a
+// disabled account cannot make a single authenticated request, so a moderator
+// who could block staff would hold removal power over them. Two admins exist
+// deliberately -- the last-admin guard would otherwise mask the real rule with
+// a 409.
+func TestHandleBlockAccountModeratorCannotTouchStaff(t *testing.T) {
+	a, db := newTestAPI(t, config.PolicyOpen)
+	admin := newAccountWithRole(t, db, store.RoleAdmin)
+	newAccountWithRole(t, db, store.RoleAdmin)
+	moderator := newAccountWithRole(t, db, store.RoleModerator)
+	otherModerator := newAccountWithRole(t, db, store.RoleModerator)
+
+	for _, tc := range []struct {
+		name   string
+		target identityKeys
+	}{
+		{"an admin", admin},
+		{"another moderator", otherModerator},
+		{"themselves", moderator},
+	} {
+		for _, action := range []string{"block", "unblock"} {
+			rec := doSignedRequest(t, a.Router(), http.MethodPost,
+				"/v1/admin/accounts/"+tc.target.accountID+"/"+action,
+				nil, moderator.deviceID, moderator.devicePriv)
+			if rec.Code != http.StatusForbidden {
+				t.Errorf("moderator %s %s: status = %d, want 403, body = %s",
+					action, tc.name, rec.Code, rec.Body.String())
+			}
+		}
+	}
+
+	// The admin's own power is untouched by the new rule.
+	rec := doSignedRequest(t, a.Router(), http.MethodPost, "/v1/admin/accounts/"+moderator.accountID+"/block",
+		nil, admin.deviceID, admin.devicePriv)
+	if rec.Code != http.StatusOK {
+		t.Errorf("admin blocking a moderator: status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Widening block/unblock must not have widened anything else.
+func TestModeratorStillCannotSetRolesOrDelete(t *testing.T) {
+	a, db := newTestAPI(t, config.PolicyOpen)
+	newAccountWithRole(t, db, store.RoleAdmin)
+	moderator := newAccountWithRole(t, db, store.RoleModerator)
+	user := registerAccount(t, a)
+
+	rec := doSignedRequest(t, a.Router(), http.MethodPost, "/v1/admin/accounts/"+user.accountID+"/role",
+		[]byte(`{"role":"admin"}`), moderator.deviceID, moderator.devicePriv)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("moderator set-role status = %d, want 403, body = %s", rec.Code, rec.Body.String())
+	}
+
+	rec = doSignedRequest(t, a.Router(), http.MethodDelete, "/v1/admin/accounts/"+user.accountID,
+		nil, moderator.deviceID, moderator.devicePriv)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("moderator delete status = %d, want 403, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHandleBlockAccountLastAdminGuard(t *testing.T) {
 	a, db := newTestAPI(t, config.PolicyOpen)
 	admin := newAccountWithRole(t, db, store.RoleAdmin)

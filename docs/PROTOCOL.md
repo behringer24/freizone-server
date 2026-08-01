@@ -539,10 +539,20 @@ all.
 ### Server admin endpoints
 Moderators get read-only visibility plus invite creation: the account list,
 the current registration policy, the federation switch (all `GET`), and
-`POST /v1/admin/invites` (documented above). Everything that *changes* an
-account or the server — role changes, blocking, deleting, setting the
-registration policy, toggling federation — is admin-only, so privilege
-escalation and account removal can never come from a moderator.
+`POST /v1/admin/invites` (documented above). They may additionally
+**block/unblock a regular member** — the one account-changing action they
+get, so moderating a server does not require handing out admin. Everything
+else that changes an account or the server — role changes, deleting, setting
+the registration policy, toggling federation — stays admin-only, so
+privilege escalation and account removal can never come from a moderator.
+
+A moderator's block is confined to accounts whose role is `user`; targeting
+another moderator or an admin is `403`. Blocking is removal by another name
+(a disabled account cannot make a single authenticated request), so without
+that limit a moderator would hold over staff exactly the power this model
+reserves for admins — and the `last_admin` guard below is no substitute,
+since it only refuses the *final* admin.
+
 Every one of these (except `GET`) that targets an admin account rejects
 the change with `409 last_admin` if it would leave the server with zero
 active admins.
@@ -557,11 +567,12 @@ active admins.
   `200 {"status":"ok"}` · `400` invalid role · `404` unknown account ·
   `409 last_admin` demoting the server's only remaining admin.
 - **`POST /v1/admin/accounts/{id}/block`** / **`.../unblock`** (signed,
-  admin only) — no body. Blocking sets the account `disabled`, which
-  `internal/auth`'s middleware then rejects on every subsequent request
-  from that account, from any of its devices.
-  `200 {"status":"ok"}` · `404` unknown account · `409 last_admin`
-  blocking the server's only remaining admin.
+  admin, or moderator targeting a `user`) — no body. Blocking sets the
+  account `disabled`, which `internal/auth`'s middleware then rejects on
+  every subsequent request from that account, from any of its devices.
+  `200 {"status":"ok"}` · `403` a moderator targeting a moderator or an
+  admin · `404` unknown account · `409 last_admin` blocking the server's
+  only remaining admin.
 - **`DELETE /v1/admin/accounts/{id}`** (signed, admin only) — permanently
   removes the account, cascading through its devices to their
   prekeys/queued messages and any invite codes it issued.
