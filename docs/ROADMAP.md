@@ -62,7 +62,11 @@ message. Broadcast, previously part of this item, split out as SRV-16.
   design corrections the run forced, in the design document — the significant
   one being that **simultaneous X3DH establishment is routine in a group**,
   which needed a tie-break plus a read-only session and is now in PROTOCOL §5
-- **Open** — the app (APP-16)
+- **Open** — the app (APP-16). One loose end in this repo: `cmd/devclient`'s
+  *one-to-one* path (`chat.go`) still establishes a session only when it has
+  none, so it does not handle the simultaneous X3DH establishment that
+  `group_watch.go` and PROTOCOL §5 now describe. Rare between two people
+  chatting, which is why it went unnoticed, and wrong all the same
 
 ### SRV-02 — Multi-device linking
 Status: `planned` · Also affects: freizone-app, shared Go core
