@@ -211,6 +211,15 @@ go vet ./...
 go test ./...
 ```
 
+### Documentation map
+
+| File | What it is |
+| --- | --- |
+| [docs/PROTOCOL.md](docs/PROTOCOL.md) | The wire protocol — addressing, authentication, endpoints, X3DH/Double Ratchet, federation, blobs. A contract, so anything here is binding on every client |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Planned and shipped work, one short entry per item with a dated status log |
+| [docs/CHANGELOG.md](docs/CHANGELOG.md) | Released versions and what each contained |
+| [docs/design/](docs/design/) | One document per topic: why an approach was chosen, what was rejected, which trade-offs were accepted. Linked from the roadmap entry |
+
 ## License
 
 Copyright (C) 2026 Andreas Behringer
