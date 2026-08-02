@@ -450,11 +450,7 @@ func getOrCreateSession(state *State, peerAccountID, peerServer, peerDeviceID st
 		return s, nil, nil
 	}
 
-	bundleServer := peerServer
-	if bundleServer == "" {
-		bundleServer = state.Server
-	}
-	bundle, err := claimPrekeyBundle(bundleServer, peerDeviceID)
+	bundle, err := claimPrekeyBundle(state, peerServer, peerDeviceID)
 	if err != nil {
 		return nil, nil, err
 	}

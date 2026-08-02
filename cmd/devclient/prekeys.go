@@ -115,8 +115,42 @@ func uploadPrekeys(state *State, otpkCount int) error {
 }
 
 // claimPrekeyBundle claims a prekey bundle for deviceID.
-func claimPrekeyBundle(server, deviceID string) (*prekeyBundleResponse, error) {
-	resp, err := jsonRequest(server, http.MethodPost, "/v1/devices/"+deviceID+"/prekey-bundle", nil)
+// Authenticated since SRV-04, in whichever of the two forms applies: an
+// ordinary signed request when the bundle lives on our own server, or the
+// inline self-certifying claim when it lives on another one. Without either,
+// the server still answers -- but withholds the one-time prekey, silently
+// costing this session forward secrecy on its first message.
+// peerServer is empty for a peer on our own server, exactly as in the send
+// path (see sendMessage), which is what selects between the two forms.
+func claimPrekeyBundle(state *State, peerServer, deviceID string) (*prekeyBundleResponse, error) {
+	path := "/v1/devices/" + deviceID + "/prekey-bundle"
+
+	var resp *http.Response
+	var err error
+	if peerServer == "" {
+		resp, err = signedRequest(state, http.MethodPost, path, nil)
+	} else {
+		issuedAt := time.Now().UTC()
+		cert, cerr := devicecert.SignDeviceCertificate(
+			state.AccountID, state.DeviceID, ed25519.PublicKey(state.DevicePub), issuedAt, ed25519.PrivateKey(state.RootPriv))
+		if cerr != nil {
+			return nil, fmt.Errorf("signing device certificate: %w", cerr)
+		}
+		body, merr := json.Marshal(claimPrekeyBundleRequest{
+			SenderAccountID:  state.AccountID,
+			SenderRootPubKey: base64.StdEncoding.EncodeToString(state.RootPub),
+			SenderDeviceCert: federationDeviceCertDTO{
+				DeviceID:     state.DeviceID,
+				DevicePubKey: base64.StdEncoding.EncodeToString(state.DevicePub),
+				IssuedAt:     issuedAt.Format(time.RFC3339),
+				Signature:    base64.StdEncoding.EncodeToString(cert.Signature),
+			},
+		})
+		if merr != nil {
+			return nil, fmt.Errorf("encoding prekey bundle claim: %w", merr)
+		}
+		resp, err = federatedSignedRequest(state, peerServer, http.MethodPost, path, body)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("claiming prekey bundle: %w", err)
 	}

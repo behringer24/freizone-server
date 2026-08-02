@@ -248,6 +248,30 @@ type prekeyBundleResponse struct {
 	DHIdentityCert   dhIdentityCertDTO `json:"dh_identity_cert"`
 	SignedPrekey     signedPrekeyDTO   `json:"signed_prekey"`
 	OneTimePrekey    *oneTimePrekeyDTO `json:"one_time_prekey,omitempty"`
+
+	// OneTimePrekeyOmitted says why OneTimePrekey is absent, and is itself
+	// absent when one was handed out (SRV-04). Purely diagnostic -- the two
+	// reasons are otherwise indistinguishable, and "you weren't authenticated"
+	// is something a client should notice rather than mistake for a drained
+	// pool. Older clients ignore the field, which is what makes gating the key
+	// a non-breaking change.
+	OneTimePrekeyOmitted string `json:"one_time_prekey_omitted,omitempty"`
+}
+
+const (
+	oneTimePrekeyOmittedPoolEmpty      = "pool_empty"
+	oneTimePrekeyOmittedUnauthenticated = "unauthenticated"
+)
+
+// claimPrekeyBundleRequest is the OPTIONAL body of a prekey-bundle claim: the
+// self-certifying identity of a claimant whose account lives on another server,
+// in the same shape federated message delivery uses (§9). A claimant registered
+// on this server sends no body at all and signs the request the ordinary way
+// (§3); an unauthenticated claimant sends neither and gets no one-time prekey.
+type claimPrekeyBundleRequest struct {
+	SenderAccountID  string                  `json:"sender_account_id"`
+	SenderRootPubKey string                  `json:"sender_root_pub_key"`
+	SenderDeviceCert federationDeviceCertDTO `json:"sender_device_cert"`
 }
 
 // prekeyStatusResponse is the GET /v1/devices/{id}/prekey-status payload --
