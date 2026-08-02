@@ -845,25 +845,39 @@ is routine: a joining member establishes a session with every existing member at
 once, and those members reach back toward them in the same breath, so most new
 pairs in a group start out doubled.
 
-The rule is the ordering rule re-keying already uses, derived from data both
-sides hold: **the lower `account_id`'s session wins** and is the one both sides
-send on. Concretely, on receiving a `prekey` block from a peer a client already
-has a session with:
+A `prekey` block arriving over an existing session is **ambiguous**: it is
+either a peer who deliberately discarded their session (the re-key above) or a
+peer who simply established one at the same moment we did. The two look
+identical on the wire and must be handled differently, so the receiver decides
+from the decrypted content:
 
 1. Build the responder session and try to decrypt the accompanying message with
    it. If it does not decrypt, this is a stale or redelivered block — keep the
    existing session and change nothing.
-2. If it does decrypt and the **peer's** id is lower, adopt it as the session
-   for this pair. Both sides now converge on it.
-3. If it does decrypt and **our own** id is lower, keep our session for sending
-   but retain the responder session for **reading only**. The peer is still
-   sending on theirs until our next message reaches them, and without this those
-   in-flight messages are stranded undecryptable forever.
+2. If it decrypts and the plaintext is a **`v: 3` re-key signal**, the peer has
+   thrown their session away. Adopt the new one unconditionally. The ordering
+   rule below must *not* apply here: the session it would tell us to keep is
+   one the peer can no longer read.
+3. Otherwise it is simultaneous establishment, and the tie-break is the
+   ordering rule re-keying already uses, derived from data both sides hold:
+   **the lower `account_id`'s session wins** and is the one both sides send on.
+   If the **peer's** id is lower, adopt theirs. If **ours** is lower, keep ours
+   for sending but retain the responder session for **reading only** — the peer
+   is still sending on theirs until our next message reaches them, and without
+   this those in-flight messages are stranded undecryptable forever.
 
-Step 3 is the part that is easy to leave out and expensive to omit: the pair
-converges either way, but without a read-only session every message the loser
-sent before converging is lost. A client MAY discard a read-only session once
-the peer has demonstrably moved (a message arriving on the winning session).
+The read-only retention in step 3 is easy to leave out and expensive to omit:
+the pair converges either way, but without it every message the loser sent
+before converging is lost. A client MAY discard a read-only session once the
+peer has demonstrably moved (a message arriving on the winning session).
+
+**Known gap.** A re-key is only *recommended* to ride the `v: 3` envelope, so a
+client that re-keys on an ordinary message is indistinguishable from one
+establishing simultaneously, and step 3 would then keep a session the peer can
+no longer read — leaving their recovery ineffective until they try again. The
+clean fix is for the `prekey` block to say which of the two it is instead of
+making the receiver infer it; that is a wire addition and is tracked as SRV-17
+rather than done here.
 
 Because a re-key must ride on *some* message, a client that has just discarded
 its session SHOULD send the invisible `rekey` control envelope (§6) rather than
