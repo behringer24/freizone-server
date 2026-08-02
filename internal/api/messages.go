@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,37 +29,166 @@ func (a *API) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	if !a.decodeJSONBody(w, r, &req) {
 		return
 	}
-	if req.MessageID == "" || req.RecipientDeviceID == "" || len(req.Payload) == 0 {
-		writeError(w, http.StatusBadRequest, "invalid_request", "message_id, recipient_device_id, and payload are required")
+
+	outcome := a.enqueueMessage(enqueueRequest{
+		MessageID:          req.MessageID,
+		SenderAccountID:    identity.AccountID,
+		SenderDeviceID:     identity.DeviceID,
+		RecipientAccountID: req.RecipientAccountID,
+		RecipientDeviceID:  req.RecipientDeviceID,
+		Payload:            req.Payload,
+	})
+	if outcome != enqueueQueued {
+		status, code, message := outcome.asError()
+		writeError(w, status, code, message)
 		return
+	}
+
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "queued"})
+}
+
+// handleSendMessageBatch enqueues several messages in one request (SRV-01).
+//
+// Group fan-out is N separately encrypted copies from one author, and without
+// this each copy costs its own round trip -- so a batch collapses a group send
+// to one request per distinct recipient *server* rather than one per recipient
+// device. Nothing about authentication changes: every item is from the one
+// signing device, and the signature covers the whole body as always.
+func (a *API) handleSendMessageBatch(w http.ResponseWriter, r *http.Request) {
+	identity, ok := auth.IdentityFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+		return
+	}
+
+	var req sendMessageBatchRequest
+	if !a.decodeJSONBody(w, r, &req) {
+		return
+	}
+	if !a.checkBatchSize(w, len(req.Messages)) {
+		return
+	}
+
+	results := make([]batchResultItem, 0, len(req.Messages))
+	for _, item := range req.Messages {
+		outcome := a.enqueueMessage(enqueueRequest{
+			MessageID:          item.MessageID,
+			SenderAccountID:    identity.AccountID,
+			SenderDeviceID:     identity.DeviceID,
+			RecipientAccountID: item.RecipientAccountID,
+			RecipientDeviceID:  item.RecipientDeviceID,
+			Payload:            item.Payload,
+		})
+		results = append(results, batchResultItem{MessageID: item.MessageID, Status: string(outcome)})
+	}
+
+	writeJSON(w, http.StatusOK, batchResponse{Results: results})
+}
+
+// enqueueRequest is one message to queue, from either the same-server or the
+// federated path -- by the time we get here the sender has been authenticated
+// and only differs in how.
+type enqueueRequest struct {
+	MessageID          string
+	SenderAccountID    string
+	SenderDeviceID     string
+	RecipientAccountID string
+	RecipientDeviceID  string
+	Payload            json.RawMessage
+}
+
+// enqueueOutcome is one recipient's result. It is deliberately a value rather
+// than an HTTP response: a batch reports one of these per item, and only the
+// single-message endpoints turn it into a status code (see asError).
+type enqueueOutcome string
+
+const (
+	enqueueQueued           enqueueOutcome = "queued"
+	enqueueInvalid          enqueueOutcome = "invalid"
+	enqueueUnknownRecipient enqueueOutcome = "unknown_recipient"
+	enqueueDuplicate        enqueueOutcome = "duplicate"
+	enqueueQueueFull        enqueueOutcome = "queue_full"
+	enqueueInternalError    enqueueOutcome = "internal_error"
+)
+
+// asError maps an outcome onto the single-message endpoints' existing
+// response contract, unchanged from before batching existed.
+func (o enqueueOutcome) asError() (status int, code, message string) {
+	switch o {
+	case enqueueInvalid:
+		return http.StatusBadRequest, "invalid_request",
+			"message_id, recipient_device_id, and payload are required, and recipient_account_id must match recipient_device_id"
+	case enqueueUnknownRecipient:
+		return http.StatusNotFound, "not_found", "unknown or inactive recipient"
+	case enqueueDuplicate:
+		return http.StatusConflict, "message_exists", "message_id already used"
+	case enqueueQueueFull:
+		return http.StatusTooManyRequests, "recipient_queue_full", "recipient device's message queue is full"
+	default:
+		return http.StatusInternalServerError, "internal", "internal server error"
+	}
+}
+
+// enqueueMessage validates one recipient, queues the message, and fires the
+// delivery notification -- the whole per-recipient path, shared by the
+// same-server and federated endpoints and by their batch forms.
+//
+// Every failure is a value, not a write to the response: a batch must be able
+// to record one recipient's queue being full and carry on with the rest, since
+// in a group that recipient's problem is not the other members' problem.
+func (a *API) enqueueMessage(req enqueueRequest) enqueueOutcome {
+	// A literal `null` payload passes a length check but is not an envelope,
+	// and queueing it would hand the recipient something no client can decode.
+	// The server still never looks *inside* a payload -- this only rejects the
+	// absence of one dressed up as a value.
+	if req.MessageID == "" || req.RecipientDeviceID == "" ||
+		len(req.Payload) == 0 || bytes.Equal(bytes.TrimSpace(req.Payload), []byte("null")) {
+		return enqueueInvalid
 	}
 
 	recipientDevice, err := store.GetDevice(a.DB, req.RecipientDeviceID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "not_found", "unknown recipient device")
-			return
+			return enqueueUnknownRecipient
 		}
-		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
-		return
+		return enqueueInternalError
 	}
 	if recipientDevice.Status != store.DeviceStatusActive {
-		writeError(w, http.StatusNotFound, "not_found", "recipient device is not active")
-		return
+		return enqueueUnknownRecipient
 	}
 	if req.RecipientAccountID != "" && req.RecipientAccountID != recipientDevice.AccountID {
-		writeError(w, http.StatusBadRequest, "invalid_request", "recipient_account_id does not match recipient_device_id")
-		return
+		return enqueueInvalid
 	}
-	if !a.checkQueueNotFull(w, req.RecipientDeviceID) {
-		return
+
+	// The recipient's *account* must be active too, not just the device. The
+	// federated path always checked this and the same-server path never did;
+	// unifying them here settles that difference in favour of the stricter
+	// reading -- a blocked account should not keep accumulating queued
+	// messages from anywhere.
+	recipientAccount, err := store.GetAccount(a.DB, recipientDevice.AccountID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return enqueueUnknownRecipient
+		}
+		return enqueueInternalError
+	}
+	if recipientAccount.Status != store.AccountStatusActive {
+		return enqueueUnknownRecipient
+	}
+
+	count, err := store.CountPendingMessages(a.DB, req.RecipientDeviceID)
+	if err != nil {
+		return enqueueInternalError
+	}
+	if count >= a.Config.MaxQueuedMessagesPerDevice {
+		return enqueueQueueFull
 	}
 
 	now := a.Now()
 	msg := store.Message{
 		MessageID:          req.MessageID,
-		SenderAccountID:    identity.AccountID,
-		SenderDeviceID:     identity.DeviceID,
+		SenderAccountID:    req.SenderAccountID,
+		SenderDeviceID:     req.SenderDeviceID,
 		RecipientAccountID: recipientDevice.AccountID,
 		RecipientDeviceID:  req.RecipientDeviceID,
 		Payload:            string(req.Payload),
@@ -67,16 +197,30 @@ func (a *API) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := store.CreateMessage(a.DB, msg); err != nil {
 		if errors.Is(err, store.ErrConflict) {
-			writeError(w, http.StatusConflict, "message_exists", "message_id already used")
-			return
+			return enqueueDuplicate
 		}
-		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
-		return
+		return enqueueInternalError
 	}
 
 	a.queueAndNotify(msg, recipientDevice)
+	return enqueueQueued
+}
 
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "queued"})
+// checkBatchSize rejects an empty or oversized batch. The cap is a bound on
+// how many queue writes one request can trigger; MaxRequestBodyBytes already
+// bounds the bytes. It is advertised on GET /v1/server-status so a sender
+// splits to fit rather than learning the limit from a rejection.
+func (a *API) checkBatchSize(w http.ResponseWriter, count int) bool {
+	if count == 0 {
+		writeError(w, http.StatusBadRequest, "invalid_request", "messages must not be empty")
+		return false
+	}
+	if count > a.Config.MaxBatchMessages {
+		writeError(w, http.StatusBadRequest, "batch_too_large",
+			fmt.Sprintf("a batch may carry at most %d messages", a.Config.MaxBatchMessages))
+		return false
+	}
+	return true
 }
 
 // queueAndNotify publishes msg to any live SSE subscriber for
@@ -159,23 +303,6 @@ func readBody(w http.ResponseWriter, r *http.Request) (body []byte, ok bool) {
 		return nil, false
 	}
 	return body, true
-}
-
-// checkQueueNotFull rejects with 429 if recipientDeviceID already has
-// Config.MaxQueuedMessagesPerDevice messages queued -- see
-// store.CountPendingMessages -- so a sender (same-server or federated)
-// can't grow one device's backlog without bound.
-func (a *API) checkQueueNotFull(w http.ResponseWriter, recipientDeviceID string) bool {
-	count, err := store.CountPendingMessages(a.DB, recipientDeviceID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
-		return false
-	}
-	if count >= a.Config.MaxQueuedMessagesPerDevice {
-		writeError(w, http.StatusTooManyRequests, "recipient_queue_full", "recipient device's message queue is full")
-		return false
-	}
-	return true
 }
 
 // handleListMessages polls for messages queued for the caller's device.

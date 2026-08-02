@@ -99,11 +99,18 @@ func (a *API) Router() http.Handler {
 	mux.HandleFunc("POST /v1/devices/{device_id}/prekey-bundle", a.handleClaimPrekeyBundle)
 
 	mux.Handle("POST /v1/messages", a.Auth.Require(http.HandlerFunc(a.handleSendMessage)))
+	// Batch delivery (SRV-01), for group fan-out: one request per distinct
+	// recipient server instead of one per recipient device. Registered as its
+	// own path rather than an optional shape of POST /v1/messages, so a client
+	// can discover it -- an older server simply 404s here, and
+	// GET /v1/server-status advertises it where it exists.
+	mux.Handle("POST /v1/messages/batch", a.Auth.Require(http.HandlerFunc(a.handleSendMessageBatch)))
 	// Public, not wrapped in a.Auth.Require: this handler verifies a
 	// cross-server sender's self-certifying identity chain inline (see
 	// federation.go) instead of the local-device-lookup Middleware
 	// performs -- a foreign sender has no local device row to look up.
 	mux.HandleFunc("POST /v1/federation/messages", a.handleReceiveFederatedMessage)
+	mux.HandleFunc("POST /v1/federation/messages/batch", a.handleReceiveFederatedMessageBatch)
 	// Blob transport (SRV-07). The upload's body is raw ciphertext, far over
 	// the global body cap -- see the per-path override in cmd/server/main.go
 	// and the streamed-body authentication in internal/auth.

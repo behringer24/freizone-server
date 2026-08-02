@@ -87,6 +87,16 @@ type Config struct {
 	// identity) could flood a device's queue without bound.
 	MaxQueuedMessagesPerDevice int
 
+	// MaxBatchMessages caps how many messages one POST /v1/messages/batch
+	// (or its federated twin) may carry. Batch delivery exists for group
+	// fan-out (SRV-01): one request per distinct recipient server instead of
+	// one per recipient device. The cap is a flood backstop in the same
+	// spirit as MaxQueuedMessagesPerDevice -- MaxRequestBodyBytes already
+	// bounds the bytes, this bounds the number of queue writes one request
+	// can trigger. Advertised on GET /v1/server-status so a sender splits its
+	// batches to fit rather than discovering the limit by being rejected.
+	MaxBatchMessages int
+
 	// BlobsEnabled controls whether the encrypted blob transport
 	// (internal/api/blobs.go, SRV-07) accepts uploads at all -- the same
 	// kind of operator kill switch FederationEnabled is for federation.
@@ -138,6 +148,7 @@ const (
 	envFederationEnabled    = "FREIZONE_FEDERATION_ENABLED"
 	envMaxRequestBodyBytes  = "FREIZONE_MAX_REQUEST_BODY_BYTES"
 	envMaxQueuedMessages    = "FREIZONE_MAX_QUEUED_MESSAGES_PER_DEVICE"
+	envMaxBatchMessages     = "FREIZONE_MAX_BATCH_MESSAGES"
 	envLogLevel             = "FREIZONE_LOG_LEVEL"
 
 	envBlobsEnabled          = "FREIZONE_BLOBS_ENABLED"
@@ -166,6 +177,13 @@ const defaultMaxRequestBodyBytes int64 = 512 * 1024
 // since this is a backstop against unbounded flooding, not a realistic
 // usage cap.
 const defaultMaxQueuedMessagesPerDevice = 1000
+
+// defaultMaxBatchMessages (100) is well above the group size pairwise fan-out
+// is designed for (~50 members, see docs/design/01-groups.md) even with
+// several devices each, while keeping one request's worth of queue writes
+// bounded. A sender that needs more splits the batch, which it must be able
+// to do anyway to stay under MaxRequestBodyBytes.
+const defaultMaxBatchMessages = 100
 
 // defaultMaxBlobBytes (8 MiB) comfortably fits a client-compressed photo
 // (clients downscale to roughly 1600px before uploading, landing well under
@@ -257,6 +275,16 @@ func Load(getenv func(string) string) (*Config, error) {
 		maxQueuedMessages = parsed
 	}
 	cfg.MaxQueuedMessagesPerDevice = maxQueuedMessages
+
+	maxBatchMessages := defaultMaxBatchMessages
+	if v := getenv(envMaxBatchMessages); v != "" {
+		parsed, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: invalid value %q (must be a whole number): %w", envMaxBatchMessages, v, err)
+		}
+		maxBatchMessages = parsed
+	}
+	cfg.MaxBatchMessages = maxBatchMessages
 
 	blobsEnabled := true
 	if v := getenv(envBlobsEnabled); v != "" {
@@ -358,6 +386,10 @@ func (c *Config) validate() error {
 
 	if c.MaxQueuedMessagesPerDevice <= 0 {
 		return fmt.Errorf("%s must be a positive number, got %d", envMaxQueuedMessages, c.MaxQueuedMessagesPerDevice)
+	}
+
+	if c.MaxBatchMessages <= 0 {
+		return fmt.Errorf("%s must be a positive number, got %d", envMaxBatchMessages, c.MaxBatchMessages)
 	}
 
 	if c.MaxBlobBytes <= 0 {

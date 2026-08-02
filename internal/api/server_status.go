@@ -39,5 +39,10 @@ func (a *API) handleGetServerStatus(w http.ResponseWriter, r *http.Request) {
 		FederationEnabled:  federationEnabled,
 		BlobsEnabled:       a.Config.BlobsEnabled,
 		MaxBlobBytes:       a.Config.MaxBlobBytes,
+		// Always true where the field exists at all -- batch delivery is not
+		// an operator switch, it is a version fact, and its absence is what
+		// tells an older-server's peer to fall back to one post per message.
+		BatchMessages:    true,
+		MaxBatchMessages: a.Config.MaxBatchMessages,
 	})
 }
