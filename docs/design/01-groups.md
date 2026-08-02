@@ -592,7 +592,14 @@ Two constraints that document establishes and that belong here too:
    belongs: the ordered rank values, genesis carrying the founder's server and
    implying their membership, role grants accepting either key, and the
    mutual-removal correction.
-2. Batch endpoints and the capability flag.
+2. **Batch endpoints and the capability flag — shipped 2026-08-02.** Both
+   variants, `batch_messages`/`max_batch_messages` on server-status,
+   `FREIZONE_MAX_BATCH_MESSAGES`. Two things the refactor settled on the way
+   past: the per-recipient enqueue path is now shared by all four handlers,
+   which retires the same-server path's long-standing failure to check the
+   recipient *account*'s status (federation always did), and a payload of
+   literal `null` is now rejected rather than queued as an envelope no client
+   can decode.
 3. `cmd/devclient`: a full group between two local instances plus one federated,
    without UI.
 4. App (APP-16), which begins with its own two prerequisites: the `ChatTarget`

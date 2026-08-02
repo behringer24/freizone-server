@@ -188,6 +188,13 @@ type serverStatusResponse struct {
 	// attachment to the *recipient* server's limit before uploading.
 	BlobsEnabled bool  `json:"blobs_enabled"`
 	MaxBlobBytes int64 `json:"max_blob_bytes"`
+	// Batch delivery capability (SRV-01). Absent means an older server, and
+	// the documented fallback is to post each message on its own -- which is
+	// why groups work against every server already in the field. Discovered
+	// per server, since a federated group's members are spread across
+	// several and they will not upgrade together.
+	BatchMessages    bool `json:"batch_messages"`
+	MaxBatchMessages int  `json:"max_batch_messages"`
 }
 
 type federationEnabledResponse struct {
@@ -288,6 +295,34 @@ type sendMessageRequest struct {
 	Payload            json.RawMessage `json:"payload"`
 }
 
+// sendMessageBatchRequest delivers several messages in one request (SRV-01).
+// It exists for group fan-out, where the same author sends N separately
+// encrypted copies: batching collapses that to one request per distinct
+// recipient *server* instead of one per recipient device. Every item is from
+// the one signing device, so authentication is unchanged.
+type sendMessageBatchRequest struct {
+	Messages []batchMessageItem `json:"messages"`
+}
+
+type batchMessageItem struct {
+	MessageID          string          `json:"message_id"`
+	RecipientAccountID string          `json:"recipient_account_id"`
+	RecipientDeviceID  string          `json:"recipient_device_id"`
+	Payload            json.RawMessage `json:"payload"`
+}
+
+// batchResponse reports one outcome per submitted item, in the submitted
+// order. Failures are per item and never fail the batch: one recipient at
+// their queue cap must not cost the other group members their copy.
+type batchResponse struct {
+	Results []batchResultItem `json:"results"`
+}
+
+type batchResultItem struct {
+	MessageID string `json:"message_id"`
+	Status    string `json:"status"`
+}
+
 type messageResponse struct {
 	MessageID       string          `json:"message_id"`
 	SenderAccountID string          `json:"sender_account_id"`
@@ -329,6 +364,17 @@ type federationMessageRequest struct {
 	RecipientDeviceID  string                  `json:"recipient_device_id"`
 	MessageID          string                  `json:"message_id"`
 	Payload            json.RawMessage         `json:"payload"`
+}
+
+// federationMessageBatchRequest is the federated twin of
+// sendMessageBatchRequest. The sender's identity block appears once, at the
+// top level, rather than per message -- which is the larger saving here: the
+// certificate chain is verified once for the whole batch instead of N times.
+type federationMessageBatchRequest struct {
+	SenderAccountID  string                  `json:"sender_account_id"`
+	SenderRootPubKey string                  `json:"sender_root_pub_key"`
+	SenderDeviceCert federationDeviceCertDTO `json:"sender_device_cert"`
+	Messages         []batchMessageItem      `json:"messages"`
 }
 
 func decodeBase64Key(s string, expectedLen int) ([]byte, error) {

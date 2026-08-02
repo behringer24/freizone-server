@@ -48,8 +48,14 @@ message. Broadcast, previously part of this item, split out as SRV-16.
   encoding under a different marker. Pure Go, no I/O, no server change yet.
   Four plan corrections the tests forced are recorded in the design document —
   the notable one being that two moderators cannot in fact remove each other
-- **Open** — batch delivery endpoints, then `cmd/devclient`, then the app
-  (APP-16)
+- 2026-08-02 — phase 2 shipped: `POST /v1/messages/batch` and its federated
+  twin, advertised as `batch_messages`/`max_batch_messages` on
+  `GET /v1/server-status` and bounded by `FREIZONE_MAX_BATCH_MESSAGES`. Per-item
+  outcomes, so one recipient's full queue costs only their own copy. Unifying
+  the four handlers onto one enqueue path also closed two older gaps: the
+  same-server path never checked the recipient *account*'s status, and a
+  payload of literal `null` was queued rather than rejected
+- **Open** — `cmd/devclient`, then the app (APP-16)
 
 ### SRV-02 — Multi-device linking
 Status: `planned` · Also affects: freizone-app, shared Go core

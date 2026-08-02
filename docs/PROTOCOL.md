@@ -7,10 +7,13 @@ certificates/revocations, per-request signature authentication, the
 identity/bootstrap REST surface, X3DH + Double Ratchet end-to-end
 encryption, and the prekey/message REST surface that carries it.
 
-Out of scope here (future milestones): groups/broadcast, and the QR
-device-linking handshake itself (only its *result* — a signed device
-certificate — is consumed by this API). Federation (§9) and push
-notifications (§7) are both implemented.
+Out of scope here (future milestones): broadcast, and the QR device-linking
+handshake itself (only its *result* — a signed device certificate — is
+consumed by this API). Federation (§9) and push notifications (§7) are both
+implemented. Groups (SRV-01) need no group-specific endpoint at all — a group
+is a client-side cryptographic object and its messages are ordinary envelopes
+— so what appears here is only the batch delivery their fan-out uses (§7, §9)
+and the client-to-client envelope versions they add (§6).
 
 ## 1. Addressing
 
@@ -322,7 +325,9 @@ never reached while the policy is `closed`).
   "registration_policy": "open",
   "federation_enabled": true,
   "blobs_enabled": true,
-  "max_blob_bytes": 8388608
+  "max_blob_bytes": 8388608,
+  "batch_messages": true,
+  "max_batch_messages": 100
 }
 ```
 `claimed` is whether the one-time setup token has already been used
@@ -343,6 +348,14 @@ a server that omits `blobs_enabled` predates §10 and has no blob endpoints at
 all, so clients must treat its absence as **off**, not on. `max_blob_bytes`
 absent or `0` means "no limit stated" — an oversized upload then still fails
 server-side, as it would have anyway.
+
+`batch_messages` and `max_batch_messages` describe batch delivery (§7), used
+by group fan-out. The absence rule matches `blobs_enabled`'s: a server that
+omits it predates the endpoints and has none, so absence means **off** and the
+sender falls back to one `POST /v1/messages` per recipient. Because a
+federated group's members sit on servers that will not upgrade together, this
+is discovered **per server**, not once — a sender may legitimately batch to one
+member's server and post individually to another's in the same fan-out.
 
 ### `GET /v1/accounts/{id}`
 No auth — a public key directory, analogous to a keyserver. `200`:
@@ -999,6 +1012,48 @@ Delivery of the wake itself is not guaranteed (no retry, short timeout) —
 the durable queue and the client's own reconnect/poll remain the actual
 delivery guarantee, same as before push existed.
 
+### `POST /v1/messages/batch` (signed)
+Enqueues several envelopes in one request. Introduced for group fan-out
+(SRV-01), where one author sends N separately encrypted copies: batching
+collapses that to **one request per distinct recipient server** instead of one
+per recipient device. Authentication is unchanged — every item is from the one
+signing device, and the §3 signature covers the whole body as always.
+
+```json
+{ "messages": [
+  { "message_id": "...", "recipient_device_id": "16hexchars", "payload": { } }
+] }
+```
+
+`200`, one result per submitted item, in the submitted order:
+
+```json
+{ "results": [ { "message_id": "...", "status": "queued" } ] }
+```
+
+| `status` | Meaning |
+|---|---|
+| `queued` | durably queued, exactly as a single `POST /v1/messages` would |
+| `duplicate` | `message_id` already used (the `409` case) |
+| `unknown_recipient` | unknown or inactive device, or its account is not active |
+| `queue_full` | that device is at `FREIZONE_MAX_QUEUED_MESSAGES_PER_DEVICE` |
+| `invalid` | missing `message_id`/`recipient_device_id`/`payload`, or a `recipient_account_id` that contradicts the device |
+| `internal_error` | server-side failure for that item alone |
+
+**Failures are per item and never fail the batch.** In a group, one recipient
+being at their queue cap is not the other members' problem, so their copies
+still go out. The batch as a whole is rejected only for things that make it
+uninterpretable: `400 invalid_request` for an empty list, `400 batch_too_large`
+above `FREIZONE_MAX_BATCH_MESSAGES` (default 100), `413` above
+`FREIZONE_MAX_REQUEST_BODY_BYTES`, and the usual generic `401`.
+
+The per-item statuses reveal nothing `POST /v1/messages` does not already
+reveal through its `404`/`409`/`429`.
+
+Advertised as `batch_messages` on `GET /v1/server-status` (§4). A client that
+does not find it there posts each message individually — which is why groups
+work against every server already deployed.
+
 ### `GET /v1/messages` (signed)
 Polls for messages queued for the caller's device. `200`, an array of:
 ```json
@@ -1136,6 +1191,34 @@ as any same-server message would be (§6/§7's SSE stream and push-wake
 path) — the recipient's client can't tell, and doesn't need to, whether
 a message arrived from this server or a federated one.
 
+### `POST /v1/federation/messages/batch` (public — does its own authentication)
+
+The federated twin of §7's batch endpoint: a group send from a member on
+another server, whose copies for every recipient on *this* server arrive
+together. The sender's identity block appears **once, at the top level**:
+
+```json
+{
+  "sender_account_id": "...",
+  "sender_root_pub_key": "base64",
+  "sender_device_cert": { "...as above..." },
+  "messages": [
+    { "message_id": "...", "recipient_device_id": "16hexchars", "payload": { } }
+  ]
+}
+```
+
+Verification is the seven steps above, unchanged, with steps 6 and 7 applied
+per item. That the chain is verified **once for the whole batch** rather than
+once per recipient is the larger saving here — it is the expensive part of
+accepting a stranger's message, and a group send repeats it for every member
+on the same server.
+
+The response shape, the per-item statuses, and the "failures are per item"
+rule are identical to §7's. A failure of the *sender's* own verification is
+not per item: it rejects the whole request with the generic `401`, and nothing
+is queued.
+
 **Learning the sender's server, for replies.** Nothing above ties
 `sender_account_id` to any particular hostname — that's deliberate;
 self-certifying identity is host-independent by design, so there's no
@@ -1204,12 +1287,13 @@ lives in the DB and is changed at runtime via `PUT /v1/admin/federation`
 stop *sending* outbound federation when their home server has it off (a
 peer's reply would otherwise be blocked here, stranding the conversation).
 
-**Explicitly out of scope**: groups (a future group send is simply N
-parallel invocations of this same per-recipient delivery, fanned out
-per member — nothing here assumes a single recipient server or a shared
-delivery transaction across members), account portability/migrating
-servers, and server discovery — not needed, since an address already
-names the exact server.
+**Explicitly out of scope**: account portability/migrating servers, and
+server discovery — not needed, since an address already names the exact
+server. Groups used to be listed here too; a group send is still exactly N
+invocations of this same per-recipient delivery, fanned out per member, with
+the batch endpoint above as a pure transport shortcut for the recipients that
+happen to share a server. Nothing in federation assumes a single recipient
+server or a shared delivery transaction across members.
 
 ## 10. Encrypted blob transport (attachments)
 

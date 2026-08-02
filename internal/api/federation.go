@@ -5,7 +5,6 @@ package api
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 
 	"github.com/behringer24/freizone-server/internal/store"
@@ -64,61 +63,85 @@ func (a *API) handleReceiveFederatedMessage(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	now := a.Now()
 
-	recipientDevice, err := store.GetDevice(a.DB, req.RecipientDeviceID)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "not_found", "unknown recipient device")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
-		return
-	}
-	if recipientDevice.Status != store.DeviceStatusActive {
-		writeError(w, http.StatusNotFound, "not_found", "recipient device is not active")
-		return
-	}
-	if req.RecipientAccountID != "" && req.RecipientAccountID != recipientDevice.AccountID {
-		writeError(w, http.StatusBadRequest, "invalid_request", "recipient_account_id does not match recipient_device_id")
-		return
-	}
-	// Stricter than handleSendMessage's same-server path, which checks
-	// only the recipient device's status, not the account's -- worth
-	// fixing there too eventually, but not carried forward into new code.
-	recipientAccount, err := store.GetAccount(a.DB, recipientDevice.AccountID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
-		return
-	}
-	if recipientAccount.Status != store.AccountStatusActive {
-		writeError(w, http.StatusNotFound, "not_found", "recipient account is not active")
-		return
-	}
-	if !a.checkQueueNotFull(w, req.RecipientDeviceID) {
-		return
-	}
-
-	msg := store.Message{
+	outcome := a.enqueueMessage(enqueueRequest{
 		MessageID:          req.MessageID,
 		SenderAccountID:    sender.AccountID,
 		SenderDeviceID:     sender.DeviceID,
-		RecipientAccountID: recipientDevice.AccountID,
+		RecipientAccountID: req.RecipientAccountID,
 		RecipientDeviceID:  req.RecipientDeviceID,
-		Payload:            string(req.Payload),
-		SentAt:             now,
-		ExpiresAt:          now.AddDate(0, 0, a.Config.MessageRetentionDays),
-	}
-	if err := store.CreateMessage(a.DB, msg); err != nil {
-		if errors.Is(err, store.ErrConflict) {
-			writeError(w, http.StatusConflict, "message_exists", "message_id already used")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+		Payload:            req.Payload,
+	})
+	if outcome != enqueueQueued {
+		status, code, message := outcome.asError()
+		writeError(w, status, code, message)
 		return
 	}
 
-	a.queueAndNotify(msg, recipientDevice)
-
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "queued"})
+}
+
+// handleReceiveFederatedMessageBatch is the federated twin of
+// handleSendMessageBatch: a group send from a member on another server, whose
+// copies for every recipient on *this* server arrive together.
+//
+// The saving here is larger than the round trip. A federated sender proves its
+// identity with an inline certificate chain, and batching verifies that chain
+// once for the whole batch rather than once per recipient -- which is the
+// expensive part of accepting a stranger's message.
+func (a *API) handleReceiveFederatedMessageBatch(w http.ResponseWriter, r *http.Request) {
+	enabled, err := store.GetFederationEnabled(a.DB)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+		return
+	}
+	if !enabled {
+		writeError(w, http.StatusNotFound, "not_found", "federation is disabled on this server")
+		return
+	}
+
+	body, ok := readBody(w, r)
+	if !ok {
+		return
+	}
+
+	var req federationMessageBatchRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "malformed JSON body")
+		return
+	}
+	if req.SenderAccountID == "" || req.SenderRootPubKey == "" || req.SenderDeviceCert.DeviceID == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request",
+			"sender_account_id, sender_root_pub_key, and sender_device_cert are required")
+		return
+	}
+	if !a.checkBatchSize(w, len(req.Messages)) {
+		return
+	}
+
+	sender, ok := a.verifyFederatedSender(w, r, federatedSenderClaim{
+		AccountID:   req.SenderAccountID,
+		RootPubKey:  req.SenderRootPubKey,
+		DeviceCert:  req.SenderDeviceCert,
+		BodyDigest:  "",
+		RequestBody: body,
+	})
+	if !ok {
+		return
+	}
+
+	results := make([]batchResultItem, 0, len(req.Messages))
+	for _, item := range req.Messages {
+		outcome := a.enqueueMessage(enqueueRequest{
+			MessageID:          item.MessageID,
+			SenderAccountID:    sender.AccountID,
+			SenderDeviceID:     sender.DeviceID,
+			RecipientAccountID: item.RecipientAccountID,
+			RecipientDeviceID:  item.RecipientDeviceID,
+			Payload:            item.Payload,
+		})
+		results = append(results, batchResultItem{MessageID: item.MessageID, Status: string(outcome)})
+	}
+
+	writeJSON(w, http.StatusOK, batchResponse{Results: results})
 }
