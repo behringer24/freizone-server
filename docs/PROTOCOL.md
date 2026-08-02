@@ -657,10 +657,12 @@ certificate, or no `dh_identity_cert` on a device's first-ever upload ·
 `404` unknown device.
 
 ### `POST /v1/devices/{device_id}/prekey-bundle`
-No auth — a public claim endpoint, like the account directory: no trust in
-the server is required, only in the certificate chain the caller verifies
-itself. **Atomically** removes one one-time prekey from the pool (if any
-remain) and returns it — each one-time prekey is handed out at most once.
+The bundle itself is public, like the account directory: no trust in the server
+is required, only in the certificate chain the caller verifies itself. The
+**one-time prekey** inside it is not public, because it is a *consumable* — see
+"Claimant authentication" below. **Atomically** removes one one-time prekey from
+the pool (if the claimant is entitled to one and any remain) and returns it —
+each one-time prekey is handed out at most once.
 ```json
 {
   "device_id": "16hexchars",
@@ -670,13 +672,63 @@ remain) and returns it — each one-time prekey is handed out at most once.
   "one_time_prekey": { "key_id": 101, "pubkey": "base64..." }
 }
 ```
-`one_time_prekey` is omitted (`null`) once the pool is empty — X3DH
-proceeds without it (§5), with reduced forward secrecy for that first
-message only. `404` if the device is unknown, inactive, or has never
-uploaded prekeys. If this claim leaves the pool below a low-water mark and
-the device has no live SSE stream open, the server fires a push wake (see
-"Push notifications" below) so a rarely-opened device gets a chance to
-replenish before the pool actually runs dry.
+`one_time_prekey` is omitted whenever none was handed out — X3DH proceeds
+without it (§5), with reduced forward secrecy for that first message only.
+`one_time_prekey_omitted` then says which reason applied, `"pool_empty"` or
+`"unauthenticated"`, and is itself absent when a key *was* handed out. It is
+purely diagnostic: the two cases are otherwise indistinguishable, and a client
+should be able to notice that its own credentials were not accepted rather than
+mistake it for a drained peer.
+
+`404` if the device is unknown, inactive, or has never uploaded prekeys. If this
+claim leaves the pool below a low-water mark and the device has no live SSE
+stream open, the server fires a push wake (see "Push notifications" below) so a
+rarely-opened device gets a chance to replenish before the pool actually runs
+dry — which, since only an entitled claimant consumes a key, is no longer
+something an arbitrary caller can trigger on demand.
+
+#### Claimant authentication
+
+Three forms, in this order:
+
+1. **A body carrying the claimant's own identity** — for a claimant whose
+   account lives on **another server**, which has no local row to authenticate
+   against. Verified inline exactly as federated message delivery does (§9):
+   ```json
+   {
+     "sender_account_id": "...",
+     "sender_root_pub_key": "base64 Ed25519",
+     "sender_device_cert": { "device_id": "...", "device_pub_key": "base64...", "issued_at": "...", "signature": "base64..." }
+   }
+   ```
+   signed with the **self-describing-key variant** (§3): `Signature-Key-Id` is
+   the base64 device public key named in the certificate. Subject to the same
+   rules as a federated message: `404` when this server has federation switched
+   off, `403` for a sender on the federation blocklist, `400` for a certificate
+   that does not verify under the claimed root key.
+2. **An ordinary §3 device signature, no body** — for a claimant registered on
+   this server. Rejected with `401` like any other signed route if it does not
+   verify.
+3. **Neither** — an anonymous claim. Still answered `200` with the full bundle,
+   but **without** a one-time prekey.
+
+Credentials that are *present but invalid* are always refused, never quietly
+treated as anonymous: a downgrade there would turn a client bug or a skewed
+clock into a silent loss of forward secrecy that nothing reports.
+
+**Why the one-time prekey is gated.** It is single-use, so a caller that can
+claim repeatedly can drain a device's whole pool — after which every new session
+with that device starts without one until it next tops up. Requiring an identity
+does not prevent that outright, but it makes it attributable and bounded by the
+cost of holding an account. Confidentiality never depended on this: the pool
+being empty is a normal state that X3DH is defined to handle.
+
+This is a deliberately *compatible* way to close it. A client that predates the
+rule sends no credentials, gets the bundle without a one-time prekey, and
+proceeds down the same path an empty pool already produced — so it keeps working
+at exactly the forward-secrecy level it had before, while the pool it might have
+drained is now protected. Requiring authentication outright would instead have
+stopped every deployed client from starting new conversations.
 
 ### `GET /v1/devices/{device_id}/prekey-status` (signed, caller must be that device)
 Non-destructive counterpart to the claim endpoint above — reports the pool
@@ -750,10 +802,13 @@ with these concrete choices:
   keypair and only generates a fresh one once it processes the initiator's
   first message.
 
-**Known limitation, accepted for now:** `prekey-bundle` claims are
-unauthenticated, so anyone can exhaust a device's one-time-prekey pool —
-degrades forward secrecy for that session's first message, not
-confidentiality. Revisit before any real deployment.
+**One-time prekey pool exhaustion (SRV-04, closed):** a `prekey-bundle` claim
+used to be entirely unauthenticated, so anyone could drain a device's
+one-time-prekey pool. A claimant is now identified before it may consume one —
+either as a locally registered device or, from another server, by the same
+inline certificate chain federated delivery uses. See §4's `prekey-bundle`
+entry for the three accepted forms and why an anonymous claim still succeeds
+without a key.
 
 **Session recovery / re-key (client behavior):** a `prekey` block is normally
 only meaningful when the recipient has no existing session with that sender

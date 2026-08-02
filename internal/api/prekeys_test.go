@@ -24,6 +24,17 @@ type uploadedPrekeys struct {
 	otpkPrivs map[uint32]*ecdh.PrivateKey
 }
 
+// claimBundleT claims targetDeviceID's prekey bundle the way a real initiator
+// does since SRV-04: signed as claimant, which is what earns a one-time prekey.
+// Anonymous claims still work but get no key, so tests about the pool must go
+// through here.
+func claimBundleT(t *testing.T, handler http.Handler, targetDeviceID string, claimant identityKeys) *httptest.ResponseRecorder {
+	t.Helper()
+	return doSignedRequest(t, handler, http.MethodPost,
+		"/v1/devices/"+targetDeviceID+"/prekey-bundle", nil,
+		claimant.deviceID, claimant.devicePriv)
+}
+
 // uploadPrekeysT generates a fresh DH identity key, signed prekey, and
 // otpkCount one-time prekeys for k, uploads them via the real handler, and
 // returns the private keys.
@@ -130,9 +141,10 @@ func TestHandleUploadPrekeysRequiresIdentityCertOnFirstUpload(t *testing.T) {
 func TestHandleClaimPrekeyBundleWithOneTimePrekey(t *testing.T) {
 	a, _ := newTestAPI(t, config.PolicyOpen)
 	k := registerAccount(t, a)
+	initiator := registerAccount(t, a)
 	uploaded := uploadPrekeysT(t, a.Router(), k, 2)
 
-	rec := doRequest(t, a.Router(), http.MethodPost, "/v1/devices/"+k.deviceID+"/prekey-bundle", nil)
+	rec := claimBundleT(t, a.Router(), k.deviceID, initiator)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200, body = %s", rec.Code, rec.Body.String())
 	}
@@ -159,16 +171,17 @@ func TestHandleClaimPrekeyBundleWithOneTimePrekey(t *testing.T) {
 func TestHandleClaimPrekeyBundleExhaustsPool(t *testing.T) {
 	a, _ := newTestAPI(t, config.PolicyOpen)
 	k := registerAccount(t, a)
+	initiator := registerAccount(t, a)
 	uploadPrekeysT(t, a.Router(), k, 1)
 
-	rec1 := doRequest(t, a.Router(), http.MethodPost, "/v1/devices/"+k.deviceID+"/prekey-bundle", nil)
+	rec1 := claimBundleT(t, a.Router(), k.deviceID, initiator)
 	var resp1 prekeyBundleResponse
 	decodeJSON(t, rec1, &resp1)
 	if resp1.OneTimePrekey == nil {
 		t.Fatal("expected first claim to return a one-time prekey")
 	}
 
-	rec2 := doRequest(t, a.Router(), http.MethodPost, "/v1/devices/"+k.deviceID+"/prekey-bundle", nil)
+	rec2 := claimBundleT(t, a.Router(), k.deviceID, initiator)
 	var resp2 prekeyBundleResponse
 	decodeJSON(t, rec2, &resp2)
 	if resp2.OneTimePrekey != nil {
@@ -203,7 +216,7 @@ func TestHandleGetPrekeyStatus(t *testing.T) {
 
 	// Claiming one (as an initiator would) should be reflected on the
 	// next status check.
-	doRequest(t, a.Router(), http.MethodPost, "/v1/devices/"+k.deviceID+"/prekey-bundle", nil)
+	claimBundleT(t, a.Router(), k.deviceID, registerAccount(t, a))
 
 	rec2 := doSignedRequest(t, a.Router(), http.MethodGet, "/v1/devices/"+k.deviceID+"/prekey-status", nil, k.deviceID, k.devicePriv)
 	decodeJSON(t, rec2, &resp)
@@ -257,8 +270,9 @@ func TestHandleClaimPrekeyBundleWakesDeviceWhenPoolRunsLow(t *testing.T) {
 	// must.
 	uploadPrekeysT(t, a.Router(), k, lowOneTimePrekeyThreshold+2)
 
+	initiator := registerAccount(t, a)
 	for i := 0; i < 2; i++ {
-		doRequest(t, a.Router(), http.MethodPost, "/v1/devices/"+k.deviceID+"/prekey-bundle", nil)
+		claimBundleT(t, a.Router(), k.deviceID, initiator)
 	}
 	select {
 	case <-hitCh:
@@ -266,7 +280,7 @@ func TestHandleClaimPrekeyBundleWakesDeviceWhenPoolRunsLow(t *testing.T) {
 	case <-time.After(300 * time.Millisecond):
 	}
 
-	doRequest(t, a.Router(), http.MethodPost, "/v1/devices/"+k.deviceID+"/prekey-bundle", nil)
+	claimBundleT(t, a.Router(), k.deviceID, initiator)
 	select {
 	case <-hitCh:
 	case <-time.After(5 * time.Second):
@@ -310,7 +324,7 @@ func TestHandleClaimPrekeyBundleSkipsWakeWhenSubscribed(t *testing.T) {
 	// Claiming the device's only prekey drives the pool to 0 (below
 	// threshold), but it has a live SSE stream open -- no wake should
 	// fire, since it'll re-check its own pool on its next reconnect.
-	doRequest(t, a.Router(), http.MethodPost, "/v1/devices/"+k.deviceID+"/prekey-bundle", nil)
+	claimBundleT(t, a.Router(), k.deviceID, registerAccount(t, a))
 	select {
 	case <-hitCh:
 		t.Fatal("push wake fired despite a live SSE subscriber")

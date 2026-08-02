@@ -80,6 +80,16 @@ type federationDeviceCertDTO struct {
 	Signature    string `json:"signature"`
 }
 
+// claimPrekeyBundleRequest is the body a claimant on ANOTHER server sends when
+// claiming a prekey bundle (SRV-04): its own self-certifying identity, so the
+// target server can verify it inline and hand out a one-time prekey. A claimant
+// on its own server sends no body and signs the request the ordinary way.
+type claimPrekeyBundleRequest struct {
+	SenderAccountID  string                  `json:"sender_account_id"`
+	SenderRootPubKey string                  `json:"sender_root_pub_key"`
+	SenderDeviceCert federationDeviceCertDTO `json:"sender_device_cert"`
+}
+
 type federationMessageRequest struct {
 	SenderAccountID    string                  `json:"sender_account_id"`
 	SenderRootPubKey   string                  `json:"sender_root_pub_key"`

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"time"
 
@@ -195,13 +196,104 @@ func (a *API) handleGetPrekeyStatus(w http.ResponseWriter, r *http.Request) {
 // runway left to actually replenish before the pool hits zero.
 const lowOneTimePrekeyThreshold = 3
 
+// bundleClaimant is who asked for a prekey bundle, as far as this server could
+// establish it. Only [bundleClaimant.Identified] gates anything: the claim
+// itself is answered for anyone, since a bundle is public key material by
+// design, but a one-time prekey is a consumable and goes only to a caller that
+// can be held responsible for consuming it (SRV-04).
+type bundleClaimant struct {
+	// AccountID is empty for an anonymous claimant. Not used for any decision
+	// today -- kept because it is what a per-claimant rate limit would need,
+	// and because logging "who drained this pool" is the first thing anyone
+	// will want if it ever happens again.
+	AccountID  string
+	Identified bool
+}
+
+// authenticateBundleClaimant establishes who is claiming a prekey bundle,
+// accepting either form of credential the protocol has and treating their
+// absence as a legitimate anonymous request.
+//
+//   - A body carrying a federated sender claim: verified inline against the
+//     caller's own root key (§9's self-describing-key form, exactly as the
+//     federated message and blob routes do). This is the only form available to
+//     a sender whose account lives on another server, and it is refused
+//     outright when this server has federation switched off -- accepting the
+//     credentials of a server we won't talk to would be an odd exception.
+//   - Signature headers with no such body: an ordinary §3 device signature from
+//     a device registered here.
+//   - Neither: anonymous, ok=true, Identified=false.
+//
+// Credentials that are present but do not verify are always refused -- never
+// downgraded to anonymous, which would turn a client bug or a clock skew into a
+// silent loss of forward secrecy that nobody would notice for months. Writes
+// the error response and returns ok=false in that case.
+func (a *API) authenticateBundleClaimant(w http.ResponseWriter, r *http.Request) (bundleClaimant, bool) {
+	body, ok := readBody(w, r)
+	if !ok {
+		return bundleClaimant{}, false
+	}
+	// Restored for auth.TryAuthenticate below, which reads the body to rebuild
+	// the canonical string.
+	r.Body = io.NopCloser(bytes.NewReader(body))
+
+	if len(bytes.TrimSpace(body)) > 0 {
+		var req claimPrekeyBundleRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", "malformed JSON body")
+			return bundleClaimant{}, false
+		}
+		if req.SenderAccountID != "" || req.SenderRootPubKey != "" || req.SenderDeviceCert.DeviceID != "" {
+			enabled, err := store.GetFederationEnabled(a.DB)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+				return bundleClaimant{}, false
+			}
+			if !enabled {
+				writeError(w, http.StatusNotFound, "not_found", "federation is disabled on this server")
+				return bundleClaimant{}, false
+			}
+			sender, ok := a.verifyFederatedSender(w, r, federatedSenderClaim{
+				AccountID:   req.SenderAccountID,
+				RootPubKey:  req.SenderRootPubKey,
+				DeviceCert:  req.SenderDeviceCert,
+				RequestBody: body,
+			})
+			if !ok {
+				return bundleClaimant{}, false
+			}
+			return bundleClaimant{AccountID: sender.AccountID, Identified: true}, true
+		}
+	}
+
+	if !auth.HasSignatureHeaders(r) {
+		return bundleClaimant{}, true // anonymous, and allowed to be
+	}
+	identity, err := a.Auth.TryAuthenticate(r)
+	if err != nil {
+		if a.Logger != nil {
+			a.Logger.Warn("prekey bundle claim authentication failed", "error", err, "path", r.URL.Path)
+		}
+		writeError(w, http.StatusUnauthorized, "unauthorized", "authentication failed")
+		return bundleClaimant{}, false
+	}
+	return bundleClaimant{AccountID: identity.AccountID, Identified: true}, true
+}
+
 // handleClaimPrekeyBundle atomically hands out a device's current X3DH
-// bundle -- including one one-time prekey, if the pool isn't empty -- for
-// an initiator to start a session. Public, like the account directory: no
-// trust in the server is required, only in the signature chain the caller
-// verifies independently (device_pubkey from GET /v1/accounts/{id}).
+// bundle for an initiator to start a session. The public key material is
+// served to anyone -- no trust in the server is required, only in the
+// signature chain the caller verifies independently (device_pubkey from
+// GET /v1/accounts/{id}) -- but the one-time prekey it would normally include
+// goes only to a claimant this server could identify (SRV-04, see
+// authenticateBundleClaimant).
 func (a *API) handleClaimPrekeyBundle(w http.ResponseWriter, r *http.Request) {
 	deviceID := r.PathValue("device_id")
+
+	claimant, ok := a.authenticateBundleClaimant(w, r)
+	if !ok {
+		return
+	}
 
 	device, err := store.GetDevice(a.DB, deviceID)
 	if err != nil {
@@ -227,10 +319,20 @@ func (a *API) handleClaimPrekeyBundle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claimed, err := store.ClaimOneTimePrekey(a.DB, deviceID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
-		return
+	// The heart of SRV-04. A one-time prekey is a consumable, and an anonymous
+	// caller could drain a device's whole pool by asking repeatedly -- costing
+	// that device forward secrecy on the first message of every session until
+	// it next tops up. So the pool is only opened to a caller this server could
+	// identify; everyone else gets the bundle without one, which is a shape
+	// every client already handles (an empty pool produces it too, see
+	// docs/PROTOCOL.md §5). Nothing about confidentiality changes either way.
+	var claimed *store.ClaimedOneTimePrekey
+	if claimant.Identified {
+		claimed, err = store.ClaimOneTimePrekey(a.DB, deviceID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+			return
+		}
 	}
 
 	// A device with a live SSE connection re-checks its own pool on every
@@ -239,7 +341,9 @@ func (a *API) handleClaimPrekeyBundle(w http.ResponseWriter, r *http.Request) {
 	// otherwise it might not open the app again for a long time. Only
 	// wake if a key was actually claimed just now: an already-empty pool
 	// has nothing new to warn about, so this can't fire on every repeat
-	// call once drained.
+	// call once drained. Since an anonymous claimant never claims a key
+	// (above), this also stops being a way for anyone to make this server
+	// send push wakes to an arbitrary device on demand.
 	if claimed != nil && !a.broker.hasSubscribers(deviceID) {
 		if remaining, err := store.CountOneTimePrekeys(a.DB, deviceID); err == nil && remaining < lowOneTimePrekeyThreshold {
 			a.wakeDevice(device)
@@ -266,6 +370,16 @@ func (a *API) handleClaimPrekeyBundle(w http.ResponseWriter, r *http.Request) {
 		resp.OneTimePrekey = &oneTimePrekeyDTO{
 			KeyID:  claimed.KeyID,
 			PubKey: base64.StdEncoding.EncodeToString(claimed.PubKey),
+		}
+	} else {
+		// Says *why* there is no one-time prekey. Without this the two reasons
+		// are indistinguishable, and "your request wasn't authenticated" is
+		// something a client should be able to notice and log rather than
+		// silently accept as a drained pool.
+		if claimant.Identified {
+			resp.OneTimePrekeyOmitted = oneTimePrekeyOmittedPoolEmpty
+		} else {
+			resp.OneTimePrekeyOmitted = oneTimePrekeyOmittedUnauthenticated
 		}
 	}
 

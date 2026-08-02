@@ -37,8 +37,10 @@ func TestEndToEndEncryptedChat(t *testing.T) {
 	aliceKeys := uploadPrekeysT(t, handler, alice, 0)
 	bobKeys := uploadPrekeysT(t, handler, bob, 1)
 
-	// Alice claims Bob's prekey bundle, exactly as a real initiator would.
-	claimRec := doRequest(t, handler, http.MethodPost, "/v1/devices/"+bob.deviceID+"/prekey-bundle", nil)
+	// Alice claims Bob's prekey bundle, exactly as a real initiator would --
+	// signed, which is what earns the one-time prekey this exchange then uses
+	// (SRV-04).
+	claimRec := claimBundleT(t, handler, bob.deviceID, alice)
 	if claimRec.Code != http.StatusOK {
 		t.Fatalf("claim status = %d, want 200, body = %s", claimRec.Code, claimRec.Body.String())
 	}

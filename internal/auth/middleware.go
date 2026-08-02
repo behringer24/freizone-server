@@ -84,6 +84,33 @@ func (m *Middleware) Require(next http.Handler) http.Handler {
 	})
 }
 
+// TryAuthenticate runs the same check [Require] does but returns the outcome
+// instead of writing a response, for a handler that must decide for itself
+// what an unauthenticated caller gets.
+//
+// Only for routes where "no credentials" is a legitimate case with its own
+// answer -- the prekey-bundle claim (SRV-04), which serves anyone but hands a
+// one-time prekey only to a caller it can identify. Everything else belongs
+// behind [Require], so the generic 401 stays the single answer to every failure
+// mode and no handler can accidentally invent a weaker one.
+//
+// Note the asymmetry a caller must preserve: an *absent* signature is a
+// legitimate anonymous request, but a *present but invalid* one must still be
+// refused. Silently treating a bad signature as anonymous would turn every
+// client bug into a quiet downgrade.
+func (m *Middleware) TryAuthenticate(r *http.Request) (Identity, error) {
+	return m.authenticate(r)
+}
+
+// HasSignatureHeaders reports whether r carries request-signature headers at
+// all -- i.e. whether the caller was *trying* to authenticate. Lets a handler
+// tell "anonymous" apart from "authentication failed" without inspecting the
+// error.
+func HasSignatureHeaders(r *http.Request) bool {
+	_, err := httpsig.ParseRequestHeaders(r)
+	return err == nil
+}
+
 func (m *Middleware) authenticate(r *http.Request) (Identity, error) {
 	headers, err := httpsig.ParseRequestHeaders(r)
 	if err != nil {
