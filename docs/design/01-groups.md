@@ -247,20 +247,42 @@ being safe.)
 uint16BE(len(tag)) || tag (UTF-8)  ||  <type-specific fields>
 ```
 
-| Event | Tag | Fields after the tag | Signed by |
+Every event then carries `group_id`, its own fields, and `issued_at` last:
+
+| Event | Tag | Fields between group id and timestamp | Signed by |
 |---|---|---|---|
-| Genesis | `frz-group-genesis-v1` | `group_id`, `group_nonce` (16 raw bytes), `founder_account_id`, `created_at` | group root key |
-| Role grant | `frz-group-role-grant-v1` | `group_id`, `uint8(role)`, `subject_account_id`, `issued_at` | group root key (admin) / admin's device (moderator) |
-| Role revoke | `frz-group-role-revoke-v1` | `group_id`, `uint8(role)`, `subject_account_id`, `revoked_at` | as above |
-| Member add | `frz-group-member-add-v1` | `group_id`, `subject_account_id`, `subject_server`, `added_at` | device |
-| Member remove | `frz-group-member-remove-v1` | `group_id`, `subject_account_id`, `removed_at` | device |
-| Join accept | `frz-group-join-accept-v1` | `group_id`, `subject_account_id`, `accepted_at` | subject's own device |
-| Leave | `frz-group-leave-v1` | `group_id`, `subject_account_id`, `left_at` | subject's own device |
-| Group meta | `frz-group-meta-v1` | `group_id`, `name`, `topic`, `set_at` | device |
-| Dissolve | `frz-group-dissolve-v1` | `group_id`, `dissolved_at` | group root key |
+| Genesis | `frz-group-genesis-v1` | `group_root_pubkey` (32 raw), `group_nonce` (16 raw), `founder_account_id`, `founder_server` | group root key |
+| Role grant | `frz-group-role-grant-v1` | `uint8(role)`, `subject_account_id` | group root key or device |
+| Role revoke | `frz-group-role-revoke-v1` | `uint8(role)`, `subject_account_id` | group root key or device |
+| Member add | `frz-group-member-add-v1` | `subject_account_id`, `subject_server` | device |
+| Member remove | `frz-group-member-remove-v1` | `subject_account_id` | device |
+| Join accept | `frz-group-join-accept-v1` | `subject_account_id` | subject's own device |
+| Leave | `frz-group-leave-v1` | `subject_account_id` | subject's own device |
+| Group meta | `frz-group-meta-v1` | `name`, `topic` | device |
+| Dissolve | `frz-group-dissolve-v1` | *(none)* | group root key |
 
 Strings are `uint16BE(len) || UTF-8 bytes`; timestamps are UTC RFC 3339
-(`2006-01-02T15:04:05Z07:00`), as in §2. `role` is `1` = admin, `2` = moderator.
+(`2006-01-02T15:04:05Z07:00`), as in §2. `role` uses the ordered rank values
+below, so only `2` (moderator) and `3` (admin) may appear in a grant.
+
+**One `issued_at`, not a per-type name.** `added_at`, `revoked_at`,
+`accepted_at` and the rest all encode identically, and the domain tag already
+says which event it is, so they are one field. It must carry **no sub-second
+precision**: the signing bytes have second granularity, so anything finer would
+be unsigned data that still influenced replay order — and two members could then
+fold the same facts into different states.
+
+**Genesis carries the founder's server, and is the founder's membership.** The
+founder has no `member_add` of their own, so without this they would be the one
+member nobody could deliver to until they spoke first. Deriving their membership
+from genesis directly also removes a self-add and a self-accept that nobody would
+ever have checked.
+
+**A role grant may be signed by either key.** Which key is *sufficient* is not a
+property of the event type but of the role being granted, and that comparison
+already lives in the fold. A root signature simply counts as the founder acting,
+which also means the founder need not reach for the group root key to appoint a
+moderator — their own device rank already permits it.
 
 **Event id** = `SHA-256(signing_bytes || signature)`, lowercase hex. It is what
 deduplication and `state_hash` operate on.
@@ -293,10 +315,22 @@ because blocking staff would amount to removing them.
 The founder is unremovable because "founder" is key possession, not an
 assignment.
 
+**The whole table is two comparisons.** Ranks are ordered — member 1, moderator
+2, admin 3, founder 4 — and then:
+
+- granting or revoking role `R` requires a rank **above `R`**, so only the
+  founder (4) touches admin (3) and only an admin (3) touches moderator (2);
+- removing a member requires at least moderator **and** a rank above the
+  target's; inviting and setting name/topic require at least moderator.
+
+Every row above falls out of those two, including "nobody removes the founder"
+(nothing outranks 4). Worth stating because the obvious implementation is a
+per-action permission matrix, which is nine chances to get a cell wrong.
+
 ## State is a fold over monotone facts
 
-There is no sequencer. Two moderators removing each other simultaneously is
-unavoidable. So no event is a write; each is a **monotone statement**:
+There is no sequencer, so concurrent conflicting acts are unavoidable. No event
+is therefore a write; each is a **monotone statement**:
 
 > "A appointed X moderator at T" · "A revoked X's moderator role at T′"
 
@@ -313,8 +347,25 @@ State is a **fold over the set of facts**, independent of arrival order:
 - Identical timestamps: the lower event id wins.
 
 This is the certificate/revocation pattern §2 already uses for devices, merely
-replicated. Mutual removal therefore ends with both parties out — it fails
-closed, and an admin cleans up.
+replicated.
+
+**Implemented as a replay, which is the same rule stated constructively.** Sort
+every fact by `(issued_at, event_id)` and apply them in that order, checking each
+against the state built from everything before it. "The signer must have held the
+required role when they signed" and "replay in timestamp order" are the same
+sentence, and the replay is obviously deterministic, which the declarative form
+is not — `role(X)` depends on grants, which depend on authority, which depends on
+`role`. Sorting breaks that circularity by construction.
+
+**Mutual removal cannot happen.** An earlier draft of this document claimed two
+moderators removing each other would end with both out, failing closed. That is
+wrong, and the implementation's tests are what surfaced it: "strictly lower
+ranks" already forbids a moderator from removing a moderator, so neither act ever
+takes effect and the group loses nobody. There is no race here to resolve — and
+correspondingly no state in which a group can purge both its moderators at once.
+The genuine race is a moderator removing a member while an admin promotes that
+same member out of reach; there the earlier timestamp decides, identically for
+everyone.
 
 ## Events are self-contained
 
@@ -533,7 +584,14 @@ Two constraints that document establishes and that belong here too:
 
 # Phasing
 
-1. `pkg/group` with its test suite — events, verification, fold, convergence.
+1. **`pkg/group` with its test suite — shipped 2026-08-02.** Events,
+   verification, the fold, convergence. Pure Go, no I/O, 83% statement coverage.
+   `pkg/address` gained `DeriveIDVersion`/`VerifyVersion`/`VersionOf` so a group
+   id reuses every line of the account-id encoding under a different marker.
+   Four things the code changed about the plan above, each recorded where it
+   belongs: the ordered rank values, genesis carrying the founder's server and
+   implying their membership, role grants accepting either key, and the
+   mutual-removal correction.
 2. Batch endpoints and the capability flag.
 3. `cmd/devclient`: a full group between two local instances plus one federated,
    without UI.
