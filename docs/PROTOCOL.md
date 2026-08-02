@@ -837,6 +837,34 @@ a re-key is not a new trust decision, just a repeat of the same one. See
 freizone-app's `AppSession.resetSecureSession` / `processIncomingMessage` for
 a reference implementation.
 
+**Simultaneous establishment (client behavior).** Two parties can claim each
+other's prekey bundle at the same moment, and then each holds its *own*
+initiator session for the pair while neither can read the other's. Between two
+people chatting this is rare, because somebody speaks first. In a group (§12) it
+is routine: a joining member establishes a session with every existing member at
+once, and those members reach back toward them in the same breath, so most new
+pairs in a group start out doubled.
+
+The rule is the ordering rule re-keying already uses, derived from data both
+sides hold: **the lower `account_id`'s session wins** and is the one both sides
+send on. Concretely, on receiving a `prekey` block from a peer a client already
+has a session with:
+
+1. Build the responder session and try to decrypt the accompanying message with
+   it. If it does not decrypt, this is a stale or redelivered block — keep the
+   existing session and change nothing.
+2. If it does decrypt and the **peer's** id is lower, adopt it as the session
+   for this pair. Both sides now converge on it.
+3. If it does decrypt and **our own** id is lower, keep our session for sending
+   but retain the responder session for **reading only**. The peer is still
+   sending on theirs until our next message reaches them, and without this those
+   in-flight messages are stranded undecryptable forever.
+
+Step 3 is the part that is easy to leave out and expensive to omit: the pair
+converges either way, but without a read-only session every message the loser
+sent before converging is lost. A client MAY discard a read-only session once
+the peer has demonstrably moved (a message arriving on the winning session).
+
 Because a re-key must ride on *some* message, a client that has just discarded
 its session SHOULD send the invisible `rekey` control envelope (§6) rather than
 wait for the user to type something. What a desync breaks is **receiving**: the

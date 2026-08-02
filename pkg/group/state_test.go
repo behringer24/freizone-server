@@ -44,6 +44,51 @@ func TestFounderIsAMemberFromGenesisAlone(t *testing.T) {
 	}
 }
 
+func TestSameSecondEventsDoNotDependOnHashOrder(t *testing.T) {
+	// Founding a group and naming it happen in the same second, and the
+	// signing bytes only record seconds -- so the two events are concurrent
+	// and their hash order is arbitrary. Before the fold iterated to a
+	// fixpoint, a name whose hash sorted ahead of its own genesis was silently
+	// dropped, which is exactly what the first real devclient run hit.
+	//
+	// The subject is generated fresh each run, so hashes differ every time:
+	// over enough iterations this covers both orderings without having to
+	// contrive one.
+	for i := 0; i < 25; i++ {
+		founder := newAccount(t, "a.example.org")
+		invitee := newAccount(t, "b.example.org")
+		g := newGroup(t, founder) // genesis at at(0)
+
+		meta := g.by(t, founder, &Event{
+			Type: EventMeta, IssuedAt: at(0), Name: "Wandergruppe", Topic: "Samstag",
+		})
+		// An invitation and its acceptance in the same second, too: the accept
+		// depends on the add, and nothing in the timestamps says so.
+		add := g.by(t, founder, &Event{
+			Type: EventMemberAdd, IssuedAt: at(0), Subject: invitee.accountID, Server: invitee.server,
+		})
+		accept := g.by(t, invitee, &Event{
+			Type: EventJoinAccept, IssuedAt: at(0), Subject: invitee.accountID,
+		})
+
+		s := NewState()
+		apply(t, s, g.genesis, meta, add, accept)
+
+		r := s.Resolve()
+		if r.Name != "Wandergruppe" || r.Topic != "Samstag" {
+			t.Fatalf("run %d: metadata lost to hash order: %+v", i, r)
+		}
+		if r.RoleOf(invitee.accountID) != RoleMember {
+			t.Fatalf("run %d: same-second invitation lost", i)
+		}
+		for _, m := range r.Members {
+			if m.AccountID == invitee.accountID && !m.Joined {
+				t.Fatalf("run %d: same-second acceptance lost", i)
+			}
+		}
+	}
+}
+
 func TestInviteNeedsAcceptanceBeforeItCounts(t *testing.T) {
 	founder := newAccount(t, "a.example.org")
 	invitee := newAccount(t, "b.example.org")

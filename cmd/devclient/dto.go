@@ -65,6 +65,32 @@ type sendMessageRequest struct {
 	Payload            json.RawMessage `json:"payload"`
 }
 
+// Batch delivery (SRV-01), mirroring internal/api's request and response
+// shapes. Used by group fan-out where the server advertises the capability.
+type batchMessageItem struct {
+	MessageID         string          `json:"message_id"`
+	RecipientDeviceID string          `json:"recipient_device_id"`
+	Payload           json.RawMessage `json:"payload"`
+}
+
+type sendMessageBatchRequest struct {
+	Messages []batchMessageItem `json:"messages"`
+}
+
+type federationMessageBatchRequest struct {
+	SenderAccountID  string                  `json:"sender_account_id"`
+	SenderRootPubKey string                  `json:"sender_root_pub_key"`
+	SenderDeviceCert federationDeviceCertDTO `json:"sender_device_cert"`
+	Messages         []batchMessageItem      `json:"messages"`
+}
+
+type batchResponse struct {
+	Results []struct {
+		MessageID string `json:"message_id"`
+		Status    string `json:"status"`
+	} `json:"results"`
+}
+
 type messageResponse struct {
 	MessageID       string          `json:"message_id"`
 	SenderAccountID string          `json:"sender_account_id"`

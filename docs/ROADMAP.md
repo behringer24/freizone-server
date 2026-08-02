@@ -55,7 +55,14 @@ message. Broadcast, previously part of this item, split out as SRV-16.
   the four handlers onto one enqueue path also closed two older gaps: the
   same-server path never checked the recipient *account*'s status, and a
   payload of literal `null` was queued rather than rejected
-- **Open** — `cmd/devclient`, then the app (APP-16)
+- 2026-08-02 — phase 3 shipped: `devclient group`, verified across both local
+  Docker instances with a federated member. Four accounts converge on an
+  identical `state_hash`, batch delivery is used per recipient server, and
+  unauthorized acts are rejected identically by every member's own fold. Three
+  design corrections the run forced, in the design document — the significant
+  one being that **simultaneous X3DH establishment is routine in a group**,
+  which needed a tie-break plus a read-only session and is now in PROTOCOL §5
+- **Open** — the app (APP-16)
 
 ### SRV-02 — Multi-device linking
 Status: `planned` · Also affects: freizone-app, shared Go core

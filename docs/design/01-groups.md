@@ -451,6 +451,39 @@ Anna and Clara see his stale `state_hash` and push him the snapshot. Exactly one
 message is lost, and Ben's client can say so, because it learns afterwards that
 its fan-out was incomplete.
 
+## What building it changed
+
+Three things the first real run found, all of which had been reasoned about
+wrongly here rather than merely unimplemented.
+
+**Simultaneous session establishment is the normal case in a group, not an edge
+case.** A joining member reaches for every existing member at once and they
+reach back, so most new pairs start with each side holding its own X3DH
+initiator session and neither able to read the other's. Nothing in this document
+had accounted for it, because in a one-to-one chat somebody speaks first and the
+race effectively never happens. The fix reuses the ordering rule re-keying
+already had — the lower `account_id`'s session wins — plus a **read-only**
+retention of the losing session, without which every message the loser sent
+before converging is stranded undecryptable. Now specified in PROTOCOL §5, and a
+requirement on the app (APP-16), not just on the reference client.
+
+**Events sharing a timestamp needed a fixpoint, not a hash tie-break.** The
+signing bytes carry whole seconds, so founding a group and naming it land on the
+same timestamp and their order is decided by hash — and a name whose hash sorted
+ahead of its own genesis was silently dropped. Same for an invitation and its
+acceptance in the same second. The fold now iterates each timestamp to a
+fixpoint: same-second events are genuinely concurrent, so an arbitrary tie-break
+must not decide which of them survives. Still deterministic, still a pure
+function of the fact set.
+
+**An out-of-order control envelope needs holding, not dropping.** Delivery is
+unordered, so an `events` envelope routinely overtakes the `snapshot` carrying
+the genesis it depends on. Rejecting it outright leaves the fact recoverable
+only by a later `state_hash` mismatch; a small bounded hold buffer, retried
+whenever new facts arrive, closes that without waiting for the repair path.
+Only "not admissible *yet*" is held — a bad signature or another group's id is
+dropped, since no later fact will change it.
+
 ## Accepted weaknesses
 
 Worth writing down rather than discovering:
@@ -600,8 +633,13 @@ Two constraints that document establishes and that belong here too:
    recipient *account*'s status (federation always did), and a payload of
    literal `null` is now rejected rather than queued as an envelope no client
    can decode.
-3. `cmd/devclient`: a full group between two local instances plus one federated,
-   without UI.
+3. **`cmd/devclient` — shipped 2026-08-02.** A `group` subcommand covering
+   create / invite / accept / grant / revoke / remove / meta / leave / dissolve
+   / send / sync / watch, verified across both local Docker instances with one
+   federated member: four accounts, all converging on an identical
+   `state_hash`, the batch endpoint used per recipient server, unauthorized
+   acts rejected identically by every member's own fold, and a removed member's
+   view correctly freezing. Three findings, below.
 4. App (APP-16), which begins with its own two prerequisites: the `ChatTarget`
    refactor and APP-08 step 2.
 
