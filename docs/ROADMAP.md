@@ -1,622 +1,204 @@
-# Freizone Roadmap — freizone-server (core)
+# Roadmap — freizone-server (core)
 
-Planned changes whose **essential** work lands in this repo. freizone-server is
-the project core, so cross-repo and protocol-level items live here by default.
+Planned and shipped work whose **essential** part lands in this repo.
+freizone-server is the project core, so cross-repo and protocol-level items live
+here by default.
 
-Each item has a short **reference code** used to discuss it. Codes are
-per-repo, so the prefix tells you which repo's `docs/ROADMAP.md` owns the item:
+Each item has a short **reference code** used to discuss it. Codes are per-repo,
+so the prefix says which repo's `docs/ROADMAP.md` owns the item:
 
 - `SRV-` — freizone-server (this file, core)
 - `APP-` — freizone-app
-- `GAW-`  — freizone-gateway
+- `GAW-` — freizone-gateway
 
-A change that spans several repos is listed **once**, in the repo where the
-essential work happens; its entry names the other repos it touches.
+A change spanning several repos is listed **once**, in the repo where the
+essential work happens; its entry names the others it touches.
 
 Status values: `planned` · `in progress` · `done` · `deferred`.
 
-## Planned
+## How to read this file
+
+Entries here are deliberately short: what the item is, its status, and a dated
+log of what actually happened. The reasoning — why an approach was chosen, what
+was rejected, which trade-offs were accepted — lives in a per-topic design
+document under [`design/`](design/), linked from the entry. Items small enough to
+state in a few lines have no separate document; splitting those would cost
+clarity rather than add it.
+
+Released versions and what each contained: [`CHANGELOG.md`](CHANGELOG.md).
+The wire protocol itself is specified in [`PROTOCOL.md`](PROTOCOL.md) — that is a
+contract, not a plan, and does not follow this file's structure.
+
+## Items
 
 ### SRV-01 — Groups / broadcast
-Status: planned · Also affects: freizone-app
-Group and broadcast messaging. Today none of it exists (no tables, no API, no
+Status: `planned` · Also affects: freizone-app
+
+Group and broadcast messaging. None of it exists today (no tables, no API, no
 UI); a group send is conceptually just N direct sends. Needs protocol design
-first (membership, key distribution, fan-out) before any implementation.
+first — membership, key distribution, fan-out — before any implementation.
 
 ### SRV-02 — Multi-device linking
-Status: planned · Also affects: freizone-app, shared Go core
-Add a second device to an existing identity via a QR + Noise handshake, with
-the server acting as a **blind relay** (it never sees the linking secrets).
-Distinct from today's QR, which is only for registration invites — not device
-linking. Prerequisite for SRV-03-style history transfer (see APP-02).
+Status: `planned` · Also affects: freizone-app, shared Go core
+
+Add a second device to an existing identity via a QR + Noise handshake, with the
+server as a **blind relay** that never sees the linking secrets. Distinct from
+today's QR, which is only for registration invites. Prerequisite for history
+transfer (APP-02).
 
 ### SRV-03 — Session recovery on ratchet desync
-Status: in progress · Also affects: freizone-app
-The Double Ratchet had no self-healing: once `sessions[peer]` desynced, all
-further messages from that peer stayed undecryptable and piled up in the
-server queue. The desync *trigger* (cross-isolate push/foreground race) was
-fixed 2026-07-22.
+Status: `in progress` · Also affects: freizone-app
+Design: [design/03-session-recovery.md](design/03-session-recovery.md)
 
-**Manual variant shipped 2026-07-26** (freizone-app): the receive path now
-accepts an incoming X3DH `initial` as a re-key even when a session already
-exists, replacing it only once it actually decrypts the envelope (a failed
-attempt falls back safely, without burning a one-time prekey); an
-undecryptable "poison" envelope is dropped from the server queue after a few
-attempts instead of re-failing forever; and a user-triggered "Reset secure
-session" action (peer profile + chat long-press) discards the local session
-so the next outgoing message re-establishes X3DH, with a visible
-"Secure session was reset" system-message marker on both sides. Recovers a
-desynced conversation once **both** participants run a build with the
-receive-path change — a one-sided reset alone did not work before this.
+The Double Ratchet had no self-healing: once a session desynced, every further
+message from that peer stayed undecryptable and piled up in the queue. Now both
+detected and repaired automatically, over an invisible re-key envelope.
 
-**Root causes of *permanent* desync closed 2026-07-28**, found while chasing
-a "no background push notifications" report back to its actual source (the
-messages simply never decrypted): (1) `pkg/ratchet.Session.Decrypt` mutated
-the session step-by-step with no rollback, so a single undecryptable message
-(a duplicate, a stale straggler, a corrupted envelope) left it permanently
-wedged — `Decrypt` now works on a clone and commits only once the message
-authenticates, and rejects an outright duplicate before it can consume the
-next message key; (2) freizone-app's background push isolate and foreground
-session both applied a whole-profile last-writer-wins save, so a resume that
-raced a push-driven decrypt silently rolled the ratchet back by however many
-messages the wake had just processed — an exclusive cross-isolate lock now
-serializes each account's load-decrypt-save sequence; (3) redelivered
-messages (delivery is at-least-once) were processed a second time, which for
-a redelivered X3DH initial meant rebuilding and overwriting the already-
-advanced session — freizone-app now tracks processed message ids and skips
-a repeat. Verified end-to-end on real devices after resetting two sessions
-this had already broken.
-
-**Automatic detection + re-key implemented 2026-08-01** — no manual "Reset
-secure session" needed, and no waiting for the user to type something. Four
-pieces:
-
-1. **A failure taxonomy** (`pkg/ratchet/failure.go`): `Session.Decrypt`'s
-   errors are now sentinels behind an exported `FailureCode` /
-   `SuggestsDesync`, so a caller can tell a routine redelivery
-   (`duplicate_message`) from diverged keys (`authentication_failed`,
-   `too_many_skipped`, `no_receiving_chain`) without matching error text.
-   Carried across freizone-app's cgo boundary as a `code` field on the core's
-   JSON result envelope (an `error` value can't cross it) and surfaced in Dart
-   as `FreizoneCoreException.code`.
-2. **Per-peer evidence** (freizone-app `AppState.peerSessionHealth`, persisted):
-   an envelope counts once, only after it has exhausted its retries *and* only
-   if its code meant desync -- plus the one desync shape that produces no error
-   at all, a non-`initial` envelope from a sender we have no session for (our
-   own state lost/rolled back). Any successful decrypt clears the evidence. A
-   background push wake can only *detect* (it has no sending machinery), which
-   is why this lives in the profile rather than in memory: the next live session
-   acts on what a wake recorded.
-3. **The invisible re-key envelope** (PROTOCOL §6, `v: 3 / kind: rekey`): a
-   control payload alongside receipts, never stored or notified. A desync breaks
-   *receiving*, so the peer keeps sending into a session we can't read and
-   nothing they do fixes it -- only a fresh `prekey` block from our side does,
-   and it needs a message to ride on. The manual reset now sends one too, so it
-   finally works one-sided. Cost of the format choice: a build predating `v: 3`
-   shows the generic "newer app feature" placeholder for what should have been
-   invisible.
-4. **Two rules against making it worse** (`session_recovery.dart`, pure and
-   unit-tested): both sides re-keying at once leaves both broken again round
-   after round, so the **lower** `account_id` goes first and the higher one only
-   after a grace period; and since each re-key burns one of the peer's one-time
-   prekeys, attempts per peer are spaced. Ineligible peers are skipped entirely
-   (blocked, an unaccepted message request -- answering one invisibly would tell
-   a stranger we're there -- or federation switched off).
-
-Tested at every layer that can be: the failure taxonomy and the envelope shape
-directly, the policy as a pure function (`test/session_recovery_test.dart`), and
-the whole crypto loop in `pkg/ratchet/rekey_test.go` -- a deliberately desynced
-pair, the repeated identical `authentication_failed` a client detects it by, the
-re-key that heals it in both directions, and the guard that a stale `prekey`
-block cannot break a healthy session.
-
-**Still open:** the same loop end-to-end through two real app instances,
-including across a background push wake (where detection and recovery happen in
-different isolates). Worth an explicit desync injector in a debug build: with the
-2026-07-28 root causes closed, a desync should now be *rare* rather than merely
-recoverable, so this path will seldom run in the field -- which is exactly why it
-needs a way to exercise it on purpose to stay trustworthy.
-
-Two adjacent gaps found while building this, both pre-existing and both left
-alone: `_getOrCreateCryptoSession` stores a fresh initiator session before the
-send that carries its `initial` succeeds, so a failed first send loses the
-handshake material (the recovery loop above now papers over it for existing
-conversations, but not for genuine first contact); and `cmd/devclient` never
-accepts a re-key over an existing session, so it cannot participate in recovery
-at all.
+- 2026-07-22 — the desync *trigger* (cross-isolate push/foreground race) fixed
+- 2026-07-26 — manual "Reset secure session" plus a receive path that accepts a
+  re-key over an existing session
+- 2026-07-28 — the three root causes of *permanent* desync closed: non-atomic
+  `Decrypt`, last-writer-wins profile saves across isolates, reprocessed
+  redeliveries
+- 2026-08-01 — automatic detection and re-key: a typed failure taxonomy
+  (`pkg/ratchet/failure.go`), per-peer evidence, the `v: 3 / kind: rekey`
+  control envelope, and the ordering rule that stops both sides re-keying at once
+- **Open** — the whole loop end-to-end through two real app instances, including
+  across a background push wake. Wants a deliberate desync injector in a debug
+  build, since a desync should now be rare enough never to occur by accident
 
 ### SRV-04 — Authenticate the prekey-bundle claim
-Status: done · Also affects: freizone-app
-The prekey-bundle claim (`router.go`) was unauthenticated — a small
-forward-secrecy risk, not a confidentiality problem: anyone could drain a
-device's one-time-prekey pool by claiming repeatedly, after which every new
-session with that device started without one until it next topped up.
+Status: `done` · Also affects: freizone-app
+Design: [design/04-authenticated-prekey-claim.md](design/04-authenticated-prekey-claim.md)
 
-**Shipped 2026-08-02**, in the two stages that made it non-breaking.
+The prekey-bundle claim was unauthenticated, so anyone could drain a device's
+one-time-prekey pool by claiming repeatedly. A claimant is now identified before
+it may consume a key; an anonymous claim still gets a usable bundle, without one.
 
-**Stage 1, server.** `authenticateBundleClaimant` (`internal/api/prekeys.go`)
-accepts either credential the protocol already has, and treats their absence as
-a legitimate anonymous request:
-
-- a body carrying the claimant's own self-certifying chain, verified by the
-  existing `verifyFederatedSender` — the only form available to a claimant whose
-  account lives on **another** server, which has no local row to look up;
-- an ordinary §3 device signature for a claimant registered here;
-- neither → anonymous.
-
-An anonymous claim still gets `200` and the full bundle, just **without** the
-one-time prekey. That is the shape an empty pool already produced, and every
-client — app, devclient, the responder side of X3DH — already handled it, which
-is exactly why this could ship before any client change: an old client keeps
-working at precisely the forward-secrecy level it had before, while the pool it
-could have drained is protected. Requiring authentication outright would have
-stopped every deployed client from starting new conversations.
-
-Credentials that are *present but invalid* are refused, never downgraded to
-anonymous — that would turn a client bug or a skewed clock into a silent,
-months-long loss of forward secrecy that nothing reports. `one_time_prekey_omitted`
-(`"pool_empty"` / `"unauthenticated"`) makes the two cases distinguishable;
-older clients ignore it.
-
-The **federation switch** governs the foreign form: with federation off the
-inline claim is `404`, like a federated message, since that sender could not
-deliver the message the bundle is for anyway. A local claim is unaffected —
-turning federation off must not stop a server's own users talking to each other.
-Blocklisted senders are refused too, inherited from `verifyFederatedSender`.
-
-Closes a second hole not in the original entry: a claim that dropped the pool
-below the low-water mark fired a push wake, so *anyone* could make this server
-wake an arbitrary device on demand. Only an identified claimant consumes a key
-now, so only they can trigger it.
-
-**Stage 2, clients.** freizone-app signs same-server claims with its device key
-and presents the inline chain for federated ones (`claimFederatedPrekeyBundle`),
-deciding between them exactly as the send path does. It logs loudly if a server
-ever answers `"unauthenticated"`, since that can only mean its own credentials
-were refused. `cmd/devclient` does the same. `auth.Middleware.TryAuthenticate`
-was exported for this — the non-writing variant of `Require`, deliberately
-documented as being for this one route.
-
-Verified live against the local two-server stack: an anonymous claim returns a
-usable bundle with `one_time_prekey_omitted: "unauthenticated"`; a signed
-same-server claim gets a key and the resulting envelope carries its
-`one_time_prekey_id`; a federated first contact across servers does the same
-with the inline chain (never-registered sender, `200`). The federation-off case
-is covered by test rather than live, since flipping it on the local instance
-would have meant resetting its setup token.
-
-**Not done, and deliberately:** no third stage that rejects unauthenticated
-claims outright. It buys nothing over withholding the key — the pool is already
-safe — and would break old clients for symbolism. Also no per-claimant rate
-limit: identifying the claimant makes drain attributable and bounded by the cost
-of holding an account, which is the point; a limit would add state for a much
-smaller marginal gain. `bundleClaimant.AccountID` is carried anyway, since that
-is what such a limit (or a log line naming who drained a pool) would need.
+- 2026-08-02 — shipped in two stages. Server gates the one-time prekey and
+  accepts either a local device signature or a federated claimant's inline
+  certificate chain, respecting the federation switch; app and `cmd/devclient`
+  sign their claims
 
 ### SRV-05 — REST resource-model build-out
-Status: planned
+Status: `planned`
+
 Incremental completeness of the REST surface. No concrete gap known; tracked so
 detail work has a home.
 
 ### SRV-06 — Root-key-authenticated device recovery
-Status: done · Also affects: freizone-app (APP-01)
-Companion to APP-01 (seed recovery). Today a device can only be added to an
-existing account by a request signed by an *already-active* device
-(`POST /v1/devices`, devices.go), and re-registering an existing account is
-rejected (`409 account_exists`, accounts.go) — so after total device loss
-there is no way back into the account, even with the root key from the seed.
+Status: `done` · Also affects: freizone-app (APP-01)
+Design: [design/06-device-recovery.md](design/06-device-recovery.md)
 
-Add a recovery path authenticated by a **root-key signature** on the request
-(not a device signature — the root key is the account's ultimate authority
-and already signs every device cert and revocation, see PROTOCOL §2): accept a
-new device cert (signed by that root key) for an existing account, mark it
-active, and in the same root-authenticated step revoke the lost device(s) so
-their keys stop being valid. This is what lets a user keep their existing id /
-short id (`account_id == hash(root_pubkey)`) after losing all devices; without
-it, recovery could only mint a brand-new account (new id). Needs a small
-PROTOCOL addition (root-key request-signing scheme, extending §3's
-device-signature model) and a new/extended endpoint.
+After total device loss there was no way back into an account, even holding the
+root key from the recovery seed. `POST /v1/accounts/{id}/recover` accepts a new
+device certificate signed by the root key and revokes the lost devices in the
+same step, so the account keeps its id.
 
-**Server side shipped 2026-07-26:** `POST /v1/accounts/{id}/recover` (public,
-inline-authenticated). The root-key request-signing scheme reuses §3's exact
-canonical string but with `Signature-Key-Id = base64(root_pubkey)` (the
-"self-describing-key" variant, same convention federation already uses), so no
-new signing format was needed — the root signature covers the whole body
-(the new device cert) and a fresh timestamp+nonce make it replay-proof. On
-success it adds the new device and revokes every other device in one
-root-authenticated step (revoke-all-others: total loss is the premise). See
-PROTOCOL §3 (self-describing-key variant) and §4. **App-side seed
-backup/restore UI shipped and verified end-to-end 2026-07-27** (APP-01,
-freizone-app) — same account id/short id restored, old device revoked,
-account role (admin/moderator) intact since it lives on the account row, not
-the device.
+- 2026-07-26 — server side shipped
+- 2026-07-27 — app-side backup/restore UI shipped and verified end-to-end
+  (APP-01): same account id, old device revoked, role intact
 
 ### SRV-07 — Encrypted blob transport (attachments)
-Status: done · Also affects: freizone-app (APP-04)
-Out-of-band transport for message attachments, so multimedia messaging
-(APP-04) doesn't have to ride inside a message payload. A blob is opaque
-ciphertext the server cannot read; the message carries only a reference and
-the decryption key, inside its existing end-to-end encryption.
+Status: `done` · Also affects: freizone-app (APP-04)
+Design: [design/07-blob-transport.md](design/07-blob-transport.md)
 
-Why a separate transport rather than simply raising the message size limit:
-the global body cap is 512 KiB (~370 KB of binary after base64), and
-federation is client-direct — a sender posts to the *recipient's* server, so
-what applies is the **remote operator's** limit. Inlining photos would
-therefore require every peer operator to raise a security-relevant,
-anti-flood limit in lockstep. On top of that, the message queue is the wrong
-home for megabytes: payloads live in a SQLite `TEXT` column, `ListPendingMessages`
-has no `LIMIT` (it materializes every pending payload in memory), and SSE
-writes a whole payload on one `data:` line.
+Out-of-band transport for attachments, so multimedia messaging need not ride
+inside a message payload. A blob is opaque ciphertext stored on the
+*recipient's* server; the message carries only a reference and the key, inside
+its existing end-to-end encryption.
 
-**Blobs live on the recipient's server**, the same direction messages already
-travel — so a recipient only ever fetches from its own server and never
-reveals its IP to a stranger's. The trade-off, accepted deliberately: the
-upload route accepts uploads from unregistered federated senders, defended
-like federated messages (kill switch, blocklist, per-device quota, TTL). This
-also generalizes better to groups (SRV-01): one upload per recipient *server*
-rather than N members fetching from the smallest server in the group.
-
-**Shipped 2026-07-29:** `POST /v1/blobs` (device-signed) and
-`POST /v1/federation/blobs` (self-describing key, sender identity in headers
-since the body is raw bytes, sharing federation.go's verification via a
-common helper), plus recipient-only `GET`/`DELETE /v1/blobs/{blob_id}`.
-Bodies are raw `application/octet-stream`, authenticated by a new
-streamed-body signature variant (PROTOCOL §3): the client states
-`Blob-Digest: sha256=…`, the server verifies the signature from headers
-*before reading a byte*, then streams to disk through a hasher and rejects a
-mismatch — so a forged upload costs no disk, and stored bytes are always
-exactly what was signed. Enabled per route, so the header cannot substitute
-an unsigned body anywhere else.
-
-Storage is the filesystem with metadata in SQLite (the driver has no
-incremental blob I/O, so a column would materialize whole files in memory on
-the single-writer connection); temp-file + fsync + rename, random 32-byte ids
-rather than content hashes (content addressing would leak file-equality and
-allow existence probing). Deliberately **no list endpoint**, so the
-unbounded-fetch mistake of the message queue cannot recur here. An hourly
-ticker expires blobs in bounded batches, sweeps abandoned uploads, and
-daily sweeps orphan files. `GET /v1/server-status` advertises `blobs_enabled`
-and `max_blob_bytes` so a sender can size an attachment to the recipient
-server's limits instead of discovering them via a 413. See PROTOCOL §10.
-
-**Complete as of 2026-07-30.** The app-side UI that consumes this shipped
-with freizone-app 0.12.0–0.12.3 (APP-04 phase 1): pick from the gallery,
-encrypt, upload to the recipient's server, render in the bubble, view
-full-screen, and delete the blob once it is stored locally. The one item
-originally listed as still open here — resumable/chunked uploads — is only
-needed once video lands and now has its own entry, **SRV-11**.
+- 2026-07-29 — shipped: upload/fetch/delete routes, a streamed-body signature
+  variant that verifies before reading a byte, filesystem storage with SQLite
+  metadata, expiry and orphan sweeps
+- 2026-07-30 — complete once the app-side UI landed (freizone-app 0.12.0–0.12.3).
+  Resumable uploads, originally listed here, became SRV-11
 
 ### SRV-08 — Moderator global block/unblock via Server Admin
-Status: done · Also affects: freizone-app
-`POST /v1/admin/accounts/{id}/block` and `/unblock` (`handleBlockAccount`/
-`handleUnblockAccount`, `internal/api/admin.go`, routed in
-`internal/api/router.go`) already disable the account
-**server-wide** — `internal/auth`'s middleware rejects every request from a
-disabled account, so this is already a global block, not a per-viewer one.
-But both are gated `requireAdmin`; moderators currently see the Server Admin
-Users list fully read-only (no tap targets at all, per the comment atop
-`admin_screen.dart`), so they can't use it at all.
+Status: `done` · Also affects: freizone-app
+Design: [design/08-moderator-block.md](design/08-moderator-block.md)
 
-Widen just the block/unblock gate to `requireAdminOrModerator` (role changes
-and delete stay `requireAdmin` — those are more consequential and rarer).
-Client-side: give moderators the same per-row action for block/unblock
-(still no set-role/delete). Since freizone-app also has a personal,
-per-contact block (`peer_profile_screen.dart`, "Block this contact" —
-affects only the blocking user's own view of that contact, nothing
-server-side), relabel the admin-page actions to **"Block for all"** /
-**"Unblock for all"** so the scope is unambiguous next to the personal one.
+Blocking already disabled an account server-wide, but was admin-only, so
+moderating a server meant being an admin. Moderators may now block and unblock —
+regular members only, since blocking staff would amount to removing them.
 
-**Shipped 2026-08-02**, with one rule the plan above didn't account for: a
-moderator may only block/unblock accounts whose role is `user`. Widening the
-gate alone would have quietly broken PROTOCOL §4's own promise that account
-removal never comes from a moderator — blocking *is* removal by another name
-(a disabled account cannot make one authenticated request), and the
-`last_admin` guard is no substitute, since it only refuses the *final* admin
-and would happily let a moderator disable one of two. So `setAccountStatus`
-now gates on `requireAdminOrModerator` plus a `403` when a non-admin caller
-targets staff; `admin_screen.dart` mirrors it, showing a moderator the block
-entry alone and only on regular members. Relabelled as planned, and the
-blocked-status subtitle now reads "blocked for all" for the same reason the
-menu does.
+- 2026-08-02 — shipped, including the role limit the original plan had missed,
+  and the "Block for all" wording that distinguishes this from the app's
+  personal per-contact block
 
-### SRV-09 — Admin user-list activity signals (pending messages, quota)
-Status: done · Also affects: freizone-app
-The Server Admin Users list (`admin_screen.dart`) shows only role and blocked
-status per account (`AdminAccountSummary`: id, role, status, created_at) —
-nothing that distinguishes an active account from an abandoned one. Add, per
-account: queued/pending message count and the age of its oldest pending
-message (`store.ListPendingMessages` is per-*device* today; needs aggregating
-across an account's devices), plus attachment/blob quota usage
-(`store.BlobUsage`, also per-device, SRV-07) shown as e.g. "3.2/50 MB". The
-goal is spotting unused accounts, not live monitoring, so this can ride the
-same request that already lists accounts rather than need push updates.
+### SRV-09 — Admin user-list activity signals
+Status: `done` · Also affects: freizone-app
+Design: [design/09-admin-activity-signals.md](design/09-admin-activity-signals.md)
 
-**Shipped 2026-08-02.** `store.AccountActivityByAccount` (new
-`internal/store/activity.go`) answers for the whole server in **two** aggregate
-queries, not a pair per account — the list is unpaginated, so anything
-per-account would have been an N+1 over however many accounts exist. It is
-deliberately not built on `ListPendingMessages`: that one is per-device and
-materializes every payload, the last thing a summary count should do. Messages
-group straight by `recipient_account_id`; blobs need `devices LEFT JOIN blobs`,
-with `COUNT(DISTINCT device_id)` so the fan-out doesn't multiply the device
-count by each device's attachments.
+The Server Admin user list showed role and status only, so an account in daily
+use looked identical to one abandoned a year ago. Each entry now also carries its
+queued-message count, the age of the oldest, and attachment usage against quota.
 
-The quota denominator was the one real decision. `MaxBlobBytesPerDevice` is
-per *device*, but the list is per *account*, so `blob_bytes_limit` is the
-per-device limit times the device count — the account's real ceiling, computed
-server-side since the client has no business knowing the config. It moves as
-devices come and go, which is accepted. Revoked devices count: a revoked device
-keeps its blobs until its row is deleted, so excluding it could show usage
-above its own limit.
-
-`oldest_pending_at` is omitted for an empty queue (there is no such timestamp);
-everything else is always present and zero, so a client can tell "nothing
-queued" from an older server that doesn't report this at all — which
-freizone-app detects via `device_count == 0`, the one field that cannot
-legitimately be zero, since an account without a device could never have
-registered. The app hides the whole line in that case, and hides each half when
-it is empty: a row with no second line *is* the "abandoned" signal, and
-printing "0 queued" on every row would bury the ones that mean something.
-
-Moderators see the figures along with the rest of the list — the point is being
-able to clean up a server without being an admin (SRV-08). They are aggregates
-only: how much is waiting and how much is stored, never who an account talks to.
+- 2026-08-02 — shipped: two aggregate queries for the whole server, and a quota
+  denominator of per-device limit × device count
 
 ### SRV-10 — Forward/backward compatibility as a standing constraint
-Status: planned · Also affects: freizone-app
-(Renumbered from SRV-12 on 2026-07-30 to close an accidental gap in the
-codes; SRV-10 and SRV-11 had never been issued. Older notes or commit
-messages may still say SRV-12.)
-Federation means any app-version/server-version combination is permanently
-in the field — a new feature must degrade gracefully rather than assume the
-peer app, the user's own server, or a remote federated server already knows
-about it. Policy (see also `freizone-claude/freizone-shared.md`): capability
-is *discovered*, never assumed, via explicit status fields (`GET
-/v1/server-status`'s `federation_enabled`, `blobs_enabled`, `max_blob_bytes`)
-or by whether an optional response field is present at all — an absent
-field falls back to its documented default (precedent: a pre-federation-flag
-server omits `federation_enabled`, treated as `true`) rather than crashing
-or silently misbehaving. When a feature genuinely isn't available on the
-other side, either hide the affected UI or tell the user plainly why (e.g.
-"this contact's app can't receive images yet") — never fail silently.
+Status: `planned` (ongoing policy) · Also affects: freizone-app
+Design: [design/10-compatibility.md](design/10-compatibility.md)
 
-A **baseline feature set needs no per-call capability check**: everything
-already shipped and in the field, only newer features need a discovery step.
-Attachments are the deliberate exception to that, even though they have
-shipped — not because they are new, but because the server that has to
-support them is the *recipient's*, which this client never controls and
-whose operator may have them switched off or capped differently (see the
-`blobs_enabled` discussion below). "Already shipped" only makes something
-baseline when it is a property of *our* side.
+Federation means every app-version/server-version combination is permanently in
+the field. Capability is *discovered*, never assumed; an absent optional field
+falls back to what that specific field's absence implies. Renumbered from SRV-12
+on 2026-07-30, so older notes may use the old code.
 
-Already following this pattern: `federation_enabled`'s absence-means-true
-default (consumed in `app_session.dart`); and the `attachments` list in
-`MessageContent` (freizone-app), which was carried as a reserved, always-empty
-field from the day the v1 envelope was introduced — so when APP-04 finally
-filled it, no format change was needed and builds predating it still render
-the caption instead of failing to parse.
-
-`blobs_enabled`/`max_blob_bytes` were the first test of this pattern for a
-capability that isn't just on/off but carries a numeric limit, and they went
-unconsumed for a while after SRV-07 shipped: APP-04's first version simply
-assumed attachments worked. Now closed — the app reads both, and does so
-from the **recipient's** server rather than its own, since that is where a
-blob is stored. A peer whose server has attachments off gets no picture
-button at all, and one over the size cap is refused with the actual limit
-named instead of a bare `413`. An unreachable or erroring status call means
-*unknown*, never *unsupported*, so the feature isn't hidden by a hiccup.
-
-Note the default differs from `federation_enabled` on purpose: an absent
-`blobs_enabled` means **off**, because a server that doesn't advertise the
-field predates SRV-07 and has no blob endpoints — whereas absent
-`federation_enabled` means on, because federation predates its own flag.
-The rule is "fall back to what that specific field's absence actually
-implies", not one global default.
-
-**Still worth doing:** a pass over existing endpoints/UI to check none of
-them silently assume a capability instead of checking for it, before the
-surface area grows further (groups/SRV-01, multi-device/SRV-02).
+- Closed — `blobs_enabled` / `max_blob_bytes` are now read from the
+  *recipient's* server, the first capability carrying a numeric limit rather
+  than a flag
+- **Open** — a pass over existing endpoints and UI to check none silently
+  assumes a capability, before groups (SRV-01) and multi-device (SRV-02) grow
+  the surface further
 
 ### SRV-11 — Resumable/chunked blob uploads
-Status: planned · Blocks: APP-04 phase 2 (video)
-Split out of SRV-07, which shipped without it. A blob upload is one shot
-today: `POST /v1/blobs` streams the whole ciphertext in a single request,
-verified against the `Blob-Digest` the client signed up front (PROTOCOL §3,
-§10). That is fine for photos — they are capped at a few MiB after the
-downscale — but a video is large enough that a dropped connection at 90%
-means starting over, and mobile connections drop.
+Status: `planned` · Blocks: APP-04 phase 2 (video)
+Design: [design/11-resumable-blob-uploads.md](design/11-resumable-blob-uploads.md)
 
-Needs a protocol addition, not just a server change: some way to open an
-upload, send ranges, and commit it, while keeping SRV-07's two guarantees —
-that the signature is verified *before* any bytes are written, so a forged
-upload costs no disk, and that the stored bytes are exactly what was signed.
-A per-range digest, or a session whose overall digest is stated at open time
-and enforced at commit, are the obvious candidates. The abandoned-upload
-sweep that already exists (hourly ticker) is what would reclaim a session
-the client never commits.
-
-Deliberately not started: it is only worth designing alongside video
-(APP-04 phase 2), since the chunk size and resume semantics should be driven
-by a real payload rather than guessed at.
+An upload is one shot today, which is fine for a downscaled photo and wrong for
+video, where a drop at 90% means starting over. Needs a protocol addition that
+keeps SRV-07's two guarantees. Deliberately not started until video gives it a
+real payload to be designed against.
 
 ### SRV-12 — Short, hand-typeable invite codes
-Status: done · Also affects: freizone-app
-Invite codes were 32 hex characters (16 random bytes) — fine to scan, awful
-to read aloud or type. Now 12 symbols of Crockford Base32 grouped in fours,
-`ABCD-EFGH-JKMN`, the same alphabet and normalization the setup token already
-used, extracted into `pkg/humancode` so both share one implementation.
+Status: `done` · Also affects: freizone-app
+Design: [design/12-short-invite-codes.md](design/12-short-invite-codes.md)
 
-Input is deliberately forgiving, because every variation is the same code to
-the person entering it: case is ignored, `-`/`_`/whitespace are stripped (so
-the grouped display form and the compact form in a QR are interchangeable),
-and `I`/`L` read as `1`, `O` as `0` — unambiguous precisely because the
-alphabet cannot produce those letters. `U` is left alone, since no digit it
-plausibly stands for. Normalization happens server-side in `store`, so the
-typed path and the QR path cannot diverge.
+32 hex characters were fine to scan and awful to read aloud. Now 12 symbols of
+Crockford Base32 as `ABCD-EFGH-JKMN`, stored only as a SHA-256 hash, with a
+default expiry.
 
-**12 symbols, not the token's 8** — 60 bits rather than 40. The token's
-shortness is bought by `MaxSetupTokenAttempts`: it is a singleton, so a
-failed guess identifies the one thing to lock out. Invite codes break both
-halves of that. Many are outstanding at once and *any* unused one grants
-registration, so a guesser need not target a particular code (each extra
-outstanding code shaves a bit off), and a failed guess names no code to lock.
-With no rate limiting on registration either, the length has to do the work
-the lockout does. Shipped alongside:
-
-- **Only the code's SHA-256 hash is stored**, as for the setup token — a
-  leaked database yields no working invites. Possible because no endpoint
-  lists codes; the cost is that a lost code cannot be re-shown and must be
-  reissued.
-- **A default expiry** (`FREIZONE_INVITE_EXPIRY_DAYS`, 14 days; `0` opts
-  out). An unbounded window is what makes guessing worth attempting at any
-  length. The app now shows "Valid until …" next to a freshly issued code,
-  since otherwise someone hands one out unaware it has a deadline.
-
-**Migration note:** migrations here are plain SQL and SQLite has no
-`sha256()`, so existing plaintext codes could not be hashed in place.
-`0012_hash_invite_codes.sql` therefore **drops unredeemed codes** — any
-invite handed out but not yet used stops working and has to be reissued —
-while keeping already-used rows as history behind a placeholder that no
-lookup can match. Leaving old codes un-hashed would have defeated the point.
-
-Considered and not done: a global rate limit / attempt counter on the
-registration path. It would be the real backstop and would make even 8
-symbols defensible, but at 60 bits the length already carries it, and this
-was not the moment to add a new failure mode to the registration flow.
+- Shipped — including forgiving input normalization shared with the setup token
+  (`pkg/humancode`). Migration `0012` **drops unredeemed codes**, which had to be
+  reissued
 
 ### SRV-13 — Purge invite codes that expired unredeemed
-Status: done
-Nothing ever deleted an invite code. The periodic sweeps covered nonces,
-messages and blobs, but `invite_codes` only ever grew — noticed while
-reviewing SRV-12, not by anything failing.
+Status: `done`
+Design: [design/13-purge-expired-invites.md](design/13-purge-expired-invites.md)
 
-An expired *unredeemed* code is pure dead weight: `ConsumeInviteCode`'s
-`WHERE` clause already refuses it, so the row can never do anything again.
-`store.PurgeExpiredInviteCodes` now removes those, on a 6-hourly ticker
-(`runInviteCleanup`, `cmd/server/main.go`) — generous on purpose, since
-expiry is measured in days and a code is unusable the instant it lapses;
-the sweep only reclaims the row.
-
-Deliberately narrow, on two counts:
-
-- **Redeemed codes are kept.** Their row records `created_by` and `used_by`
-  — which account issued an invite and which account joined with it. That is
-  the one piece of moderation history this server keeps, and worth having
-  when an account turns out to be a problem. Deleting either account clears
-  its side already (cascade / set-null, from migration 0005). There is still
-  no invite-list route; SRV-14 later exposed the `created_by` half — and only
-  that half — as `invited_by` on the admin account list, to admins alone.
-- **Codes with no expiry are left alone**, so flipping
-  `FREIZONE_INVITE_EXPIRY_DAYS` to a non-zero value cannot retroactively
-  sweep away codes that were issued to live until redeemed.
-
-Considered and not chosen: a retention window for redeemed rows too, or
-nulling `used_by` after a while to keep the statistics without the pairing.
-That would fit the project's minimal-retention stance better — this table is
-now the only one holding anything indefinitely — but the moderation value of
-knowing who invited whom was judged the higher good. Worth revisiting if a
-public server ever makes the invite graph large enough to matter.
+Nothing ever deleted an invite code, so `invite_codes` only grew. Expired
+unredeemed rows are now swept on a 6-hourly ticker. Redeemed rows are kept
+deliberately: they are the only moderation history this server holds.
 
 ### SRV-14 — Expose who invited an account (admin only)
-Status: done · Also affects: freizone-app (APP-11)
-`invite_codes.created_by_account_id` records which account issued the invite
-another joined with, and SRV-13 keeps redeemed rows precisely so that history
-survives — but nothing could read it short of opening the database. The
-admin-side user detail view (APP-11) is the place it is actually useful: when
-an account turns out to be a problem, the next question is who vouched for it.
+Status: `done` · Also affects: freizone-app (APP-11)
+Design: [design/14-invited-by.md](design/14-invited-by.md)
 
-`store.InviterByAccount` aggregates it in one query and `GET /v1/admin/accounts`
-carries it as `invited_by`, alongside SRV-09's activity signals.
+`invite_codes.created_by_account_id` was unreadable short of opening the
+database. Now `invited_by` on the admin account list — **to admins only**, since
+it is the one account-to-account link this server holds.
 
-**Admins only, and deliberately narrower than everything else on that
-endpoint.** A moderator gets the activity figures but not this: queue lengths
-and stored bytes are aggregates about one account, whereas "who invited whom"
-is a link *between* accounts — the only one this server holds — and that is a
-different kind of thing to hand out. The handler doesn't even run the query for
-a non-admin caller, so the rule is enforced by what it asks for rather than
-only by what it serializes.
-
-Only the `created_by` half is exposed, never `used_by`: an admin looking at an
-account can see who vouched for it, and cannot enumerate everyone a given
-account brought in. The reverse direction would be the same data read as a
-recruitment graph, and nothing needs it yet.
-
-Absent means "not known here", never "registered openly" — the field is equally
-missing for an account that needed no invite and for one whose inviter has since
-been deleted, since the invite row cascades with its creator. Documented that
-way in PROTOCOL §4, because a client that read absence as "joined openly" would
-be quietly wrong on every server that has ever deleted an account.
+- 2026-08-02 — shipped. Only the `created_by` half is exposed, never `used_by`;
+  absent means "not known here", never "registered openly"
 
 ### SRV-15 — "community" registration policy: users may invite too
-Status: planned · Also affects: freizone-app
-A fourth `registration_policy` value between `open` and `invite`: **nobody joins
-without an invite, but any existing user can issue one** — not just admins and
-moderators. The point is a server that grows by its members vouching for people,
-without either letting strangers walk in (`open`) or funnelling every new
-account through staff (`invite`).
+Status: `planned` · Also affects: freizone-app
+Design: [design/15-community-policy.md](design/15-community-policy.md)
 
-**Registration itself needs no change.** Under `community` an invite code is
-required exactly as under `invite` — `handleRegisterAccount`
-(`internal/api/accounts.go`) can treat the two identically. What differs is
-authorization on **`POST /v1/admin/invites`**, which is gated
-admin-or-moderator inline today (`handleCreateInvite`, `internal/api/invites.go`)
-and would consult the policy instead: any active account may create a code when
-the policy is `community`.
-
-Touch points: `config.RegistrationPolicy` and its validation (`config.go`, two
-places), the runtime policy is already DB-backed and admin-settable so
-`store.{Init,Get,Set}RegistrationPolicy` need nothing, `handleCreateInvite`'s
-gate, PROTOCOL §4's registration-policy and invite entries, and the policy
-selector in `admin_screen.dart`. App-side the real work is
-`chat_list_screen.dart`'s `_canInvite` (a `community` case returning true for
-everyone) and `invite_screen.dart`, which currently only mints a code when the
-policy is exactly `"invite"` — under `community` a plain user reaching that
-screen must get a real code, which is a path that screen has never taken for a
-non-staff account.
-
-**Model it as a fourth policy value, not a second axis.** The tempting
-alternative is an orthogonal "who may invite" setting (staff / everyone). It is
-conceptually cleaner but adds no expressiveness: with `open` invites are
-irrelevant and with `closed` nothing works, so the only combination a second
-axis buys is precisely `invite` + everyone. One enum keeps it to one knob in the
-UI and one value to reason about. Worth writing down, because the two-axis
-refactor looks like an improvement until you enumerate the cells.
-
-**The real question is abuse, not authorization.** Today the invite surface is
-bounded by trust: only staff can mint codes, so a spam wave needs a compromised
-staff account. Under `community` every member is a registration vector, and one
-malicious or compromised account can mint codes without limit and onboard as
-many accounts as it likes — each of which can then do the same. Before this
-ships, at least one bound is needed. Candidates, roughly in order of appeal:
-
-- **A cap on unredeemed codes per account** (e.g. 5 outstanding). Cheap to
-  enforce with a `COUNT` on `invite_codes`, self-cleaning via SRV-13's sweep of
-  expired unredeemed rows, and it maps to the honest use case: you invite the
-  people you actually know, a few at a time.
-- **A cooldown** between codes from the same account. Bounds rate rather than
-  depth; composes with the cap.
-- **A minimum account age** before a new member may invite, so an onboarded
-  spam account cannot immediately extend the chain.
-- Staff exempt from all of the above, since the `invite` policy's behaviour
-  should not get worse.
-
-**Moderation follow-through** matters more here than under `invite`:
-
-- SRV-14's `invited_by` becomes the main tool — the invite chain is how an
-  operator finds who let a problem account in. Under `community` it is also
-  worth reconsidering whether *moderators* should see it (SRV-14 deliberately
-  restricted it to admins), since they are the ones doing this work.
-- Blocking an account does **not** currently touch its unredeemed codes
-  (deleting one cascades them, blocking does not). Blocking a spam inviter while
-  leaving their outstanding codes live is a hole this policy creates; the fix is
-  either revoking them on block or refusing to redeem a code whose creator is
-  disabled. The latter is one `JOIN` in `ConsumeInviteCode` and needs no new
-  state.
-- An admin-side view of "codes this account issued, and who redeemed them"
-  would follow naturally, and is the reverse direction SRV-14 deliberately did
-  not expose. Worth deciding on purpose rather than drifting into it.
-
-Naming: `community` reads well next to `open`/`invite`/`closed` and says what it
-is about. The UI copy needs to make the distinction from `invite` unmissable,
-since "Invite" and "Community" both require a code and the difference is only
-*who* can hand one out.
+A fourth policy value between `open` and `invite`: nobody joins without an
+invite, but any existing user may issue one, not just staff. Registration itself
+needs no change — what differs is authorization on invite creation. The hard part
+is abuse: every member becomes a registration vector, so a bound on outstanding
+codes per account is needed before this ships.
