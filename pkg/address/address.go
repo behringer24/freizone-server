@@ -9,9 +9,16 @@ import (
 	"unicode"
 )
 
-// CurrentVersion is the only address version currently supported: SHA-256
+// CurrentVersion is the version marker of an account address: SHA-256
 // root-key hash, bech32m checksum.
 const CurrentVersion = 0
+
+// VersionGroup is the version marker of a group id (SRV-01). A group id is
+// derived exactly like an account id -- same hash, same truncation, same
+// checksum, same normalization -- over the group's root key instead of an
+// account's, and is told apart from an account id by this marker alone. That
+// costs no new encoding logic and makes the two impossible to confuse.
+const VersionGroup = 1
 
 const (
 	hashGroupCount     = 14 // 70 bits of truncated hash, 5 bits per group
@@ -37,6 +44,16 @@ const domainSeparationTag = "frz"
 // 5-bit version marker), with no human-readable prefix or separator -- a
 // plain 21-character string (15 payload + 6 checksum).
 func DeriveID(rootPubKey ed25519.PublicKey) (string, error) {
+	return DeriveIDVersion(CurrentVersion, rootPubKey)
+}
+
+// DeriveIDVersion is DeriveID with an explicit version marker, so the same
+// derivation can mint both account ids (CurrentVersion) and group ids
+// (VersionGroup).
+func DeriveIDVersion(version int, rootPubKey ed25519.PublicKey) (string, error) {
+	if version < 0 || version >= 32 {
+		return "", fmt.Errorf("address: version marker must fit in 5 bits, got %d", version)
+	}
 	if len(rootPubKey) != ed25519.PublicKeySize {
 		return "", fmt.Errorf("address: root public key must be %d bytes, got %d", ed25519.PublicKeySize, len(rootPubKey))
 	}
@@ -45,7 +62,7 @@ func DeriveID(rootPubKey ed25519.PublicKey) (string, error) {
 	hashGroups := leadingBitGroups(hash[:], hashGroupCount, 5)
 
 	payload := make([]int, 0, payloadGroupCount)
-	payload = append(payload, CurrentVersion)
+	payload = append(payload, version)
 	payload = append(payload, hashGroups...)
 
 	checksum := createChecksum(domainSeparationTag, payload)
@@ -59,18 +76,36 @@ func DeriveID(rootPubKey ed25519.PublicKey) (string, error) {
 	return sb.String(), nil
 }
 
-// Verify reports whether id is the correct, self-certifying address for
-// rootPubKey.
+// Verify reports whether id is the correct, self-certifying account address
+// for rootPubKey.
 func Verify(id string, rootPubKey ed25519.PublicKey) (bool, error) {
+	return VerifyVersion(CurrentVersion, id, rootPubKey)
+}
+
+// VerifyVersion is Verify for an explicit version marker -- VersionGroup to
+// check a group id against its group root key.
+func VerifyVersion(version int, id string, rootPubKey ed25519.PublicKey) (bool, error) {
 	normalized, err := Normalize(id)
 	if err != nil {
 		return false, err
 	}
-	expected, err := DeriveID(rootPubKey)
+	expected, err := DeriveIDVersion(version, rootPubKey)
 	if err != nil {
 		return false, err
 	}
 	return normalized == expected, nil
+}
+
+// VersionOf returns the version marker of an id: CurrentVersion for an
+// account address, VersionGroup for a group id. The id is normalized (and so
+// checksum-validated) first, since a marker read off an unvalidated string
+// says nothing.
+func VersionOf(id string) (int, error) {
+	normalized, err := Normalize(id)
+	if err != nil {
+		return 0, err
+	}
+	return strings.IndexRune(charset, rune(normalized[0])), nil
 }
 
 // StripSeparators removes cosmetic dashes/whitespace and lowercases id,

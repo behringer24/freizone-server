@@ -32,15 +32,24 @@ contract, not a plan, and does not follow this file's structure.
 ## Items
 
 ### SRV-01 — Groups
-Status: `planned` · Also affects: freizone-app (APP-16)
+Status: `in progress` · Also affects: freizone-app (APP-16)
 Design: [design/01-groups.md](design/01-groups.md)
 
-Group messaging with a founder/admin/moderator authority model. None of it
-exists today (no tables, no API, no UI). Designed 2026-08-02: the group is a
+Group messaging with a founder/admin/moderator authority model. The group is a
 self-certifying cryptographic object, not a server object — messages ride the
 existing pairwise ratchets with no group key, and membership/roles are a
 grow-only set of signed facts that converges via a `state_hash` carried on every
 message. Broadcast, previously part of this item, split out as SRV-16.
+
+- 2026-08-02 — designed, then phase 1 shipped: `pkg/group` (event types and
+  signing bytes, signature and certificate-chain verification, the
+  order-independent fold, `state_hash`, snapshot merge) plus version-aware id
+  derivation in `pkg/address`, so a group id reuses every line of the account-id
+  encoding under a different marker. Pure Go, no I/O, no server change yet.
+  Four plan corrections the tests forced are recorded in the design document —
+  the notable one being that two moderators cannot in fact remove each other
+- **Open** — batch delivery endpoints, then `cmd/devclient`, then the app
+  (APP-16)
 
 ### SRV-02 — Multi-device linking
 Status: `planned` · Also affects: freizone-app, shared Go core
