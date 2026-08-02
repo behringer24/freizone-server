@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/behringer24/freizone-server/pkg/group"
 	"github.com/behringer24/freizone-server/pkg/ratchet"
 )
 
@@ -44,6 +45,25 @@ type State struct {
 	// Sessions is keyed by peer account id. This dev tool assumes a single
 	// active device per peer, which is enough for a local two-person demo.
 	Sessions map[string]*ratchet.Session `json:"sessions,omitempty"`
+
+	// InboundSessions holds sessions kept only for READING, keyed by peer.
+	//
+	// Two people who establish a session with each other at the same moment
+	// each end up holding their own initiator session, and neither can read
+	// the other's. That is rare in a one-to-one chat, where somebody speaks
+	// first, and routine in a group, where a new member and every existing
+	// member reach for each other simultaneously. A deterministic tie-break
+	// decides which session both sides will *send* on (see group_watch.go);
+	// the losing one is kept here rather than discarded, so the messages
+	// already in flight on it can still be read instead of being stranded.
+	InboundSessions map[string]*ratchet.Session `json:"inbound_sessions,omitempty"`
+
+	// Groups is keyed by group id (SRV-01). The value is the signed fact set;
+	// membership, roles and the state hash are derived from it on every read
+	// rather than stored, so there is no second representation that could
+	// disagree with the events. Unmarshalling re-verifies every event, so a
+	// hand-edited state file fails to load rather than loading a lie.
+	Groups map[string]*group.State `json:"groups,omitempty"`
 }
 
 func statePath(dataDir string) string {
@@ -65,6 +85,12 @@ func LoadState(path string) (*State, error) {
 	}
 	if s.Sessions == nil {
 		s.Sessions = make(map[string]*ratchet.Session)
+	}
+	if s.InboundSessions == nil {
+		s.InboundSessions = make(map[string]*ratchet.Session)
+	}
+	if s.Groups == nil {
+		s.Groups = make(map[string]*group.State)
 	}
 	return &s, nil
 }

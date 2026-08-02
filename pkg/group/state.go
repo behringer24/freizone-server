@@ -69,6 +69,20 @@ func (s *State) Events() []*Event {
 	return out
 }
 
+// Genesis returns the group's genesis event, or nil before it has arrived.
+//
+// Callers need it for the group nonce: a founder re-deriving the group root
+// key after restoring from their recovery seed reads it from here, having
+// received the state from any member.
+func (s *State) Genesis() *Event {
+	for _, e := range s.events {
+		if e.Type == EventGenesis {
+			return e
+		}
+	}
+	return nil
+}
+
 // Apply admits a batch of events into the fact set.
 //
 // Admission is context-free on purpose: shape, signer chain and signature,
@@ -235,6 +249,143 @@ func (m *member) rank() Role {
 	return best
 }
 
+// fold is the running state of a replay.
+type fold struct {
+	out     *Resolved
+	members map[string]*member
+}
+
+func (f *fold) rankOf(accountID string) Role {
+	if m, ok := f.members[accountID]; ok {
+		return m.rank()
+	}
+	return RoleNone
+}
+
+// apply attempts one event, reporting whether it changed anything. It must
+// leave the state untouched when it returns false, because an event that is
+// merely not applicable *yet* is retried (see Resolve).
+func (f *fold) apply(e *Event) bool {
+	if f.out.Dissolved && !e.IssuedAt.Before(f.out.DissolvedAt) {
+		return false
+	}
+	if e.Type != EventGenesis {
+		// Nothing can predate the group it claims to be about.
+		if f.out.Founder == "" || e.IssuedAt.Before(f.out.CreatedAt) {
+			return false
+		}
+	}
+
+	// No signer block means the group root key signed this, which only the
+	// founder holds. Otherwise it is a device signature, and the account
+	// behind it has to hold the required rank itself.
+	actorRank := RoleFounder
+	if e.Signer != nil {
+		actorRank = f.rankOf(e.Signer.AccountID)
+	}
+
+	switch e.Type {
+	case EventGenesis:
+		if f.out.Founder != "" {
+			return false
+		}
+		f.out.Founder = e.Subject
+		f.out.CreatedAt = e.IssuedAt
+		f.members[e.Subject] = &member{
+			server:  e.Server,
+			addedAt: e.IssuedAt,
+			joined:  true,
+			founder: true,
+			granted: map[Role]bool{},
+		}
+		return true
+
+	case EventMemberAdd:
+		if actorRank < RoleModerator {
+			return false
+		}
+		if _, ok := f.members[e.Subject]; ok {
+			return false
+		}
+		f.members[e.Subject] = &member{
+			server:  e.Server,
+			addedAt: e.IssuedAt,
+			granted: map[Role]bool{},
+		}
+		return true
+
+	case EventJoinAccept:
+		m, ok := f.members[e.Subject]
+		if !ok || m.joined {
+			return false
+		}
+		m.joined = true
+		return true
+
+	case EventMemberRemove:
+		target, ok := f.members[e.Subject]
+		if !ok {
+			return false
+		}
+		// Only against strictly lower ranks, and never the founder -- whose
+		// authority is key possession and cannot be voted away.
+		if actorRank < RoleModerator || actorRank <= target.rank() {
+			return false
+		}
+		delete(f.members, e.Subject)
+		return true
+
+	case EventLeave:
+		target, ok := f.members[e.Subject]
+		if !ok || target.founder {
+			return false
+		}
+		delete(f.members, e.Subject)
+		return true
+
+	case EventRoleGrant:
+		// Granting role R needs a rank above R: only the founder reaches
+		// above admin, only an admin above moderator.
+		if actorRank <= e.Role {
+			return false
+		}
+		m, ok := f.members[e.Subject]
+		if !ok || m.granted[e.Role] {
+			return false
+		}
+		m.granted[e.Role] = true
+		return true
+
+	case EventRoleRevoke:
+		if actorRank <= e.Role {
+			return false
+		}
+		m, ok := f.members[e.Subject]
+		if !ok || !m.granted[e.Role] {
+			return false
+		}
+		m.granted[e.Role] = false
+		return true
+
+	case EventMeta:
+		if actorRank < RoleModerator {
+			return false
+		}
+		if f.out.Name == e.Name && f.out.Topic == e.Topic {
+			return false
+		}
+		f.out.Name = e.Name
+		f.out.Topic = e.Topic
+		return true
+
+	case EventDissolve:
+		f.out.Dissolved = true
+		f.out.DissolvedAt = e.IssuedAt
+		return true
+	}
+	return false
+}
+
 // Resolve folds the fact set into the current membership.
 //
 // Events are replayed in timestamp order (ties broken by event id), and each
@@ -243,139 +394,47 @@ func (m *member) rank() Role {
 // they signed", and it makes the result a pure function of the fact set: every
 // member holding the same facts gets the same answer, in any arrival order.
 //
+// Events sharing a timestamp are *concurrent*, though, and hash order between
+// them is arbitrary -- so within one timestamp the replay iterates to a
+// fixpoint instead: repeat until a pass applies nothing new. Without that, a
+// group founded and named in the same second could lose its name, because the
+// name event's hash happened to sort ahead of the genesis it depends on. The
+// fixpoint is still deterministic (the pending set shrinks in hash order every
+// pass) and still a pure function of the fact set; it just refuses to let an
+// arbitrary tie-break decide which of two same-second facts survives.
+//
 // The price, accepted deliberately, is that a fact arriving late can change
 // the past -- a revocation that turns up after the act it invalidates removes
 // that act's effect. Deterministically, and for everyone.
 func (s *State) Resolve() *Resolved {
-	out := &Resolved{GroupID: s.groupID, StateHash: s.StateHash()}
+	f := &fold{
+		out:     &Resolved{GroupID: s.groupID, StateHash: s.StateHash()},
+		members: map[string]*member{},
+	}
 	if s.groupID == "" {
-		return out
+		return f.out
 	}
 
-	ordered := s.orderedEvents()
-	members := map[string]*member{}
-
-	// authorized reports whether the signer of e currently holds at least
-	// need, and returns their rank so callers can compare against a target.
-	rankOf := func(accountID string) Role {
-		if m, ok := members[accountID]; ok {
-			return m.rank()
-		}
-		return RoleNone
-	}
-
-	for _, e := range ordered {
-		if out.Dissolved && !e.IssuedAt.Before(out.DissolvedAt) {
-			continue
-		}
-		if e.Type != EventGenesis {
-			if out.Founder == "" || e.IssuedAt.Before(out.CreatedAt) {
-				// Nothing can predate the group it claims to be about.
-				continue
+	for _, bucket := range sameTimestampBuckets(s.orderedEvents()) {
+		pending := bucket
+		for len(pending) > 0 {
+			var stalled []*Event
+			for _, e := range pending {
+				if !f.apply(e) {
+					stalled = append(stalled, e)
+				}
 			}
-		}
-
-		// No signer block means the group root key signed this, which only the
-		// founder holds. Otherwise it is a device signature, and the account
-		// behind it has to hold the required rank itself.
-		actorRank := RoleFounder
-		if e.Signer != nil {
-			actorRank = rankOf(e.Signer.AccountID)
-		}
-
-		switch e.Type {
-		case EventGenesis:
-			if out.Founder != "" {
-				continue
+			if len(stalled) == len(pending) {
+				break // no progress: the rest of this bucket never applies
 			}
-			out.Founder = e.Subject
-			out.CreatedAt = e.IssuedAt
-			members[e.Subject] = &member{
-				server:  e.Server,
-				addedAt: e.IssuedAt,
-				joined:  true,
-				founder: true,
-				granted: map[Role]bool{},
-			}
-
-		case EventMemberAdd:
-			if actorRank < RoleModerator {
-				continue
-			}
-			if _, ok := members[e.Subject]; ok {
-				continue
-			}
-			members[e.Subject] = &member{
-				server:  e.Server,
-				addedAt: e.IssuedAt,
-				granted: map[Role]bool{},
-			}
-
-		case EventJoinAccept:
-			m, ok := members[e.Subject]
-			if !ok {
-				continue
-			}
-			m.joined = true
-
-		case EventMemberRemove:
-			target, ok := members[e.Subject]
-			if !ok {
-				continue
-			}
-			// Only against strictly lower ranks, and never the founder --
-			// whose authority is key possession and cannot be voted away.
-			if actorRank < RoleModerator || actorRank <= target.rank() {
-				continue
-			}
-			delete(members, e.Subject)
-
-		case EventLeave:
-			target, ok := members[e.Subject]
-			if !ok || target.founder {
-				continue
-			}
-			delete(members, e.Subject)
-
-		case EventRoleGrant:
-			// Granting role R needs a rank above R: only the founder reaches
-			// above admin, only an admin above moderator.
-			if actorRank <= e.Role {
-				continue
-			}
-			m, ok := members[e.Subject]
-			if !ok {
-				continue
-			}
-			m.granted[e.Role] = true
-
-		case EventRoleRevoke:
-			if actorRank <= e.Role {
-				continue
-			}
-			m, ok := members[e.Subject]
-			if !ok {
-				continue
-			}
-			m.granted[e.Role] = false
-
-		case EventMeta:
-			if actorRank < RoleModerator {
-				continue
-			}
-			out.Name = e.Name
-			out.Topic = e.Topic
-
-		case EventDissolve:
-			out.Dissolved = true
-			out.DissolvedAt = e.IssuedAt
+			pending = stalled
 		}
 	}
 
-	out.Members = make([]Member, 0, len(members))
-	for id, m := range members {
+	f.out.Members = make([]Member, 0, len(f.members))
+	for id, m := range f.members {
 		role := m.rank()
-		out.Members = append(out.Members, Member{
+		f.out.Members = append(f.out.Members, Member{
 			AccountID: id,
 			Server:    m.server,
 			Role:      role,
@@ -384,10 +443,26 @@ func (s *State) Resolve() *Resolved {
 			Joined:    m.joined,
 		})
 	}
-	sort.Slice(out.Members, func(i, j int) bool {
-		return out.Members[i].AccountID < out.Members[j].AccountID
+	sort.Slice(f.out.Members, func(i, j int) bool {
+		return f.out.Members[i].AccountID < f.out.Members[j].AccountID
 	})
-	return out
+	return f.out
+}
+
+// sameTimestampBuckets splits an already-ordered event list into runs sharing
+// one timestamp -- the granularity at which events are genuinely concurrent,
+// since that is all the signing bytes record.
+func sameTimestampBuckets(ordered []*Event) [][]*Event {
+	var buckets [][]*Event
+	for i := 0; i < len(ordered); {
+		j := i + 1
+		for j < len(ordered) && ordered[j].IssuedAt.Equal(ordered[i].IssuedAt) {
+			j++
+		}
+		buckets = append(buckets, ordered[i:j])
+		i = j
+	}
+	return buckets
 }
 
 // orderedEvents returns the fact set in replay order: by timestamp, ties

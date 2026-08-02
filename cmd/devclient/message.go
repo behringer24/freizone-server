@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/behringer24/freizone-server/pkg/group"
 )
 
 // The devclient speaks the exact plaintext envelope the Flutter app uses, so
@@ -14,6 +16,12 @@ import (
 const (
 	textEnvelopeVersion = 1
 	receiptVersion      = 2
+	// Group envelopes (SRV-01). A group message is deliberately NOT a v1 with
+	// an extra field: v1 is frozen, and an older client meeting one would file
+	// a group message into a one-to-one conversation, which is worse than
+	// showing the "newer feature" placeholder it shows for an unknown version.
+	groupTextVersion    = 4
+	groupControlVersion = 5
 
 	// receiptTimeLayout matches Dart's DateTime.toIso8601String() for a UTC
 	// instant: millisecond precision, trailing "Z". The app parses tolerantly,
@@ -73,24 +81,84 @@ func encodeReceipt(status, upToSentAt string) ([]byte, error) {
 	})
 }
 
+// groupMessageContent is the v4 group chat envelope: v1's fields plus the
+// group it belongs to and the sender's state_hash, which is what lets a
+// recipient notice the two of them are missing each other's facts without
+// exchanging anything.
+type groupMessageContent struct {
+	V           int    `json:"v"`
+	GroupID     string `json:"group_id"`
+	StateHash   string `json:"state_hash"`
+	ID          string `json:"id"`
+	Text        string `json:"text"`
+	Attachments []any  `json:"attachments"`
+	SentAt      string `json:"sent_at,omitempty"`
+}
+
+// groupControl is the v5 group control envelope -- membership and role facts,
+// never shown to a user. "snapshot" carries the sender's whole fact set,
+// "events" a few new ones, "sync_request" asks for the former.
+type groupControl struct {
+	V         int            `json:"v"`
+	Kind      string         `json:"kind"`
+	GroupID   string         `json:"group_id"`
+	StateHash string         `json:"state_hash"`
+	Events    []*group.Event `json:"events,omitempty"`
+}
+
+func encodeGroupText(groupID, stateHash, text string) (plaintext []byte, sentAt string, err error) {
+	id, err := randomMessageID()
+	if err != nil {
+		return nil, "", err
+	}
+	sentAt = time.Now().UTC().Format(receiptTimeLayout)
+	b, err := json.Marshal(groupMessageContent{
+		V:           groupTextVersion,
+		GroupID:     groupID,
+		StateHash:   stateHash,
+		ID:          id,
+		Text:        text,
+		Attachments: []any{},
+		SentAt:      sentAt,
+	})
+	return b, sentAt, err
+}
+
+func encodeGroupControl(kind, groupID, stateHash string, events []*group.Event) ([]byte, error) {
+	return json.Marshal(groupControl{
+		V:         groupControlVersion,
+		Kind:      kind,
+		GroupID:   groupID,
+		StateHash: stateHash,
+		Events:    events,
+	})
+}
+
 type decodedKind int
 
 const (
 	decodedText decodedKind = iota
 	decodedReceipt
+	decodedGroupText
+	decodedGroupControl
 )
 
 // decodedPlaintext is the result of interpreting a decrypted payload.
 type decodedPlaintext struct {
 	kind decodedKind
 
-	// text fields (decodedText)
+	// text fields (decodedText, decodedGroupText)
 	text   string
 	sentAt string // raw sent_at string from the envelope; "" if absent/legacy
 
 	// receipt fields (decodedReceipt)
 	status     string
 	upToSentAt string
+
+	// group fields (decodedGroupText, decodedGroupControl)
+	groupID   string
+	stateHash string
+	control   *groupControl
 
 	raw []byte // original bytes, for display
 }
@@ -116,6 +184,22 @@ func decodePlaintext(b []byte) decodedPlaintext {
 			var mc messageContent
 			if json.Unmarshal(b, &mc) == nil {
 				return decodedPlaintext{kind: decodedText, text: mc.Text, sentAt: mc.SentAt, raw: b}
+			}
+		case probe.V == groupTextVersion:
+			var gm groupMessageContent
+			if json.Unmarshal(b, &gm) == nil && gm.GroupID != "" {
+				return decodedPlaintext{
+					kind: decodedGroupText, text: gm.Text, sentAt: gm.SentAt,
+					groupID: gm.GroupID, stateHash: gm.StateHash, raw: b,
+				}
+			}
+		case probe.V == groupControlVersion:
+			var gc groupControl
+			if json.Unmarshal(b, &gc) == nil && gc.GroupID != "" {
+				return decodedPlaintext{
+					kind: decodedGroupControl, groupID: gc.GroupID,
+					stateHash: gc.StateHash, control: &gc, raw: b,
+				}
 			}
 		}
 	}
