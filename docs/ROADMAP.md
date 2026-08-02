@@ -31,12 +31,16 @@ contract, not a plan, and does not follow this file's structure.
 
 ## Items
 
-### SRV-01 — Groups / broadcast
-Status: `planned` · Also affects: freizone-app
+### SRV-01 — Groups
+Status: `planned` · Also affects: freizone-app (APP-16)
+Design: [design/01-groups.md](design/01-groups.md)
 
-Group and broadcast messaging. None of it exists today (no tables, no API, no
-UI); a group send is conceptually just N direct sends. Needs protocol design
-first — membership, key distribution, fan-out — before any implementation.
+Group messaging with a founder/admin/moderator authority model. None of it
+exists today (no tables, no API, no UI). Designed 2026-08-02: the group is a
+self-certifying cryptographic object, not a server object — messages ride the
+existing pairwise ratchets with no group key, and membership/roles are a
+grow-only set of signed facts that converges via a `state_hash` carried on every
+message. Broadcast, previously part of this item, split out as SRV-16.
 
 ### SRV-02 — Multi-device linking
 Status: `planned` · Also affects: freizone-app, shared Go core
@@ -202,3 +206,12 @@ invite, but any existing user may issue one, not just staff. Registration itself
 needs no change — what differs is authorization on invite creation. The hard part
 is abuse: every member becomes a registration vector, so a bound on outstanding
 codes per account is needed before this ships.
+
+### SRV-16 — Broadcast lists
+Status: `planned` · Also affects: freizone-app
+
+Split out of SRV-01 on 2026-08-02. Shares that item's fan-out and identity
+model, but is not a flag on a group: a broadcast's recipient list must
+specifically *not* be shared with its recipients, which removes the whole
+snapshot / `state_hash` convergence layer and makes delivery one-directional.
+Deliberately not designed until groups ship.
