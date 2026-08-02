@@ -241,3 +241,20 @@ model, but is not a flag on a group: a broadcast's recipient list must
 specifically *not* be shared with its recipients, which removes the whole
 snapshot / `state_hash` convergence layer and makes delivery one-directional.
 Deliberately not designed until groups ship.
+
+### SRV-17 — Say in the prekey block whether it is a re-key
+Status: `planned` · Also affects: freizone-app
+
+A `prekey` block arriving over an existing session is ambiguous: it is either a
+peer who deliberately discarded their session (SRV-03) or one who established
+at the same moment we did (routine in a group, SRV-01). The two need opposite
+handling — adopt unconditionally versus apply the lower-`account_id`
+tie-break — and PROTOCOL §5 currently has the receiver infer which from the
+decrypted content, treating a `v: 3` re-key envelope as the deliberate case.
+
+That works for our own clients, which always send it, and leaves a gap: the
+envelope is only *recommended*, so a client that re-keys on an ordinary message
+is read as establishing simultaneously, and a higher-id peer's recovery then
+does not take. The fix is one field in the block saying which it is, so nothing
+has to be inferred. Deferred deliberately — it is a wire addition, and the
+inference covers every client that exists today.
