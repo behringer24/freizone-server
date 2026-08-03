@@ -272,6 +272,25 @@ precision**: the signing bytes have second granularity, so anything finer would
 be unsigned data that still influenced replay order — and two members could then
 fold the same facts into different states.
 
+**Every id inside an event is the canonical form.** §1's cosmetic spellings —
+dash-grouped, spaced, upper-case — and the short id-prefix are for *input and
+display only*; they never reach a signed fact. The signing bytes cover the id
+string verbatim, so `q2xjx-e3gtq-…` and `q2xjxe3gtq…` are two different facts
+about the same account, and only one of them is usable: the subject's whole key
+chain is signed over the canonical id (§2), and a pairwise ratchet is keyed by
+it. A member added under any other spelling is a **phantom** — listed in the
+group, invited as far as everyone is concerned, and impossible to establish a
+session with. So an inviter **resolves the address it was handed first** (the
+directory lookup is also what proves the account exists at all) and signs the
+resolved id.
+
+Enforced where an event is *created*, and deliberately not on admission: an
+event already in some member's stored history must not become unadmittable
+later, and no fold can tell whether a canonical id names an account that exists
+anyway. `member_remove`, `leave` and `role_revoke` are exempt for the same
+reason — they name a member row as it already stands, which is the only way a
+phantom that did get in can ever be cleaned up.
+
 **Genesis carries the founder's server, and is the founder's membership.** The
 founder has no `member_add` of their own, so without this they would be the one
 member nobody could deliver to until they spoke first. Deriving their membership
@@ -450,6 +469,17 @@ If Ben was offline and missed both, he later sends to everyone *except* Dora.
 Anna and Clara see his stale `state_hash` and push him the snapshot. Exactly one
 message is lost, and Ben's client can say so, because it learns afterwards that
 its fan-out was incomplete.
+
+**What converges is state, never transcript.** Dora receives the fact set and
+nothing that was said before step 5 — there is no history transport in this
+protocol, and deliberately so: pairwise fan-out means a message exists only as
+one copy per recipient, encrypted for that recipient's ratchet, so forwarding
+history would be one member re-sending everyone else's words on their own
+session — signed by the forwarder, attributed to the author. It would also hand
+an invitee, retroactively, exactly the traffic that "a copy goes only to members
+who have accepted" withheld while their invitation was open. An implementation
+must not add one; the client-side reasoning and its accepted consequences are in
+freizone-app's `docs/design/16-groups.md`.
 
 ## What building it changed
 

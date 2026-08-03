@@ -344,6 +344,55 @@ func (e *Event) Verify(groupRootPubKey ed25519.PublicKey) error {
 	return nil
 }
 
+// canonicalIDs checks that the account and group ids inside an event are the
+// canonical 21-character forms, not a cosmetic spelling of them (dash-grouped,
+// spaced, upper-case) and not an id-prefix.
+//
+// Enforced when an event is *created* (see sign), deliberately not when one is
+// admitted. The signing bytes cover the id string verbatim, so
+// "q2xjx-e3gtq-..." and "q2xjxe3gtq..." are two different facts about the same
+// account -- and only one of them is usable: every certificate in that
+// account's chain is signed over the canonical id (pkg/devicecert), and a
+// pairwise ratchet is keyed by it. A member folded in under any other spelling
+// is a phantom -- listed in the group, invited as far as everyone is concerned,
+// and impossible to establish a session with ("dh identity signature
+// verification failed" on the first send). Refusing to sign is where that is
+// caught cheaply and unambiguously, next to the caller that can still fix it.
+//
+// Admission stays tolerant for the same reason it stays context-free (see
+// State.Apply): an event already in somebody's stored history must not become
+// unloadable later (State.UnmarshalJSON re-admits every stored event and fails
+// the whole blob on any rejection). And it would buy little -- no fold can tell
+// whether a canonical subject id names an account that exists at all, so
+// resolving the invitee *before* signing is the only real protection, which is
+// exactly what this check pushes callers towards.
+// The subject is checked only where the event *gives* someone standing --
+// genesis, an invitation, a role grant, an accept. The undoing side
+// (member_remove, leave, role_revoke) is deliberately exempt: it names a member
+// row that already exists in the fold, and if a phantom ever did get in (an
+// older client, another implementation), the only way to clean it up is an
+// event naming it exactly as it stands.
+func (e *Event) canonicalIDs() error {
+	canonical := func(field, id string) error {
+		normalized, err := address.Normalize(id)
+		if err != nil {
+			return fmt.Errorf("group: event %s: %w", field, err)
+		}
+		if normalized != id {
+			return fmt.Errorf("group: event %s must be the canonical id %q, not %q", field, normalized, id)
+		}
+		return nil
+	}
+	if err := canonical("group id", e.GroupID); err != nil {
+		return err
+	}
+	switch e.Type {
+	case EventGenesis, EventMemberAdd, EventRoleGrant, EventJoinAccept:
+		return canonical("subject", e.Subject)
+	}
+	return nil
+}
+
 // SignRoot signs an event with the group root key -- the founder acting.
 func SignRoot(e *Event, groupRootPriv ed25519.PrivateKey) error {
 	if ruleFor(e.Type) == signedByDevice {
@@ -367,6 +416,10 @@ func sign(e *Event, priv ed25519.PrivateKey, signer *Signer) error {
 	// the real one is still being computed.
 	e.Signature = make([]byte, ed25519.SignatureSize)
 	if err := e.Validate(); err != nil {
+		return err
+	}
+	// Creating side only -- see canonicalIDs for why admission stays tolerant.
+	if err := e.canonicalIDs(); err != nil {
 		return err
 	}
 	buf, err := e.signingBytes()

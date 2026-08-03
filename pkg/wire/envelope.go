@@ -28,6 +28,33 @@ type PrekeyFields struct {
 	SenderEphemeralPub  string  `json:"sender_ephemeral_pub"`
 	SignedPrekeyID      uint32  `json:"signed_prekey_id"`
 	OneTimePrekeyID     *uint32 `json:"one_time_prekey_id,omitempty"`
+
+	// Rekey says why this block is here (SRV-17), because a prekey block
+	// arriving over a session the receiver already holds is otherwise
+	// ambiguous, and the two readings need opposite handling:
+	//
+	//   true  -- the sender deliberately discarded their session and
+	//            re-established (SRV-03). Theirs is the only session they can
+	//            read, so the receiver adopts it whatever any tie-break says.
+	//   false -- an ordinary establishment. If the receiver already holds a
+	//            session, the two established at the same moment (routine in a
+	//            group, docs/PROTOCOL.md §5) and the lower-account-id tie-break
+	//            decides which one both sides will send on.
+	//   absent -- a sender that predates this field. The receiver falls back to
+	//            inferring it from the decrypted content, exactly as before: a
+	//            `v: 3` re-key envelope means the deliberate case.
+	//
+	// Deliberately a tri-state rather than a plain bool: `false` and "said
+	// nothing" are different facts, and only telling them apart lets the
+	// content-sniffing fallback ever be removed. A sender that sets this
+	// truthfully is never guessed about.
+	//
+	// Not covered by any signature -- there is none over the prekey block, here
+	// or before this field. A tampered value can make a receiver mis-handle one
+	// establishment (adopt a session it would have kept, or the reverse), which
+	// is a nuisance the ratchet recovers from, not a break: every message still
+	// has to decrypt, and only the sender's own keys can make that happen.
+	Rekey *bool `json:"rekey,omitempty"`
 }
 
 // HeaderDTO is the base64-friendly wire form of ratchet.Header.
@@ -84,13 +111,27 @@ func (p PrekeyFields) ToInitialMessage() (*ratchet.InitialMessage, error) {
 // NewEnvelope builds an Envelope for a header+ciphertext pair, optionally
 // with X3DH initial-message fields for a session's first message (pass nil
 // for every later message on an already-established session).
+//
+// Leaves [PrekeyFields.Rekey] absent, which reads as "this sender says
+// nothing" -- correct for a caller that does not track the difference. A
+// caller that does should use [NewEnvelopeRekey] and always state it, so the
+// receiver never has to guess.
 func NewEnvelope(initial *ratchet.InitialMessage, header ratchet.Header, ciphertext []byte) Envelope {
+	return NewEnvelopeRekey(initial, header, ciphertext, nil)
+}
+
+// NewEnvelopeRekey is [NewEnvelope] with an explicit [PrekeyFields.Rekey]:
+// point at true for a deliberate re-key (SRV-03), at false for an ordinary
+// establishment, or pass nil to say nothing at all. Ignored when initial is
+// nil, since there is no prekey block to carry it.
+func NewEnvelopeRekey(initial *ratchet.InitialMessage, header ratchet.Header, ciphertext []byte, rekey *bool) Envelope {
 	env := Envelope{
 		Header:     HeaderToDTO(header),
 		Ciphertext: base64.StdEncoding.EncodeToString(ciphertext),
 	}
 	if initial != nil {
 		fields := InitialMessageToPrekeyFields(initial)
+		fields.Rekey = rekey
 		env.Prekey = &fields
 	}
 	return env

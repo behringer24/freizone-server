@@ -29,6 +29,26 @@ terser than what follows — the tag was the changelog at the time.
   bundle, just without a one-time prekey, so clients predating the change keep
   working unaltered (`SRV-04`)
 
+### Added
+
+* The `prekey` block says whether it is a deliberate re-key or an ordinary
+  establishment (`rekey`, a tri-state: `true`/`false`/absent), so a receiver
+  finding a prekey block for a session it already holds no longer has to infer
+  the sender's intent from the decrypted content. Absent keeps the old inference,
+  so old and new clients interoperate in both directions with no negotiation
+  (`SRV-17`)
+
+### Fixed
+
+* `pkg/group` refuses to *sign* a group event whose subject or group id is a
+  cosmetic spelling (dash-grouped, spaced, upper-case) or a short id-prefix
+  rather than the canonical id. Such an event is admissible and verifiable but
+  useless: the subject's certificates are all signed over the canonical id, so
+  the member it folds in is a phantom nobody can ever establish a session with.
+  Admission stays tolerant, and `member_remove`/`leave`/`role_revoke` stay
+  signable with whatever spelling is already in the fold, so a phantom can still
+  be cleaned up (`SRV-01`)
+
 ### Security
 
 * Closes one-time-prekey pool exhaustion: an anonymous caller could previously

@@ -845,20 +845,46 @@ is routine: a joining member establishes a session with every existing member at
 once, and those members reach back toward them in the same breath, so most new
 pairs in a group start out doubled.
 
-A `prekey` block arriving over an existing session is **ambiguous**: it is
-either a peer who deliberately discarded their session (the re-key above) or a
-peer who simply established one at the same moment we did. The two look
-identical on the wire and must be handled differently, so the receiver decides
-from the decrypted content:
+A `prekey` block arriving over an existing session would otherwise be
+**ambiguous**: it is either a peer who deliberately discarded their session (the
+re-key above) or a peer who simply established one at the same moment we did.
+The two need opposite handling, so the sender **says which it is** in the block
+itself:
 
-1. Build the responder session and try to decrypt the accompanying message with
-   it. If it does not decrypt, this is a stale or redelivered block — keep the
-   existing session and change nothing.
-2. If it decrypts and the plaintext is a **`v: 3` re-key signal**, the peer has
-   thrown their session away. Adopt the new one unconditionally. The ordering
-   rule below must *not* apply here: the session it would tell us to keep is
-   one the peer can no longer read.
-3. Otherwise it is simultaneous establishment, and the tie-break is the
+```json
+"prekey": { "sender_dh_identity_pub": "...", "sender_ephemeral_pub": "...",
+            "signed_prekey_id": 1, "rekey": false }
+```
+
+`rekey` is a **tri-state**, and all three states mean different things:
+
+| value | meaning |
+|---|---|
+| `true` | The sender discarded their session and re-established. Theirs is the only session they can read. |
+| `false` | An ordinary establishment. If the receiver holds a session too, the two established simultaneously. |
+| *absent* | The sender predates this field and says nothing. The receiver infers it from the decrypted content. |
+
+A sender that knows the answer MUST state it, including `false` — "no" and "said
+nothing" are different facts, and only distinguishing them lets the inference in
+step 2b below ever be dropped. The field is not covered by any signature (there
+is none over the `prekey` block); a tampered value can misdirect the handling of
+one establishment, which the ratchet recovers from, and cannot make anything
+decrypt that otherwise would not.
+
+The receiver then:
+
+1. Builds the responder session and tries to decrypt the accompanying message
+   with it. If it does not decrypt, this is a stale or redelivered block — keep
+   the existing session and change nothing.
+2. Decides whether this is a deliberate re-key:
+   - **2a.** `rekey` present — take it at its word, `false` included.
+   - **2b.** `rekey` absent — infer, as clients did before the field existed: a
+     **`v: 3` re-key signal** in the plaintext means deliberate, anything else
+     means simultaneous.
+3. If deliberate: adopt the new session unconditionally. The ordering rule below
+   must *not* apply — the session it would tell us to keep is one the peer can
+   no longer read.
+4. Otherwise it is simultaneous establishment, and the tie-break is the
    ordering rule re-keying already uses, derived from data both sides hold:
    **the lower `account_id`'s session wins** and is the one both sides send on.
    If the **peer's** id is lower, adopt theirs. If **ours** is lower, keep ours
@@ -866,18 +892,16 @@ from the decrypted content:
    is still sending on theirs until our next message reaches them, and without
    this those in-flight messages are stranded undecryptable forever.
 
-The read-only retention in step 3 is easy to leave out and expensive to omit:
+The read-only retention in step 4 is easy to leave out and expensive to omit:
 the pair converges either way, but without it every message the loser sent
 before converging is lost. A client MAY discard a read-only session once the
 peer has demonstrably moved (a message arriving on the winning session).
 
-**Known gap.** A re-key is only *recommended* to ride the `v: 3` envelope, so a
-client that re-keys on an ordinary message is indistinguishable from one
-establishing simultaneously, and step 3 would then keep a session the peer can
-no longer read — leaving their recovery ineffective until they try again. The
-clean fix is for the `prekey` block to say which of the two it is instead of
-making the receiver infer it; that is a wire addition and is tracked as SRV-17
-rather than done here.
+**Compatibility.** Old and new clients interoperate in both directions without
+any negotiation: an old sender omits the field and gets the old inference, a new
+sender states it and is believed, and an old receiver ignores the extra key as
+JSON parsers do. Which means the `v: 3` re-key envelope stays worth sending
+(§6) even now — it is what an old receiver reads.
 
 Because a re-key must ride on *some* message, a client that has just discarded
 its session SHOULD send the invisible `rekey` control envelope (§6) rather than
@@ -936,7 +960,8 @@ defined here purely as a client-to-client contract, implemented in
     "sender_dh_identity_pub": "base64 X25519, 32 bytes",
     "sender_ephemeral_pub": "base64 X25519, 32 bytes",
     "signed_prekey_id": 1,
-    "one_time_prekey_id": 101
+    "one_time_prekey_id": 101,
+    "rekey": false
   },
   "header": {
     "dh_pub": "base64 X25519, 32 bytes",
@@ -950,7 +975,9 @@ defined here purely as a client-to-client contract, implemented in
 `prekey` is present **only** on the first message of a new session (Signal
 calls this shape a "PreKeySignalMessage" vs. a plain "SignalMessage" for
 everything after), or when re-keying an existing one (§5);
-`one_time_prekey_id` is omitted if none was used. `header` is the Double
+`one_time_prekey_id` is omitted if none was used, and `rekey` says whether this
+block is a deliberate re-key or an ordinary establishment — a tri-state whose
+absence means "this sender says nothing", see §5. `header` is the Double
 Ratchet header (§5) and is always present.
 
 ### The plaintext inside (client-to-client)

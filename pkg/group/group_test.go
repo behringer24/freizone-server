@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"strings"
 	"testing"
 	"time"
 
@@ -248,6 +249,71 @@ func TestEventSignatureRoundTripAndTampering(t *testing.T) {
 			t.Fatalf("tampering with %s must invalidate the signature", name)
 		}
 	}
+}
+
+// A signed fact has to carry the canonical id: the signature covers the id
+// string verbatim, and every certificate in the subject's key chain is signed
+// over the canonical form -- so a member added under a dash-grouped id or an
+// id-prefix could never be messaged, only listed. Refused at signing time,
+// where the caller can still resolve the address properly.
+func TestSigningRejectsNonCanonicalIDs(t *testing.T) {
+	founder := newAccount(t, "a.example.org")
+	invitee := newAccount(t, "b.example.org")
+	g := newGroup(t, founder)
+
+	for name, subject := range map[string]string{
+		"dash-grouped": address.FormatForDisplay(invitee.accountID),
+		"spaced":       invitee.accountID[:5] + " " + invitee.accountID[5:],
+		"upper-case":   strings.ToUpper(invitee.accountID),
+		"id-prefix":    invitee.accountID[:address.PrefixLength],
+	} {
+		add := &Event{
+			Type: EventMemberAdd, GroupID: g.id, IssuedAt: at(1),
+			Subject: subject, Server: invitee.server,
+		}
+		if err := SignDevice(add, founder.signer, founder.devicePriv); err == nil {
+			t.Fatalf("%s subject must not be signable", name)
+		}
+	}
+
+	// A cosmetically spelled group id is refused on the same grounds: it is
+	// what every *other* member's copy of this group is keyed by.
+	wrongGroup := &Event{
+		Type: EventMemberAdd, IssuedAt: at(2),
+		GroupID: address.FormatForDisplay(g.id), Subject: invitee.accountID,
+		Server: invitee.server,
+	}
+	if err := SignDevice(wrongGroup, founder.signer, founder.devicePriv); err == nil {
+		t.Fatal("dash-grouped group id must not be signable")
+	}
+
+	// The undoing side stays signable with whatever spelling is in the fold:
+	// removing a phantom member is the only way to clean one up.
+	remove := &Event{
+		Type: EventMemberRemove, GroupID: g.id, IssuedAt: at(2),
+		Subject: address.FormatForDisplay(invitee.accountID),
+	}
+	if err := SignDevice(remove, founder.signer, founder.devicePriv); err != nil {
+		t.Fatalf("removing a non-canonically named member must stay possible: %v", err)
+	}
+
+	// The deliberate asymmetry: admission does NOT re-apply this rule. A peer
+	// that got such an event signed some other way is still admitted, because
+	// State.UnmarshalJSON re-admits everything it has stored and a tightened
+	// rule must never make an existing history unloadable.
+	forged := &Event{
+		Type: EventMemberAdd, GroupID: g.id, IssuedAt: at(3),
+		Subject: address.FormatForDisplay(invitee.accountID), Server: invitee.server,
+		Signer: founder.signer,
+	}
+	buf, err := forged.signingBytes()
+	if err != nil {
+		t.Fatalf("signing bytes: %v", err)
+	}
+	forged.Signature = ed25519.Sign(founder.devicePriv, buf)
+
+	s := NewState()
+	apply(t, s, g.genesis, forged)
 }
 
 func TestValidateRejectsFieldsOutsideTheSignature(t *testing.T) {
