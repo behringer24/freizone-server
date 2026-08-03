@@ -12,7 +12,6 @@ import (
 
 	"github.com/behringer24/freizone-server/pkg/devicecert"
 	"github.com/behringer24/freizone-server/pkg/group"
-	"github.com/behringer24/freizone-server/pkg/wire"
 )
 
 // preparedCopy is one recipient's own ciphertext. A group message is encrypted
@@ -101,7 +100,7 @@ func (g *groupCtx) encryptFor(dev resolvedDevice, plaintext []byte) (json.RawMes
 	if err != nil {
 		return nil, "", fmt.Errorf("encrypting: %w", err)
 	}
-	payload, err := wire.NewEnvelope(initial, header, ciphertext).MarshalPayload()
+	payload, err := newSendEnvelope(initial, header, ciphertext)
 	if err != nil {
 		return nil, "", err
 	}

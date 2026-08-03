@@ -72,6 +72,29 @@ func TestVerifyDHIdentityCertificateRejectsTamperedDHKey(t *testing.T) {
 	}
 }
 
+// The account id is signing input like any other field, so a *cosmetic*
+// re-spelling of the very same id breaks verification just as a substituted one
+// does. Worth pinning down rather than leaving implied: it is why a group event
+// (pkg/group) may only carry the canonical id -- a member recorded under a
+// dash-grouped one is verified against this certificate, fails here, and is
+// unreachable while looking perfectly ordinary in the member list.
+func TestVerifyDHIdentityCertificateRejectsARespelledAccountID(t *testing.T) {
+	devicePub, devicePriv := mustDeviceKey(t, 1)
+	dhPub := mustX25519PubKey(t)
+	deviceID, _ := NewDeviceID()
+
+	const accountID = "q2xjxe3gtqutyftankjcv"
+	cert, err := SignDHIdentityCertificate(accountID, deviceID, dhPub, time.Now(), devicePriv)
+	if err != nil {
+		t.Fatalf("SignDHIdentityCertificate() error = %v", err)
+	}
+
+	cert.AccountID = "q2xjx-e3gtq-utyft-ankjc-v" // the same id, dash-grouped
+	if err := cert.Verify(devicePub); err == nil {
+		t.Error("expected Verify() to fail for a dash-grouped spelling of the signed account id")
+	}
+}
+
 func TestDHIdentityCertificateRejectsWrongKeySize(t *testing.T) {
 	_, devicePriv := mustDeviceKey(t, 1)
 	deviceID, _ := NewDeviceID()

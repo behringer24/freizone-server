@@ -62,6 +62,30 @@ message. Broadcast, previously part of this item, split out as SRV-16.
   design corrections the run forced, in the design document — the significant
   one being that **simultaneous X3DH establishment is routine in a group**,
   which needed a tie-break plus a read-only session and is now in PROTOCOL §5
+- 2026-08-03 — three-party convergence measured with `devclient` against both
+  local Docker instances, federated, after the app made it look slow. Results:
+  a clean third-member invite converges in **one** round (all three on the same
+  `state_hash`, every message delivered). A *lost* fact costs **one message plus
+  two control envelopes** and needs a third member online in between — the
+  member behind converged only on its second drain, which is exactly the "took
+  several messages" report; the lost message itself never arrived at all, since
+  `devclient` has neither the app's snapshot debts nor its group outbox.
+  **Simultaneous establishment** (forced cleanly by crossing two accepts) is
+  handled correctly and losslessly today: both sides decrypt, the lower account
+  id keeps the sending session, the loser's session is retained read-only
+  (`inbound_sessions`), traffic flows both ways afterwards — at the cost of two
+  extra snapshots from the resulting hash mismatch. So the reported slowness was
+  the lost-fact path, not the ratchet. Not covered: the app's own Dart
+  implementation of the tie-break, which is separate code
+- 2026-08-03 — `pkg/group` refuses to *sign* an event whose group id, or whose
+  subject on the granting side (genesis, `member_add`, `role_grant`,
+  `join_accept`), is a cosmetic spelling or an id-prefix rather than the
+  canonical id. Found by testing the app's invite (APP-16): such an event is
+  perfectly verifiable but folds in a **phantom member** — listed and invited,
+  yet impossible to session with, since the subject's certificates are all
+  signed over the canonical id. Admission stays tolerant, and the undoing side
+  (`member_remove`/`leave`/`role_revoke`) stays signable with whatever spelling
+  is in the fold, so a phantom can still be cleaned up
 - **Open** — the app (APP-16). One loose end in this repo: `cmd/devclient`'s
   *one-to-one* path (`chat.go`) still establishes a session only when it has
   none, so it does not handle the simultaneous X3DH establishment that
@@ -243,7 +267,7 @@ snapshot / `state_hash` convergence layer and makes delivery one-directional.
 Deliberately not designed until groups ship.
 
 ### SRV-17 — Say in the prekey block whether it is a re-key
-Status: `planned` · Also affects: freizone-app
+Status: `done` · Also affects: freizone-app
 
 A `prekey` block arriving over an existing session is ambiguous: it is either a
 peer who deliberately discarded their session (SRV-03) or one who established
@@ -256,5 +280,19 @@ That works for our own clients, which always send it, and leaves a gap: the
 envelope is only *recommended*, so a client that re-keys on an ordinary message
 is read as establishing simultaneously, and a higher-id peer's recovery then
 does not take. The fix is one field in the block saying which it is, so nothing
-has to be inferred. Deferred deliberately — it is a wire addition, and the
-inference covers every client that exists today.
+has to be inferred.
+
+- 2026-08-03 — shipped as a **tri-state** `rekey` in the `prekey` block:
+  `true` deliberate, `false` ordinary establishment, *absent* "this sender says
+  nothing". `false` and absent are deliberately different facts — only that
+  distinction lets the content-sniffing fallback ever be deleted, and a sender
+  that states it is never guessed about. Not signature-covered (nothing over the
+  prekey block is): tampering can misdirect the handling of one establishment,
+  which the ratchet recovers from, and cannot make anything decrypt.
+  `pkg/wire.NewEnvelopeRekey` plus the FFI core, the app's send and receive
+  paths, and `devclient` — whose *group* receive path had no deliberate-re-key
+  handling at all and now honours the flag. Interoperates both ways with no
+  negotiation, so the `v: 3` re-key envelope stays worth sending: it is what an
+  older receiver reads. Measured beforehand (see SRV-01's log) that the
+  inference already works between our own clients — this closes the case it
+  cannot cover, rather than a bug in the field

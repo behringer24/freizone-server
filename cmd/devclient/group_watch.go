@@ -203,8 +203,14 @@ func (w *groupWatcher) decrypt(msg messageResponse) (decodedPlaintext, error) {
 	// The loser adopts the winner's; the winner reads the message with a
 	// throwaway responder session and keeps its own for sending, so the two
 	// converge after one message instead of swapping symmetrically forever.
+	// Unless the sender says it is a deliberate re-key (SRV-17), in which case
+	// there is no race and no tie-break to apply: they discarded their session,
+	// so theirs is the only one they can read and it wins outright. A sender that
+	// says nothing (an older client) is treated as the racing case, exactly as
+	// before the field existed.
 	if env.Prekey != nil {
-		theirsWins := msg.SenderAccountID < w.state.AccountID
+		deliberateRekey := env.Prekey.Rekey != nil && *env.Prekey.Rekey
+		theirsWins := deliberateRekey || msg.SenderAccountID < w.state.AccountID
 		fresh, ferr := respondToNewSession(w.state, env.Prekey)
 		if ferr == nil {
 			if plaintext, derr := fresh.Decrypt(header, ciphertext); derr == nil {

@@ -197,7 +197,7 @@ func (cs *chatSession) send(plaintext []byte, label string) error {
 	if err != nil {
 		return fmt.Errorf("encrypting message: %w", err)
 	}
-	payload, err := wire.NewEnvelope(initial, header, ciphertext).MarshalPayload()
+	payload, err := newSendEnvelope(initial, header, ciphertext)
 	if err != nil {
 		return err
 	}
@@ -440,6 +440,19 @@ func (cs *chatSession) decrypt(msg messageResponse) (decodedPlaintext, error) {
 		return decodedPlaintext{}, fmt.Errorf("decrypting message: %w", err)
 	}
 	return decodePlaintext(plaintext), nil
+}
+
+// ordinaryEstablishment is what this client puts in every prekey block's
+// `rekey` field (SRV-17): it has no "reset secure session" of its own, so an
+// initial from here is always a first establishment, never a re-key. Stated
+// rather than omitted, because omitting it asks the receiver to guess from the
+// decrypted content -- and a client that knows the answer should say it.
+var ordinaryEstablishment = false
+
+// newSendEnvelope builds the payload for one outgoing message, declaring the
+// establishment as ordinary when it carries a prekey block.
+func newSendEnvelope(initial *ratchet.InitialMessage, header ratchet.Header, ciphertext []byte) (json.RawMessage, error) {
+	return wire.NewEnvelopeRekey(initial, header, ciphertext, &ordinaryEstablishment).MarshalPayload()
 }
 
 // getOrCreateSession returns the existing session with peerAccountID, or
