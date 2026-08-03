@@ -14,6 +14,8 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-08-03
+
 ### Added
 
 * Moderators can block and unblock regular members server-wide, so moderating a
