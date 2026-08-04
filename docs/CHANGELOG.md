@@ -14,6 +14,14 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+### Fixed
+
+* `devclient`: a one-to-one chat could not read a message from a peer who
+  established a session at the same moment it did, or who deliberately reset
+  their secure session — both cases left the message permanently undecryptable
+  (`SRV-01`, `SRV-03`). The interactive chat and the group watcher now share one
+  establishment path, so neither can handle fewer cases than the other
+
 ## [0.13.0] — 2026-08-04
 
 ### Added

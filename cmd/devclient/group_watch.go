@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/behringer24/freizone-server/pkg/group"
-	"github.com/behringer24/freizone-server/pkg/wire"
 )
 
 // groupWatcher is the receiving half of groups: it drains this device's one
@@ -137,7 +136,7 @@ func (w *groupWatcher) pollOnce() error {
 // not a group envelope is left in the queue untouched -- the interactive chat
 // owns those, and silently dropping them would lose real messages.
 func (w *groupWatcher) handleIncoming(msg messageResponse) {
-	decoded, err := w.decrypt(msg)
+	decoded, err := decryptIncoming(w.state, msg)
 	if err != nil {
 		fmt.Printf("[%s] undecryptable: %v\n", shortID(msg.SenderAccountID), err)
 		return
@@ -172,87 +171,6 @@ func (w *groupWatcher) handleIncoming(msg messageResponse) {
 	if err := w.state.Save(w.path); err != nil {
 		fmt.Fprintln(os.Stderr, "saving state:", err)
 	}
-}
-
-func (w *groupWatcher) decrypt(msg messageResponse) (decodedPlaintext, error) {
-	env, err := wire.ParseEnvelope(msg.Payload)
-	if err != nil {
-		return decodedPlaintext{}, err
-	}
-	header, err := env.Header.ToHeader()
-	if err != nil {
-		return decodedPlaintext{}, err
-	}
-	ciphertext, err := env.DecodeCiphertext()
-	if err != nil {
-		return decodedPlaintext{}, err
-	}
-
-	session, haveSession := w.state.Sessions[msg.SenderAccountID]
-
-	// A prekey block needs handling even when a session already exists.
-	//
-	// Simultaneous X3DH initiation is rare between two people chatting and
-	// routine in a group: a new member establishes a session with every
-	// existing member at once, and those members do the same toward them, so
-	// both sides regularly end up holding their own initiator session for the
-	// same pair. Neither can read the other's.
-	//
-	// The tie-break is the one docs/PROTOCOL.md §5 already uses for re-keying,
-	// derived from data both sides have: the LOWER account id's session wins.
-	// The loser adopts the winner's; the winner reads the message with a
-	// throwaway responder session and keeps its own for sending, so the two
-	// converge after one message instead of swapping symmetrically forever.
-	// Unless the sender says it is a deliberate re-key (SRV-17), in which case
-	// there is no race and no tie-break to apply: they discarded their session,
-	// so theirs is the only one they can read and it wins outright. A sender that
-	// says nothing (an older client) is treated as the racing case, exactly as
-	// before the field existed.
-	if env.Prekey != nil {
-		deliberateRekey := env.Prekey.Rekey != nil && *env.Prekey.Rekey
-		theirsWins := deliberateRekey || msg.SenderAccountID < w.state.AccountID
-		fresh, ferr := respondToNewSession(w.state, env.Prekey)
-		if ferr == nil {
-			if plaintext, derr := fresh.Decrypt(header, ciphertext); derr == nil {
-				switch {
-				case !haveSession || theirsWins:
-					w.state.Sessions[msg.SenderAccountID] = fresh
-				default:
-					// Our session wins, so we keep sending on it -- but they
-					// are still sending on theirs until our next message
-					// reaches them. Keeping this one for reading is what stops
-					// those in-flight messages being stranded.
-					w.state.InboundSessions[msg.SenderAccountID] = fresh
-				}
-				return decodePlaintext(plaintext), nil
-			}
-		}
-		if !haveSession {
-			if ferr != nil {
-				return decodedPlaintext{}, ferr
-			}
-			return decodedPlaintext{}, fmt.Errorf("prekey block from %s did not decrypt", shortID(msg.SenderAccountID))
-		}
-		// A stale or redelivered prekey block must not disturb a session that
-		// still works, so fall through and try the ones we have.
-	}
-
-	if haveSession {
-		if plaintext, derr := session.Decrypt(header, ciphertext); derr == nil {
-			return decodePlaintext(plaintext), nil
-		}
-	}
-	// Last resort: the losing side of a simultaneous establishment, kept
-	// exactly for the messages that were already on their way.
-	if inbound, ok := w.state.InboundSessions[msg.SenderAccountID]; ok {
-		if plaintext, derr := inbound.Decrypt(header, ciphertext); derr == nil {
-			return decodePlaintext(plaintext), nil
-		}
-	}
-	if !haveSession {
-		return decodedPlaintext{}, fmt.Errorf("no session with %s and message carries no x3dh fields", shortID(msg.SenderAccountID))
-	}
-	return decodedPlaintext{}, fmt.Errorf("no session decrypts this message from %s", shortID(msg.SenderAccountID))
 }
 
 func (g *groupCtx) handleControl(sender string, control *groupControl) {

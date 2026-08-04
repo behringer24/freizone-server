@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"crypto/ecdh"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
@@ -17,8 +16,6 @@ import (
 	"time"
 
 	"github.com/behringer24/freizone-server/pkg/devicecert"
-	"github.com/behringer24/freizone-server/pkg/ratchet"
-	"github.com/behringer24/freizone-server/pkg/wire"
 )
 
 // pendingSend records one text message this client sent, so an incoming
@@ -364,7 +361,7 @@ func (cs *chatSession) handleMessage(msg messageResponse) {
 		fmt.Print("> ")
 	}()
 
-	decoded, err := cs.decrypt(msg)
+	decoded, err := decryptIncoming(cs.state, msg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "\ndecrypt error:", err)
 		return
@@ -402,121 +399,6 @@ func (cs *chatSession) handleMessage(msg messageResponse) {
 			}
 		}
 	}
-}
-
-// decrypt parses and decrypts msg, establishing a responder session first if
-// needed. Caller must hold cs.mu.
-func (cs *chatSession) decrypt(msg messageResponse) (decodedPlaintext, error) {
-	env, err := wire.ParseEnvelope(msg.Payload)
-	if err != nil {
-		return decodedPlaintext{}, err
-	}
-	header, err := env.Header.ToHeader()
-	if err != nil {
-		return decodedPlaintext{}, err
-	}
-	ciphertext, err := env.DecodeCiphertext()
-	if err != nil {
-		return decodedPlaintext{}, err
-	}
-
-	session, ok := cs.state.Sessions[msg.SenderAccountID]
-	if !ok {
-		if env.Prekey == nil {
-			return decodedPlaintext{}, fmt.Errorf("no session with %s and message carries no x3dh fields", msg.SenderAccountID)
-		}
-		session, err = respondToNewSession(cs.state, env.Prekey)
-		if err != nil {
-			return decodedPlaintext{}, err
-		}
-		if cs.state.Sessions == nil {
-			cs.state.Sessions = make(map[string]*ratchet.Session)
-		}
-		cs.state.Sessions[msg.SenderAccountID] = session
-	}
-
-	plaintext, err := session.Decrypt(header, ciphertext)
-	if err != nil {
-		return decodedPlaintext{}, fmt.Errorf("decrypting message: %w", err)
-	}
-	return decodePlaintext(plaintext), nil
-}
-
-// ordinaryEstablishment is what this client puts in every prekey block's
-// `rekey` field (SRV-17): it has no "reset secure session" of its own, so an
-// initial from here is always a first establishment, never a re-key. Stated
-// rather than omitted, because omitting it asks the receiver to guess from the
-// decrypted content -- and a client that knows the answer should say it.
-var ordinaryEstablishment = false
-
-// newSendEnvelope builds the payload for one outgoing message, declaring the
-// establishment as ordinary when it carries a prekey block.
-func newSendEnvelope(initial *ratchet.InitialMessage, header ratchet.Header, ciphertext []byte) (json.RawMessage, error) {
-	return wire.NewEnvelopeRekey(initial, header, ciphertext, &ordinaryEstablishment).MarshalPayload()
-}
-
-// getOrCreateSession returns the existing session with peerAccountID, or
-// establishes a new one as X3DH initiator by claiming the peer's prekey
-// bundle. Callers must hold the state's lock.
-func getOrCreateSession(state *State, peerAccountID, peerServer, peerDeviceID string, peerDevicePubKey ed25519.PublicKey) (*ratchet.Session, *ratchet.InitialMessage, error) {
-	if s, ok := state.Sessions[peerAccountID]; ok {
-		return s, nil, nil
-	}
-
-	bundle, err := claimPrekeyBundle(state, peerServer, peerDeviceID)
-	if err != nil {
-		return nil, nil, err
-	}
-	remote, err := bundleToRemoteBundle(bundle, peerAccountID, peerDeviceID, peerDevicePubKey)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	dhPriv, err := ecdh.X25519().NewPrivateKey(state.DHIdentityPriv)
-	if err != nil {
-		return nil, nil, fmt.Errorf("loading local dh identity key: %w", err)
-	}
-
-	session, initial, err := ratchet.InitiateSession(dhPriv, remote)
-	if err != nil {
-		return nil, nil, fmt.Errorf("initiating x3dh session: %w", err)
-	}
-
-	if state.Sessions == nil {
-		state.Sessions = make(map[string]*ratchet.Session)
-	}
-	state.Sessions[peerAccountID] = session
-	return session, initial, nil
-}
-
-func respondToNewSession(state *State, prekeyFields *wire.PrekeyFields) (*ratchet.Session, error) {
-	initial, err := prekeyFields.ToInitialMessage()
-	if err != nil {
-		return nil, err
-	}
-
-	curve := ecdh.X25519()
-	dhPriv, err := curve.NewPrivateKey(state.DHIdentityPriv)
-	if err != nil {
-		return nil, fmt.Errorf("loading local dh identity key: %w", err)
-	}
-	spkPriv, err := curve.NewPrivateKey(state.SignedPrekeyPriv)
-	if err != nil {
-		return nil, fmt.Errorf("loading local signed prekey: %w", err)
-	}
-
-	var otpkPriv *ecdh.PrivateKey
-	if initial.OneTimePrekeyID != nil {
-		if stored, ok := state.OneTimePrekeys[*initial.OneTimePrekeyID]; ok {
-			otpkPriv, err = curve.NewPrivateKey(stored.Priv)
-			if err != nil {
-				return nil, fmt.Errorf("loading one-time prekey: %w", err)
-			}
-			delete(state.OneTimePrekeys, *initial.OneTimePrekeyID)
-		}
-	}
-
-	return ratchet.RespondToSession(dhPriv, spkPriv, otpkPriv, initial)
 }
 
 // ackMessage best-effort deletes a message from the server queue once it's been

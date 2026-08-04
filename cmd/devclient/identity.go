@@ -12,6 +12,7 @@ import (
 
 	"github.com/behringer24/freizone-server/pkg/address"
 	"github.com/behringer24/freizone-server/pkg/devicecert"
+	"github.com/behringer24/freizone-server/pkg/group"
 	"github.com/behringer24/freizone-server/pkg/ratchet"
 )
 
@@ -44,7 +45,14 @@ func newIdentity(server string) (*State, error) {
 		DevicePub:      devicePub,
 		DevicePriv:     devicePriv,
 		OneTimePrekeys: make(map[uint32]OTPKState),
-		Sessions:       make(map[string]*ratchet.Session),
+		// Every map LoadState guarantees, so code that receives never has to
+		// care whether this state was just built or read back from disk --
+		// InboundSessions in particular is written on a path that only runs
+		// after a reload today, which is the kind of nil map that surfaces the
+		// first time the order of commands changes.
+		Sessions:        make(map[string]*ratchet.Session),
+		InboundSessions: make(map[string]*ratchet.Session),
+		Groups:          make(map[string]*group.State),
 	}, nil
 }
 

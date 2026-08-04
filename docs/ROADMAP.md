@@ -86,13 +86,26 @@ message. Broadcast, previously part of this item, split out as SRV-16.
   signed over the canonical id. Admission stays tolerant, and the undoing side
   (`member_remove`/`leave`/`role_revoke`) stays signable with whatever spelling
   is in the fold, so a phantom can still be cleaned up
-- **Open** — the app (APP-16), and attachments in a group, which needed a core
-  change of their own and are tracked as SRV-18. One loose end in this repo:
-  `cmd/devclient`'s
-  *one-to-one* path (`chat.go`) still establishes a session only when it has
-  none, so it does not handle the simultaneous X3DH establishment that
-  `group_watch.go` and PROTOCOL §5 now describe. Rare between two people
-  chatting, which is why it went unnoticed, and wrong all the same
+- 2026-08-04 — `cmd/devclient`'s **one-to-one** path handles simultaneous X3DH
+  establishment too, which was this repo's last loose end from this item: it
+  established a session only when it had none, so a prekey block arriving over
+  an existing session was ignored and the message behind it was unreadable
+  forever. Fixed by extracting the establishment logic the group watcher already
+  had into one shared `session.go` — a second copy is how one path silently ends
+  up handling fewer cases than the other, which is precisely what had happened.
+  Measured before and after against the local Docker instances with a
+  deliberately crossed establishment: the pre-fix binary answers
+  `ratchet: message authentication failed`, the fixed one decrypts, the lower
+  account id keeps its initiator session with the loser's kept read-only
+  (`inbound_sessions`), the higher adopts the winner's outright, and messages and
+  receipts flow both ways afterwards with nothing stranded. Two things came with
+  it: the same path now also follows a peer's *deliberate* re-key (SRV-03's
+  "Reset secure session") in a one-to-one chat, which it likewise could not
+  before; and `newIdentity` initializes every map `LoadState` guarantees, since
+  `InboundSessions` was written on a path that only ever runs after a reload
+  today — a nil map waiting for the order of commands to change
+- **Open** — the app (APP-16). Attachments in a group needed a core change of
+  their own and shipped as SRV-18
 
 ### SRV-02 — Multi-device linking
 Status: `planned` · Also affects: freizone-app, shared Go core
