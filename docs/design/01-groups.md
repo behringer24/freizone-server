@@ -500,6 +500,19 @@ retention of the losing session, without which every message the loser sent
 before converging is stranded undecryptable. Now specified in PROTOCOL §5, and a
 requirement on the app (APP-16), not just on the reference client.
 
+That "effectively never happens", added 2026-08-02, is the sentence that left
+`cmd/devclient`'s one-to-one path unfixed until 2026-08-04, and it was wrong in
+the way a frequency argument usually is: the race is *rarer* between two people
+chatting, not absent, and the consequence when it does happen is not a retry but
+a message nobody can ever read. Two people who both open a chat and type before
+either has drained produce it exactly as a group does — which is also how it was
+reproduced. The lesson taken: this is not group handling that a group path
+should own, it is establishment handling that every receiving path needs, so it
+lives in one `session.go` that the interactive chat, the fan-out and the watcher
+all call. The duplicate was what allowed one of them to fall behind unnoticed,
+and the same shared path is what silently gave the one-to-one chat SRV-03's
+deliberate-re-key case as well.
+
 **Events sharing a timestamp needed a fixpoint, not a hash tie-break.** The
 signing bytes carry whole seconds, so founding a group and naming it land on the
 same timestamp and their order is decided by hash — and a name whose hash sorted
