@@ -32,7 +32,7 @@ contract, not a plan, and does not follow this file's structure.
 ## Items
 
 ### SRV-01 — Groups
-Status: `in progress` · Also affects: freizone-app (APP-16)
+Status: `done` · Also affects: freizone-app (APP-16)
 Design: [design/01-groups.md](design/01-groups.md)
 
 Group messaging with a founder/admin/moderator authority model. The group is a
@@ -104,8 +104,14 @@ message. Broadcast, previously part of this item, split out as SRV-16.
   before; and `newIdentity` initializes every map `LoadState` guarantees, since
   `InboundSessions` was written on a path that only ever runs after a reload
   today — a nil map waiting for the order of commands to change
-- **Open** — the app (APP-16). Attachments in a group needed a core change of
-  their own and shipped as SRV-18
+- 2026-08-05 — **done.** The app side (APP-16) closed with a clean device run of
+  its last two pieces, and this repo's own loose ends are closed above.
+  Attachments in a group needed a core change of their own and shipped as
+  SRV-18; broadcast, once part of this item, is SRV-16 and is now designable —
+  it was deliberately left until groups shipped. The accepted weaknesses stay
+  as recorded in the design document: self-asserted timestamps, a late fact that
+  can retroactively invalidate an event, and equivocation being detectable
+  rather than preventable
 
 ### SRV-02 — Multi-device linking
 Status: `planned` · Also affects: freizone-app, shared Go core

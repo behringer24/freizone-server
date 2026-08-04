@@ -14,6 +14,11 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+## [0.13.1] — 2026-08-05
+
+No change to the server itself: the development client and the documentation
+only. Groups (`SRV-01`) are complete as of this release.
+
 ### Fixed
 
 * `devclient`: a one-to-one chat could not read a message from a peer who
