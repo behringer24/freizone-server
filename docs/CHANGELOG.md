@@ -14,6 +14,8 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-08-04
+
 ### Added
 
 * An attachment upload may name several recipient devices at once, so a picture
