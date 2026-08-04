@@ -300,7 +300,7 @@ has to be inferred.
   cannot cover, rather than a bug in the field
 
 ### SRV-18 — Multi-recipient blobs (attachments in a group)
-Status: `in progress` · Also affects: freizone-app (APP-16) · Part of: SRV-01
+Status: `done` · Also affects: freizone-app (APP-16) · Part of: SRV-01
 Design: [design/18-multi-recipient-blobs.md](design/18-multi-recipient-blobs.md)
 
 Attachments are the last large piece of groups, and the send side is blocked
@@ -334,5 +334,16 @@ outcomes, and the file dropped when the last recipient row goes.
   recipient's remaining quota, not the smallest: the plan had it backwards, and
   as written one member with a full quota would have cost every other member
   the picture with a shared `413`
-- **Open** — the app (APP-16): rendering an attachment in a group bubble, and
-  the send fan-out grouping members by server. Nothing further is needed here
+- 2026-08-04 — the app side shipped too (APP-16), so pictures in a group work
+  end to end: the group bubble renders through the same widget the one-to-one
+  bubble uses, and the fan-out resolves its recipients before encrypting so it
+  can upload once per distinct recipient server. Two things worth recording
+  here. The client keys each copy's reference **per member**, not per server:
+  a server advertising `max_blob_recipients: 1` — which is what silence means —
+  stores a blob per device, and a per-server key cannot express that. And the
+  *re-encode* half of this item's second follow-up was **not** built: producing
+  a smaller rendition for a server with a smaller `max_blob_bytes` needs a Dart
+  JPEG encoder the app deliberately has no dependency on, so those members are
+  treated like a server with blobs off (caption plus a stated note) rather than
+  the picture being shrunk for everyone — which is the option that decision
+  ruled out. Reasoning in freizone-app's `docs/design/16-groups.md`

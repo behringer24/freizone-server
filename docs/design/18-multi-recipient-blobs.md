@@ -1,6 +1,6 @@
 # Design: Multi-recipient blobs (attachments in a group)
 
-Status: **core shipped 2026-08-03**, app side open · Roadmap:
+Status: **done** — core 2026-08-03, app 2026-08-04 · Roadmap:
 [SRV-18](../ROADMAP.md)
 
 Attachments are the last large piece of groups. The receive half already
@@ -258,12 +258,30 @@ grew a repeatable `-to` and a `-to-server` for the federated route):
 
 ## Client side (freizone-app, APP-16)
 
-Two halves, both under APP-16's "attachments in a group":
+Both halves shipped 2026-08-04 — rendering through the same `ImageAttachment`
+the one-to-one bubble uses, and a fan-out that resolves its recipients before
+encrypting so it can upload once per distinct recipient server. Full reasoning
+in that repo's `docs/design/16-groups.md`; two points belong here, because they
+are about this document's decisions rather than the app's structure.
 
-- **Rendering** — `_GroupBubble` draws `message.text` only, so a picture that
-  has already arrived and downloaded is invisible. The one-to-one bubble's
-  attachment rendering is what it needs.
-- **Send** — group the joined members by their server, read each server's
-  `blobs_enabled` / `max_blob_bytes` / `max_blob_recipients`, upload once per
-  server (falling back to per member where `max_blob_recipients` is 1), and
-  build each member's attachment reference from that server's `blob_id`.
+**The reference is keyed per member, not per server.** Sharing one blob id
+across a server's members is the point of this document, and it is what happens
+whenever `max_blob_recipients` is above 1 — but a server that states **1**,
+which is also what silence means, stores a blob per device, so its members need
+an upload and an id each. Keying the fan-out's result by member account id
+covers both without a special case. Worth noting here because this document's
+own summary above ("the reference is built per recipient") is the shape that
+turned out to matter, not the per-server shortcut it might suggest.
+
+**The re-encode rule was not built.** "Encode once at the normal target size,
+re-encode only for a server with a smaller `max_blob_bytes`" needs a JPEG
+encoder at send time: `dart:ui` can only encode PNG, which is *larger* for a
+photo, and `image_picker` does its downscale natively at pick time, before the
+group's servers are known. That means a new Dart dependency the app
+deliberately avoids. Members on such a server are therefore treated exactly
+like members whose server has blobs switched off — caption plus the stated note.
+What was **not** done is shrink the picture for everybody, which is the one
+option this document ruled out, so the decision stands even though half its
+implementation does not exist yet. It needs an operator running
+`FREIZONE_MAX_BLOB_BYTES` below roughly a megabyte (default 8 MiB) to be
+reachable at all.
