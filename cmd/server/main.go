@@ -276,9 +276,11 @@ func runNonceCleanup(ctx context.Context, authMW *auth.Middleware, logger *slog.
 // stored blobs, until ctx is cancelled. The returned channel is closed once
 // the goroutine has exited.
 //
-// Three jobs, all bounded per tick so a large backlog is worked off across
+// Four jobs, all bounded per tick so a large backlog is worked off across
 // several rounds rather than in one long stall:
 //   - expired blobs: file unlinked, then the row dropped.
+//   - unreferenced blobs: the last recipient's claim went with a removed
+//     device, so nothing can fetch them any more (SRV-18).
 //   - leftover temp files from uploads that died mid-write.
 //   - orphan files whose row is gone (the crash window between writing the
 //     file and inserting the row, or a delete that failed after the row).
@@ -317,6 +319,31 @@ func runBlobCleanup(ctx context.Context, db *sql.DB, blobs *blobstore.Store, log
 					}
 					if removed > 0 {
 						logger.Info("purged expired blobs", "count", removed)
+					}
+				}
+
+				// Blobs nobody claims any more. The ordinary DELETE path
+				// retires those immediately; this catches the ones a device
+				// removal orphaned, where the cascade drops the last
+				// recipient row without noticing what it left behind.
+				unreferenced, err := store.ListUnreferencedBlobs(db, blobCleanupBatchSize)
+				if err != nil {
+					logger.Warn("listing unreferenced blobs failed", "error", err)
+				} else {
+					removed := 0
+					for _, b := range unreferenced {
+						if err := blobs.Remove(b.BlobID); err != nil {
+							logger.Warn("removing unreferenced blob file failed", "error", err, "blob_id", b.BlobID)
+							continue
+						}
+						if err := store.DeleteBlobByID(db, b.BlobID); err != nil {
+							logger.Warn("removing unreferenced blob row failed", "error", err, "blob_id", b.BlobID)
+							continue
+						}
+						removed++
+					}
+					if removed > 0 {
+						logger.Info("purged unreferenced blobs", "count", removed)
 					}
 				}
 

@@ -14,6 +14,24 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+### Added
+
+* An attachment upload may name several recipient devices at once, so a picture
+  sent into a group costs one upload per recipient *server* instead of one per
+  member — on a ten-member server, one copy of the bytes rather than ten
+  (`SRV-18`). Advertised as `max_blob_recipients` on `GET /v1/server-status`,
+  whose absence means one, so a sender talking to an older server falls back to
+  uploading per member instead of silently delivering to one of them
+* Per-recipient outcomes on the upload response, matching batch message
+  delivery: one member at their storage quota no longer costs the other members
+  their copy (`SRV-18`)
+
+### Changed
+
+* Deleting an attachment now drops only the calling device's own claim on it.
+  The stored bytes go when the last recipient deletes them, so one group member
+  clearing their copy cannot take the picture away from the rest (`SRV-18`)
+
 ## [0.12.0] — 2026-08-03
 
 ### Added

@@ -39,6 +39,11 @@ func (a *API) handleGetServerStatus(w http.ResponseWriter, r *http.Request) {
 		FederationEnabled:  federationEnabled,
 		BlobsEnabled:       a.Config.BlobsEnabled,
 		MaxBlobBytes:       a.Config.MaxBlobBytes,
+		// How many recipients one upload may name -- what lets a group
+		// picture cost one upload per recipient server instead of one per
+		// member. Stated even when blobs are off, so the two capabilities
+		// stay independent facts rather than one implying the other.
+		MaxBlobRecipients: a.Config.MaxBlobRecipients,
 		// Always true where the field exists at all -- batch delivery is not
 		// an operator switch, it is a version fact, and its absence is what
 		// tells an older-server's peer to fall back to one post per message.

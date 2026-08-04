@@ -125,6 +125,13 @@ type Config struct {
 	MaxBlobBytesPerDevice int64
 	MaxBlobsPerDevice     int
 
+	// MaxBlobRecipients caps how many recipient devices one upload may name
+	// (SRV-18), so a group picture costs one upload per recipient *server*
+	// rather than one per member. A bound on the work a single request can
+	// ask for, like MaxBatchMessages -- not a limit on group size, since a
+	// sender may always split the recipients across several uploads.
+	MaxBlobRecipients int
+
 	// BlobRetentionDays is how long an unclaimed blob is kept. Defaults to
 	// MessageRetentionDays and is validated not to be shorter, since a
 	// blob must outlive the queued message that references it -- otherwise
@@ -156,6 +163,7 @@ const (
 	envMaxBlobBytes          = "FREIZONE_MAX_BLOB_BYTES"
 	envMaxBlobBytesPerDevice = "FREIZONE_MAX_BLOB_BYTES_PER_DEVICE"
 	envMaxBlobsPerDevice     = "FREIZONE_MAX_BLOBS_PER_DEVICE"
+	envMaxBlobRecipients     = "FREIZONE_MAX_BLOB_RECIPIENTS"
 	envBlobRetentionDays     = "FREIZONE_BLOB_RETENTION_DAYS"
 )
 
@@ -199,6 +207,12 @@ const (
 	defaultMaxBlobBytesPerDevice int64 = 128 * 1024 * 1024
 	defaultMaxBlobsPerDevice           = 200
 )
+
+// defaultMaxBlobRecipients matches defaultMaxBatchMessages deliberately: the
+// recipients of one upload are the members whose message copies that same
+// fan-out then batches to that same server, so two different bounds would
+// only ever be confusing.
+const defaultMaxBlobRecipients = defaultMaxBatchMessages
 
 // Load reads configuration from the process environment.
 func Load(getenv func(string) string) (*Config, error) {
@@ -332,6 +346,16 @@ func Load(getenv func(string) string) (*Config, error) {
 	}
 	cfg.MaxBlobsPerDevice = maxBlobsPerDevice
 
+	maxBlobRecipients := defaultMaxBlobRecipients
+	if v := getenv(envMaxBlobRecipients); v != "" {
+		parsed, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: invalid value %q (must be a whole number): %w", envMaxBlobRecipients, v, err)
+		}
+		maxBlobRecipients = parsed
+	}
+	cfg.MaxBlobRecipients = maxBlobRecipients
+
 	// Defaults to the message retention window: a blob exists to be fetched
 	// by the message that references it, so the two lifetimes belong together.
 	blobRetentionDays := cfg.MessageRetentionDays
@@ -406,6 +430,10 @@ func (c *Config) validate() error {
 	if c.MaxBlobBytesPerDevice < c.MaxBlobBytes {
 		return fmt.Errorf("%s (%d) must be at least %s (%d), otherwise no blob of the maximum size could ever be stored",
 			envMaxBlobBytesPerDevice, c.MaxBlobBytesPerDevice, envMaxBlobBytes, c.MaxBlobBytes)
+	}
+
+	if c.MaxBlobRecipients <= 0 {
+		return fmt.Errorf("%s must be a positive number, got %d", envMaxBlobRecipients, c.MaxBlobRecipients)
 	}
 
 	if c.MaxBlobsPerDevice <= 0 {

@@ -53,6 +53,7 @@ func newTestAPI(t *testing.T, policy config.RegistrationPolicy) (*API, *sql.DB) 
 		MaxBlobBytes:               8 * 1024 * 1024,
 		MaxBlobBytesPerDevice:      128 * 1024 * 1024,
 		MaxBlobsPerDevice:          200,
+		MaxBlobRecipients:          100,
 		BlobRetentionDays:          14,
 	}
 	authMW := auth.NewMiddleware(db, nil)

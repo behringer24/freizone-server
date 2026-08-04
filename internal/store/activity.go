@@ -89,9 +89,15 @@ func AccountActivityByAccount(db DBTX) (map[string]AccountActivity, error) {
 	// dropping it would leave the usage figure without a denominator. The
 	// join multiplies device rows by their blobs, hence COUNT(DISTINCT) for
 	// devices and COUNT over the blob id (which skips the NULLs) for blobs.
+	//
+	// Reached through blob_recipients since SRV-18, so a blob shared with
+	// several members counts once per recipient device -- the same figure the
+	// quota is enforced on, which is the point of showing it.
 	blobRows, err := db.Query(
 		`SELECT d.account_id, COUNT(DISTINCT d.device_id), COUNT(b.blob_id), COALESCE(SUM(b.size_bytes), 0)
-		   FROM devices d LEFT JOIN blobs b ON b.recipient_device_id = d.device_id
+		   FROM devices d
+		   LEFT JOIN blob_recipients r ON r.recipient_device_id = d.device_id
+		   LEFT JOIN blobs b ON b.blob_id = r.blob_id
 		  GROUP BY d.account_id`,
 	)
 	if err != nil {

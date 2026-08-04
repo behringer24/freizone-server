@@ -58,7 +58,7 @@ Usage:
   devclient upload-prekeys -datadir DIR [-count N]
   devclient chat -datadir DIR -to ACCOUNT_ID [-auto-reply] [-receipts both|delivered|off] [-verbose]
   devclient loadtest -datadir DIR -to ACCOUNT_ID [-count N] [-concurrency N] [-drain-datadir DIR]
-  devclient blob -datadir DIR (-upload FILE [-to DEVICE_ID] | -download BLOB_ID [-out FILE] | -delete BLOB_ID)
+  devclient blob -datadir DIR (-upload FILE [-to DEVICE_ID]... [-to-server URL] | -download BLOB_ID [-out FILE] | -delete BLOB_ID)
   devclient group ACTION -datadir DIR [flags]   (run "devclient group" for the actions)
 
 Every subcommand accepts -verbose to log all server requests.
