@@ -113,7 +113,10 @@ requests. Fine for a self-hosted community, wrong for 500 members.
 - **Attachments**: one blob key per attachment (§10 already keeps it
   non-ratchet-derived), uploaded **once per distinct recipient server**, not per
   recipient. The `blob_id` differs per server, so the reference is built per
-  recipient — which the sender does anyway.
+  recipient — which the sender does anyway. *Correction, 2026-08-03:* SRV-07 as
+  shipped binds a blob to one *device*, so "once per server" was not
+  implementable when this was written. It is what
+  [SRV-18](18-multi-recipient-blobs.md) builds.
 - **Message ordering** is not globally defined. A client orders a group
   transcript the same way it orders any other: by local receive order, using the
   sender's timestamp for display. Causal ordering across senders is not

@@ -326,6 +326,7 @@ never reached while the policy is `closed`).
   "federation_enabled": true,
   "blobs_enabled": true,
   "max_blob_bytes": 8388608,
+  "max_blob_recipients": 100,
   "batch_messages": true,
   "max_batch_messages": 100
 }
@@ -348,6 +349,14 @@ a server that omits `blobs_enabled` predates §10 and has no blob endpoints at
 all, so clients must treat its absence as **off**, not on. `max_blob_bytes`
 absent or `0` means "no limit stated" — an oversized upload then still fails
 server-side, as it would have anyway.
+
+`max_blob_recipients` is how many recipients one upload may name (§10), and
+its absence means **1**, not "unlimited": an older server reads only the first
+`recipient_device_id`, stores the blob for that one device and still answers
+`201`, so a sender that assumed otherwise would silently deliver a group
+picture to a single member. A sender reading `1` — stated or absent — falls
+back to one upload per recipient on that server. Discovered per server, for
+the same reason `batch_messages` is.
 
 `batch_messages` and `max_batch_messages` describe batch delivery (§7), used
 by group fan-out. The absence rule matches `blobs_enabled`'s: a server that
@@ -1444,8 +1453,8 @@ deserves to arrive.
 |---|---|---|
 | `POST` | `/v1/blobs?recipient_device_id=…` | device signature (§3) + `Blob-Digest` |
 | `POST` | `/v1/federation/blobs?recipient_device_id=…` | self-describing key (§3) + `Blob-Digest` |
-| `GET` | `/v1/blobs/{blob_id}` | device signature (§3), recipient only |
-| `DELETE` | `/v1/blobs/{blob_id}` | device signature (§3), recipient only |
+| `GET` | `/v1/blobs/{blob_id}` | device signature (§3), recipients only |
+| `DELETE` | `/v1/blobs/{blob_id}` | device signature (§3), recipients only |
 
 Upload bodies are `application/octet-stream` — raw ciphertext, not base64
 (the server never parses it, and base64 would add a third). They are
@@ -1459,11 +1468,56 @@ headers, since the body is raw bytes: `Freizone-Sender-Account-Id`,
 `-Cert-Signature`. They are verified exactly as §9 verifies a federated
 message sender.
 
-Success returns `201` with `{"blob_id", "size", "expires_at"}`.
+Success returns `201` with `{"blob_id", "size", "expires_at", "recipients"}`.
 
 `blob_id` is 32 random bytes, hex-encoded — deliberately **not** a content
 hash, which would let anyone holding a file test whether someone else
 uploaded the same one, and would turn the id into an existence probe.
+
+### Several recipients per upload
+
+`recipient_device_id` may be **repeated**, up to `max_blob_recipients` (§4)
+distinct devices. The server then stores the ciphertext once and every named
+device may fetch it — which is what lets a group attachment cost one upload
+per recipient *server* rather than one per member. Duplicates in the list are
+collapsed, so naming a device twice charges its quota once.
+
+Deliberately the same parameter repeated rather than a new list parameter: a
+one-recipient upload is then byte-identical to what a pre-SRV-18 client sends,
+and §3's signature already covers the raw query string, so the recipient set
+is signed without any change to the signature scheme.
+
+`recipients` reports one outcome per named device, in the order they were
+named — `stored`, `unknown_recipient` (unknown or inactive, indistinguishable
+on purpose) or `quota_exceeded`. Failures are **per recipient and never fail
+the upload**: one member at their quota must not cost the others their copy,
+the same rule `POST /v1/messages/batch` follows.
+
+The status code splits by form, so the pre-SRV-18 contract is untouched:
+
+| Form | Success | Nothing stored |
+|---|---|---|
+| one recipient | `201` | `404` / `429`, exactly as before |
+| several recipients | `200` | `200`, with `blob_id` and `expires_at` **omitted** |
+
+`200` rather than `201` for several, because nothing was created at a single
+location and the outcomes differ per recipient. An older client is unaffected:
+it never sends more than one.
+
+Size is bounded by the **largest** remaining quota among the named recipients,
+not the smallest — otherwise one nearly-full member would shrink the upload
+out from under everyone else and they would all get a `413`. Whoever the
+stored size then does not fit is reported `quota_exceeded` individually. A
+size that fits *nobody* is still refused as a `413` mid-stream, before the
+body is written.
+
+Each recipient is charged the full size, not a share of it: the quota measures
+what that device may still fetch, and charging a fraction would let a sender
+multiply one device's allowance by naming co-recipients.
+
+A `DELETE` removes only the calling device's own claim. The ciphertext is
+removed when the **last** claim goes, so one group member deleting their copy
+cannot take the attachment away from the rest.
 
 ### Retrieval and errors
 
@@ -1474,17 +1528,24 @@ device both answer `404`, so the endpoint cannot be used to discover blob ids.
 | Status | Meaning |
 |---|---|
 | `400 digest_mismatch` | body did not match the signed `Blob-Digest` |
+| `400 too_many_recipients` | more than `max_blob_recipients` distinct recipients named |
 | `401` | signature/auth failure (generic, as everywhere) |
 | `403` | federated sender is blocked |
 | `404` | blobs disabled, unknown/inactive recipient device, or unknown/not-yours blob |
-| `413 payload_too_large` | over `FREIZONE_MAX_BLOB_BYTES` |
+| `413 payload_too_large` | over `FREIZONE_MAX_BLOB_BYTES`, or over every named recipient's remaining quota |
 | `429 blob_quota_exceeded` | recipient device is at its blob count or byte quota |
+
+The `404` and `429` rows are the **single-recipient** answers. With several,
+the same two conditions are reported per recipient inside a `200` instead.
 
 ### Limits and lifetime
 
 Operator-configurable: `FREIZONE_MAX_BLOB_BYTES` (default 8 MiB),
 `FREIZONE_MAX_BLOB_BYTES_PER_DEVICE` (128 MiB), `FREIZONE_MAX_BLOBS_PER_DEVICE`
-(200), `FREIZONE_BLOB_RETENTION_DAYS` (defaults to the message retention
+(200), `FREIZONE_MAX_BLOB_RECIPIENTS` (100, matching
+`FREIZONE_MAX_BATCH_MESSAGES` — the recipients of one upload are the members
+whose message copies the same fan-out then batches to the same server),
+`FREIZONE_BLOB_RETENTION_DAYS` (defaults to the message retention
 window and may not be shorter, so a blob outlives the message referencing
 it), `FREIZONE_BLOBS_ENABLED`, `FREIZONE_BLOB_DIR`.
 
@@ -1494,8 +1555,10 @@ cannot know them in advance, `GET /v1/server-status` (§4) advertises
 attachment against those rather than discovering them via a `413` after
 uploading.
 
-Blobs are deleted when the recipient `DELETE`s them, when the retention
-window expires, or when their recipient device is removed (cascade).
+Blobs are deleted when their **last** recipient `DELETE`s them, when the
+retention window expires, or once no recipient is left at all — a removed
+device drops its claim by cascade, and a blob nobody claims any more is
+collected by the same cleanup ticker that expires them.
 
 The server does **not** delete on `GET`: a read proves nothing about whether
 the client decrypted and stored the bytes, and range requests make "finished
@@ -1504,8 +1567,8 @@ the blob once it has the plaintext safely on disk — the same
 process-then-remove contract as the message queue (§5). Retention is the
 backstop for blobs whose recipient never comes back.
 
-Only the recipient can retrieve a blob, so a sender cannot re-fetch what it
-uploaded; its own copy is whatever it kept locally at send time.
+Only a named recipient can retrieve a blob, so a sender cannot re-fetch what
+it uploaded; its own copy is whatever it kept locally at send time.
 
 ## 11. Chat invite QR codes (`freizone://chat`)
 

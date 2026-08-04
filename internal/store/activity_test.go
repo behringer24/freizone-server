@@ -49,10 +49,10 @@ func TestAccountActivitySumsAcrossAnAccountsDevices(t *testing.T) {
 	mustCreateMessageAt(t, db, "m2", "acct1", "device2", oldest)
 	mustCreateMessageAt(t, db, "m3", "acct2", "device3", newer)
 
-	if err := CreateBlob(db, testBlob("blob1", "device1", 100)); err != nil {
+	if err := CreateBlob(db, testBlob("blob1", 100), []string{"device1"}); err != nil {
 		t.Fatalf("CreateBlob() error = %v", err)
 	}
-	if err := CreateBlob(db, testBlob("blob2", "device2", 250)); err != nil {
+	if err := CreateBlob(db, testBlob("blob2", 250), []string{"device2"}); err != nil {
 		t.Fatalf("CreateBlob() error = %v", err)
 	}
 
@@ -106,7 +106,7 @@ func TestAccountActivityReportsDevicesWithoutBlobs(t *testing.T) {
 func TestAccountActivityDeviceCountSurvivesTheBlobJoin(t *testing.T) {
 	db := activityTestDB(t)
 	for _, id := range []string{"blob1", "blob2", "blob3"} {
-		if err := CreateBlob(db, testBlob(id, "device1", 10)); err != nil {
+		if err := CreateBlob(db, testBlob(id, 10), []string{"device1"}); err != nil {
 			t.Fatalf("CreateBlob(%s) error = %v", id, err)
 		}
 	}
@@ -127,7 +127,7 @@ func TestAccountActivityDeviceCountSurvivesTheBlobJoin(t *testing.T) {
 // have a client render an age of two thousand years.
 func TestAccountActivityLeavesOldestPendingZeroWhenTheQueueIsEmpty(t *testing.T) {
 	db := activityTestDB(t)
-	if err := CreateBlob(db, testBlob("blob1", "device1", 10)); err != nil {
+	if err := CreateBlob(db, testBlob("blob1", 10), []string{"device1"}); err != nil {
 		t.Fatalf("CreateBlob() error = %v", err)
 	}
 

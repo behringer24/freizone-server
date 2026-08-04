@@ -86,7 +86,9 @@ message. Broadcast, previously part of this item, split out as SRV-16.
   signed over the canonical id. Admission stays tolerant, and the undoing side
   (`member_remove`/`leave`/`role_revoke`) stays signable with whatever spelling
   is in the fold, so a phantom can still be cleaned up
-- **Open** — the app (APP-16). One loose end in this repo: `cmd/devclient`'s
+- **Open** — the app (APP-16), and attachments in a group, which needed a core
+  change of their own and are tracked as SRV-18. One loose end in this repo:
+  `cmd/devclient`'s
   *one-to-one* path (`chat.go`) still establishes a session only when it has
   none, so it does not handle the simultaneous X3DH establishment that
   `group_watch.go` and PROTOCOL §5 now describe. Rare between two people
@@ -296,3 +298,41 @@ has to be inferred.
   older receiver reads. Measured beforehand (see SRV-01's log) that the
   inference already works between our own clients — this closes the case it
   cannot cover, rather than a bug in the field
+
+### SRV-18 — Multi-recipient blobs (attachments in a group)
+Status: `in progress` · Also affects: freizone-app (APP-16) · Part of: SRV-01
+Design: [design/18-multi-recipient-blobs.md](design/18-multi-recipient-blobs.md)
+
+Attachments are the last large piece of groups, and the send side is blocked
+in this repo: SRV-07 binds a blob to exactly one device, so a group picture
+costs one upload per *member* rather than the one per recipient *server*
+SRV-01's design assumed. One blob, several recipients — `blob_recipients` as
+its own table, a repeated `recipient_device_id` on the upload, per-recipient
+outcomes, and the file dropped when the last recipient row goes.
+
+- 2026-08-03 — designed. Option chosen over two alternatives: leaving it at N
+  uploads (rejected on a 20-member group's 30 MB of uplink for one 3 MB photo)
+  and dropping the recipient binding in favour of the random blob id alone
+  (rejected because quota, expiry and deletion would lose their owner, which is
+  what lets SRV-07 accept uploads from strangers at all). Two follow-ups
+  settled with it: a sender encodes once at its normal target and re-encodes
+  **only** for a server with a smaller `max_blob_bytes`, rather than letting one
+  frugal server set the quality for the whole group; and members whose server
+  has blobs off get the text plus a stated "cannot receive pictures", never a
+  silent failure or a blocked send. New capability `max_blob_recipients`, whose
+  absence means **1** — an older server would otherwise store the blob for the
+  first recipient only and still answer `201`
+- 2026-08-03 — core shipped: migration `0013` (recipients into their own
+  table), the upload handler with per-recipient outcomes, `DELETE` dropping
+  only the caller's claim, an unreferenced-blob pass in the cleanup ticker,
+  `max_blob_recipients` on `GET /v1/server-status`, and PROTOCOL §4/§10.
+  Verified against both local Docker instances, **federated**: three members
+  on one server share one 300 KB file, each fetches it, an unnamed device gets
+  `404`, and the same works from a sender on the other server over
+  `POST /v1/federation/blobs`. Three corrections in the design document — the
+  significant one being that the stream must be bounded by the *largest*
+  recipient's remaining quota, not the smallest: the plan had it backwards, and
+  as written one member with a full quota would have cost every other member
+  the picture with a shared `413`
+- **Open** — the app (APP-16): rendering an attachment in a group bubble, and
+  the send fan-out grouping members by server. Nothing further is needed here

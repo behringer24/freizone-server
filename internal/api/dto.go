@@ -188,6 +188,12 @@ type serverStatusResponse struct {
 	// attachment to the *recipient* server's limit before uploading.
 	BlobsEnabled bool  `json:"blobs_enabled"`
 	MaxBlobBytes int64 `json:"max_blob_bytes"`
+	// Multi-recipient upload capability (SRV-18). Its absence means **1**,
+	// not "unlimited": an older server ignores the extra recipients, stores
+	// the blob for the first one and still answers 201, so a sender that
+	// assumed otherwise would silently deliver a picture to one member of a
+	// group. Discovered per server, like the batch fields below.
+	MaxBlobRecipients int `json:"max_blob_recipients"`
 	// Batch delivery capability (SRV-01). Absent means an older server, and
 	// the documented fallback is to post each message on its own -- which is
 	// why groups work against every server already in the field. Discovered
@@ -420,8 +426,19 @@ func accountResponseFrom(acc *store.Account, devices []store.Device) accountResp
 // encrypted message so the recipient can fetch it; ExpiresAt lets a client
 // warn about (or re-upload) an attachment whose retention window is nearly
 // up.
+//
+// Recipients reports one outcome per named device (SRV-18), the same shape
+// batchResponse uses and for the same reason: one member at their quota must
+// not cost the other group members their copy. BlobID and ExpiresAt are
+// omitted when no recipient could be served, because then nothing was stored.
 type blobUploadResponse struct {
-	BlobID    string `json:"blob_id"`
-	Size      int64  `json:"size"`
-	ExpiresAt string `json:"expires_at"`
+	BlobID     string                `json:"blob_id,omitempty"`
+	Size       int64                 `json:"size"`
+	ExpiresAt  string                `json:"expires_at,omitempty"`
+	Recipients []blobRecipientResult `json:"recipients"`
+}
+
+type blobRecipientResult struct {
+	RecipientDeviceID string `json:"recipient_device_id"`
+	Status            string `json:"status"`
 }
