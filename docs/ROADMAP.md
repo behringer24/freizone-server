@@ -368,7 +368,7 @@ outcomes, and the file dropped when the last recipient row goes.
   ruled out. Reasoning in freizone-app's `docs/design/16-groups.md`
 
 ### SRV-19 — Attested servers
-Status: `planned` · Also affects: freizone-app (APP-22)
+Status: `in progress` · Also affects: freizone-app (APP-22)
 Design: [design/19-attested-servers.md](design/19-attested-servers.md)
 
 A server may carry a signed attestation issued by the project — domain, tier,
@@ -384,3 +384,33 @@ landing-page badge.
   mechanism beyond expiry, several trust anchors shipped from the start, `tier`
   open-ended per SRV-10, and `pkg/attest` permissively licensed so third-party
   clients can verify without taking on copyleft
+- 2026-08-05 — `pkg/attest` shipped: the wire form, canonical signing bytes,
+  `Sign`/`Verify`/`Valid` split (genuineness vs. domain-and-expiry, mirroring
+  `pkg/devicecert`'s own separation), `Encode`/`Decode` for the opaque token,
+  and `TrustedIssuers` as an empty, populate-later set — no genesis key exists
+  yet, and an empty set is treated as "no attestation support in this build",
+  never an error. `FREIZONE_ATTESTATION` carries the token unvalidated at
+  config-load time; a startup check decodes, verifies and checks validity, and
+  only ever warns. Served on `GET /v1/server-status` as `attestation`
+  (`omitempty`), documented in PROTOCOL.md §4
+- 2026-08-05 — landing-page badge shipped: `internal/api/web/index.html`
+  decodes the token client-side purely for display (tier label, subject,
+  domain match against `location.hostname`, expiry) and never verifies the
+  signature there — the page is served by the very server it describes, so
+  signature-checking it would be theater. Live-tested against a real running
+  instance in a real browser: valid token showed the badge; wrong domain,
+  expired, and unset all correctly showed nothing
+- 2026-08-05 — fixed a self-check false positive found while verifying the
+  first two real attestations issued against genesis keys (`chat.behringer24.de`,
+  `chatcentral.de`): both run behind an external reverse proxy that terminates
+  TLS itself, so neither container sets `FREIZONE_DOMAIN` at all -- correct
+  per that field's own doc comment, and this repo's own production compose
+  does exactly the same. `checkAttestation` was comparing the attestation's
+  domain against an *empty* `cfg.Domain` and warning on every single startup
+  despite nothing being wrong. Now: an empty `FREIZONE_DOMAIN` short-circuits
+  straight after the signature check, at `Info`, not `Warn` -- this server
+  genuinely cannot confirm which domain it's reached at in that deployment
+  shape, and a real client checks that for itself against the domain it
+  actually connected to regardless. Covered by `cmd/server/attestation_test.go`
+  (new -- this package had no tests before). Not yet done: issuance and the
+  app-side badge (APP-22), both outside this repo

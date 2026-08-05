@@ -102,6 +102,15 @@
     font-weight: 600;
     overflow-wrap: anywhere;
   }
+  /* Verified-operator checkmark (SRV-19 attestation). Sized off the
+     surrounding text so it stays proportionate wherever it is dropped —
+     inline at the end of this line, or as icon decoration in the app. */
+  .verified-badge {
+    width: 1em;
+    height: 1em;
+    margin-left: .3em;
+    vertical-align: -0.15em;
+  }
   .hint {
     margin: 24px 0 0;
     color: var(--muted);
@@ -140,6 +149,12 @@
       <dt>Address</dt><dd id="host">&hellip;</dd>
       <dt>Registration</dt><dd id="registration">&hellip;</dd>
       <dt>Federation</dt><dd id="federation">&hellip;</dd>
+      <!-- Hidden unless a currently-valid attestation is configured (SRV-19)
+           -- most servers will never have one, and that is the ordinary
+           case, not a deficiency, so absence must never render as a
+           row saying "no" or "unverified". See
+           docs/design/19-attested-servers.md. -->
+      <dt id="attestation-label" hidden>Attested</dt><dd id="attestation-value" hidden>&hellip;</dd>
     </dl>
   </div>
 
@@ -166,6 +181,75 @@
     closed: 'Closed'
   };
 
+  // Tier labels shown when an attestation is present (SRV-19). A tier this
+  // page does not recognise still shows the neutral fallback rather than
+  // nothing -- an older page must not contradict a newer server about the
+  // same attestation, which is what silently showing nothing would do.
+  var tierLabels = {
+    community: 'Verified community server',
+    commercial: 'Licensed operator'
+  };
+
+  // Verified-operator checkmark, inlined as base64 so this page stays a
+  // single file with no second asset to fetch. An 8-lobe seal in the
+  // page's own accent colour around a plain checkmark -- the same shape
+  // families used, kept simple enough to still read at ~14px. Carries its
+  // own dark-mode media query, since it renders inside an <img>, outside
+  // this document's stylesheet. The app will reuse the same design later.
+  var VERIFIED_BADGE_SVG_B64 = 'PHN2ZyB2aWV3Qm94PSIwIDAgNDAgNDAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHN0eWxlPi5mei1iYWRnZS1maWxse2ZpbGw6IzBjODU3N30uZnotYmFkZ2UtY2hlY2t7c3Ryb2tlOiNmZmZ9QG1lZGlhIChwcmVmZXJzLWNvbG9yLXNjaGVtZTogZGFyayl7LmZ6LWJhZGdlLWZpbGx7ZmlsbDojM2ZiZmFkfS5mei1iYWRnZS1jaGVja3tzdHJva2U6IzA2MjAxY319PC9zdHlsZT48ZyBjbGFzcz0iZnotYmFkZ2UtZmlsbCI+PGNpcmNsZSBjeD0iMzIiIGN5PSIyMCIgcj0iNy41Ii8+PGNpcmNsZSBjeD0iMjguNDg1IiBjeT0iMjguNDg1IiByPSI3LjUiLz48Y2lyY2xlIGN4PSIyMCIgY3k9IjMyIiByPSI3LjUiLz48Y2lyY2xlIGN4PSIxMS41MTUiIGN5PSIyOC40ODUiIHI9IjcuNSIvPjxjaXJjbGUgY3g9IjgiIGN5PSIyMCIgcj0iNy41Ii8+PGNpcmNsZSBjeD0iMTEuNTE1IiBjeT0iMTEuNTE1IiByPSI3LjUiLz48Y2lyY2xlIGN4PSIyMCIgY3k9IjgiIHI9IjcuNSIvPjxjaXJjbGUgY3g9IjI4LjQ4NSIgY3k9IjExLjUxNSIgcj0iNy41Ii8+PGNpcmNsZSBjeD0iMjAiIGN5PSIyMCIgcj0iMTMiLz48L2c+PHBhdGggY2xhc3M9ImZ6LWJhZGdlLWNoZWNrIiBkPSJNMTMgMjEgTDE4IDI2IEwyOCAxMyIgZmlsbD0ibm9uZSIgc3Ryb2tlLXdpZHRoPSI0IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz48L3N2Zz4K';
+
+  // Decodes a pkg/attest token purely for display -- this page never
+  // verifies the signature, and could not usefully do so anyway: it is
+  // served by the very server it describes, so a dishonest operator could
+  // simply fabricate the whole page. Real verification happens in the app,
+  // against issuer keys compiled in at build time, never here. Returns null
+  // on anything malformed, absent, or already expired, so the caller only
+  // ever has to handle "show it" or "don't".
+  function parseAttestation(token) {
+    try {
+      var std = token.replace(/-/g, '+').replace(/_/g, '/');
+      while (std.length % 4) { std += '='; }
+      var binary = atob(std);
+      var bytes = new Uint8Array(binary.length);
+      for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      var view = new DataView(bytes.buffer);
+      var decoder = new TextDecoder('utf-8');
+      var offset = 0;
+
+      var version = view.getUint8(offset); offset += 1;
+      if (version !== 1) return null;
+
+      var domainLen = view.getUint16(offset); offset += 2;
+      var domain = decoder.decode(bytes.subarray(offset, offset + domainLen));
+      offset += domainLen;
+      // Not a security boundary -- a dishonest operator controls this whole
+      // page and could fabricate any of it regardless. This only catches an
+      // honest mistake (e.g. one attestation pasted into the wrong server's
+      // config), turning it into "no badge shown" rather than "the wrong
+      // server's badge shown".
+      if (domain !== location.hostname.toLowerCase()) return null;
+
+      var tierLen = view.getUint8(offset); offset += 1;
+      var tier = decoder.decode(bytes.subarray(offset, offset + tierLen));
+      offset += tierLen;
+
+      var subjectLen = view.getUint16(offset); offset += 2;
+      var subject = decoder.decode(bytes.subarray(offset, offset + subjectLen));
+      offset += subjectLen;
+
+      offset += 8; // issued_at -- not shown
+      var expiresHigh = view.getUint32(offset);
+      var expiresLow = view.getUint32(offset + 4);
+      var expiresAt = (expiresHigh * 4294967296 + expiresLow) * 1000;
+
+      if (expiresAt <= Date.now()) return null; // lapsed: render exactly as if unset
+
+      return { tier: tier, subject: subject };
+    } catch (e) {
+      return null;
+    }
+  }
+
   fetch('/v1/server-status', { headers: { accept: 'application/json' } })
     .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
     .then(function (s) {
@@ -173,9 +257,32 @@
       var el = document.getElementById('registration');
       if (!s.claimed) {
         el.textContent = 'Not set up yet';
-        return;
+      } else {
+        el.textContent = labels[s.registration_policy] || s.registration_policy;
       }
-      el.textContent = labels[s.registration_policy] || s.registration_policy;
+
+      if (s.attestation) {
+        var a = parseAttestation(s.attestation);
+        if (a) {
+          var label = tierLabels[a.tier] || 'Registered operator';
+          var value = document.getElementById('attestation-value');
+          // Cleared, then rebuilt as text + badge nodes -- a checkmark icon
+          // isn't something textContent can carry alongside the label text.
+          value.textContent = '';
+          value.appendChild(document.createTextNode(a.subject ? label + ' — ' + a.subject : label));
+          var badge = document.createElement('img');
+          // Inline data URL by design: the whole page is one file, so the
+          // badge must not pull in a second asset.
+          badge.src = 'data:image/svg+xml;base64,' + VERIFIED_BADGE_SVG_B64;
+          badge.alt = 'Verified';
+          badge.className = 'verified-badge';
+          value.appendChild(badge);
+          value.title = 'Attested by the Freizone project. This says nothing about ' +
+            'message security, which is identical on every Freizone server.';
+          document.getElementById('attestation-label').hidden = false;
+          value.hidden = false;
+        }
+      }
     })
     .catch(function () {
       document.getElementById('registration').textContent = 'unavailable';

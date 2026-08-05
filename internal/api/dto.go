@@ -201,6 +201,14 @@ type serverStatusResponse struct {
 	// several and they will not upgrade together.
 	BatchMessages    bool `json:"batch_messages"`
 	MaxBatchMessages int  `json:"max_batch_messages"`
+	// Attestation (SRV-19) is an opaque pkg/attest token, served exactly as
+	// configured -- this server never decodes or evaluates it, only hands
+	// it back. Omitted (not an empty string) when unset, so a client can
+	// tell "no attestation configured" apart from "configured but empty"
+	// without special-casing the latter. Not sensitive: its safety comes
+	// from the domain binding a client checks after verifying it, not from
+	// being hidden.
+	Attestation string `json:"attestation,omitempty"`
 }
 
 type federationEnabledResponse struct {

@@ -26,6 +26,23 @@ func TestHandleLandingServesHTML(t *testing.T) {
 	}
 }
 
+// The attestation row (SRV-19) must ship hidden: most servers will never
+// carry one, and that is the ordinary case, never a warning state -- so the
+// markup has to start absent from the rendered page, only ever revealed by
+// script once a currently-valid attestation is actually found.
+func TestHandleLandingAttestationRowStartsHidden(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+
+	rec := doRequest(t, a.Router(), http.MethodGet, "/", nil)
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="attestation-label" hidden`) {
+		t.Error("attestation label is not present and hidden by default")
+	}
+	if !strings.Contains(body, `id="attestation-value" hidden`) {
+		t.Error("attestation value is not present and hidden by default")
+	}
+}
+
 // The landing route must match only the exact root path -- an unknown path
 // has to keep falling through to the mux's default 404, never get served
 // the HTML page. That contract is what lets a client treat "the response

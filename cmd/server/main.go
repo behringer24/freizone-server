@@ -21,6 +21,7 @@ import (
 	"github.com/behringer24/freizone-server/internal/logging"
 	"github.com/behringer24/freizone-server/internal/server"
 	"github.com/behringer24/freizone-server/internal/store"
+	"github.com/behringer24/freizone-server/pkg/attest"
 )
 
 const (
@@ -64,6 +65,8 @@ func run() error {
 	}
 
 	logger := logging.New(os.Stdout, logging.FormatJSON, cfg.LogLevel)
+
+	checkAttestation(cfg, logger)
 
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		return fmt.Errorf("creating data directory: %w", err)
@@ -204,6 +207,57 @@ func run() error {
 	<-blobCleanupDone
 	<-inviteCleanupDone
 	return nil
+}
+
+// checkAttestation reports whether this server's configured attestation
+// (SRV-19, FREIZONE_ATTESTATION) is genuine and current -- purely for
+// operator visibility. A missing, malformed, foreign-domain or expired
+// attestation only ever logs a warning here and never stops the server from
+// starting or serving chat: the badge this eventually produces is additive
+// (see docs/design/19-attested-servers.md), and turning a cosmetic
+// credential into an outage would defeat that on the spot.
+func checkAttestation(cfg *config.Config, logger *slog.Logger) {
+	if cfg.Attestation == "" {
+		return
+	}
+
+	a, err := attest.Decode(cfg.Attestation)
+	if err != nil {
+		logger.Warn("configured attestation is malformed", "error", err)
+		return
+	}
+
+	if len(attest.TrustedIssuers) == 0 {
+		logger.Warn("attestation configured, but this build has no trusted issuer keys compiled in -- it will be served on GET /v1/server-status as configured, but this server cannot itself confirm it is genuine")
+		return
+	}
+
+	if err := a.Verify(attest.TrustedIssuers); err != nil {
+		logger.Warn("configured attestation failed verification", "error", err)
+		return
+	}
+
+	if cfg.Domain == "" {
+		// Common and legitimate, not a misconfiguration: FREIZONE_DOMAIN is
+		// only required in autocert mode (see config.go) -- a server behind
+		// an external reverse proxy that terminates TLS itself (nginx-proxy
+		// + acme-companion, Caddy, Traefik, ...) has no reason to be told
+		// its own public domain at all. This server genuinely cannot check
+		// the attestation is for the domain it is reached at in that case
+		// -- a real client does that check itself against the domain it
+		// actually connected to (pkg/attest.Valid) -- so this only confirms
+		// the signature and stops short of a domain/expiry check it cannot
+		// meaningfully perform. Info, not Warn: nothing here is wrong.
+		logger.Info("attestation is genuinely signed, but FREIZONE_DOMAIN is unset so this server cannot itself confirm which domain it is for", "tier", a.Tier, "subject", a.Subject)
+		return
+	}
+
+	if err := a.Valid(cfg.Domain, time.Now()); err != nil {
+		logger.Warn("configured attestation is not currently valid", "error", err)
+		return
+	}
+
+	logger.Info("attestation verified", "tier", a.Tier, "subject", a.Subject, "expires_at", a.ExpiresAt.UTC().Format(time.RFC3339))
 }
 
 // printSetupTokenIfNew generates the one-time bootstrap setup token on the

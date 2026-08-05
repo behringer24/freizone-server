@@ -137,6 +137,15 @@ type Config struct {
 	// blob must outlive the queued message that references it -- otherwise
 	// a recipient who comes back late finds the message but not its image.
 	BlobRetentionDays int
+
+	// Attestation is an opaque, pkg/attest-encoded token an operator was
+	// issued and pastes in here verbatim (see SRV-19). It is not a secret
+	// -- it is served back on GET /v1/server-status exactly as given, and
+	// clients verify it themselves against compiled-in issuer keys. Empty
+	// means this server carries no attestation, which is the ordinary case
+	// for the overwhelming majority of servers and is never treated as an
+	// error.
+	Attestation string
 }
 
 const (
@@ -165,6 +174,8 @@ const (
 	envMaxBlobsPerDevice     = "FREIZONE_MAX_BLOBS_PER_DEVICE"
 	envMaxBlobRecipients     = "FREIZONE_MAX_BLOB_RECIPIENTS"
 	envBlobRetentionDays     = "FREIZONE_BLOB_RETENTION_DAYS"
+
+	envAttestation = "FREIZONE_ATTESTATION"
 )
 
 const defaultMessageRetentionDays = 14
@@ -226,6 +237,10 @@ func Load(getenv func(string) string) (*Config, error) {
 		DataDir:            orDefault(getenv(envDataDir), "./data"),
 		RegistrationPolicy: RegistrationPolicy(orDefault(getenv(envRegistrationPolicy), string(PolicyClosed))),
 		PushGatewayURL:     strings.TrimSuffix(getenv(envPushGatewayURL), "/"),
+		// Not validated here: a malformed or expired token is an operator's
+		// problem to notice and fix, never a reason this server refuses to
+		// start -- see main.go's startup check, which only warns.
+		Attestation: strings.TrimSpace(getenv(envAttestation)),
 	}
 
 	dbPath := getenv(envDBPath)

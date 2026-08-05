@@ -328,7 +328,8 @@ never reached while the policy is `closed`).
   "max_blob_bytes": 8388608,
   "max_blob_recipients": 100,
   "batch_messages": true,
-  "max_batch_messages": 100
+  "max_batch_messages": 100,
+  "attestation": "opaque-token..."
 }
 ```
 `claimed` is whether the one-time setup token has already been used
@@ -366,7 +367,15 @@ federated group's members sit on servers that will not upgrade together, this
 is discovered **per server**, not once — a sender may legitimately batch to one
 member's server and post individually to another's in the same fan-out.
 
-### `GET /v1/accounts/{id}`
+`attestation` (SRV-19), when present, is an opaque token this server was
+configured with and serves back verbatim without interpreting it itself —
+absence means no attestation, which is the ordinary case for the overwhelming
+majority of servers and never implies anything is wrong. A client decodes and
+verifies it against a small set of issuer public keys it was built with; none
+of that verification touches this endpoint or any other network request, so
+an older client that does not recognize the field simply ignores it, and a
+client that does recognize it needs nothing further from this server to
+confirm what the token claims.
 No auth — a public key directory, analogous to a keyserver. `200`:
 ```json
 {
