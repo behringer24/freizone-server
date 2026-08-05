@@ -49,5 +49,6 @@ func (a *API) handleGetServerStatus(w http.ResponseWriter, r *http.Request) {
 		// tells an older-server's peer to fall back to one post per message.
 		BatchMessages:    true,
 		MaxBatchMessages: a.Config.MaxBatchMessages,
+		Attestation:      a.Config.Attestation,
 	})
 }

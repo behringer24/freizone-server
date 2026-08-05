@@ -51,3 +51,26 @@ func TestHandleGetServerStatusClaimed(t *testing.T) {
 		t.Errorf("RegistrationPolicy = %q, want %q", resp.RegistrationPolicy, "open")
 	}
 }
+
+func TestHandleGetServerStatusAttestation(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyInvite)
+
+	// Unset by default: most servers carry no attestation (SRV-19), and the
+	// field is omitted rather than sent as an empty string.
+	rec := doRequest(t, a.Router(), http.MethodGet, "/v1/server-status", nil)
+	var resp serverStatusResponse
+	decodeJSON(t, rec, &resp)
+	if resp.Attestation != "" {
+		t.Errorf("Attestation = %q, want empty when unset", resp.Attestation)
+	}
+
+	// Served back verbatim once configured -- this handler neither decodes
+	// nor evaluates it, only hands it back exactly as given.
+	const token = "opaque-attestation-token"
+	a.Config.Attestation = token
+	rec = doRequest(t, a.Router(), http.MethodGet, "/v1/server-status", nil)
+	decodeJSON(t, rec, &resp)
+	if resp.Attestation != token {
+		t.Errorf("Attestation = %q, want %q", resp.Attestation, token)
+	}
+}
