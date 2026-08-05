@@ -366,3 +366,21 @@ outcomes, and the file dropped when the last recipient row goes.
   treated like a server with blobs off (caption plus a stated note) rather than
   the picture being shrunk for everyone — which is the option that decision
   ruled out. Reasoning in freizone-app's `docs/design/16-groups.md`
+
+### SRV-19 — Attested servers
+Status: `planned` · Also affects: freizone-app (APP-22)
+Design: [design/19-attested-servers.md](design/19-attested-servers.md)
+
+A server may carry a signed attestation issued by the project — domain, tier,
+display subject, expiry — which clients verify themselves against issuer public
+keys compiled into the shared core, with nothing to consult online. Operators
+running a server in agreement with the project can be recognised as such, and
+the signal cannot be forged by whoever operates the server being described.
+Here: `pkg/attest`, `FREIZONE_ATTESTATION`, a start-up check that warns rather
+than refusing to boot, the field on `GET /v1/server-status`, and the
+landing-page badge.
+
+- 2026-08-05 — designed. Domain-bound rather than key-bound, no revocation
+  mechanism beyond expiry, several trust anchors shipped from the start, `tier`
+  open-ended per SRV-10, and `pkg/attest` permissively licensed so third-party
+  clients can verify without taking on copyleft
