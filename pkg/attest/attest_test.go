@@ -20,7 +20,7 @@ func mustIssuerKey(t *testing.T, seed byte) (ed25519.PublicKey, ed25519.PrivateK
 
 func mustSign(t *testing.T, priv ed25519.PrivateKey, domain string, issuedAt, expiresAt time.Time) *Attestation {
 	t.Helper()
-	a, err := Sign(domain, TierCommunity, "Example GmbH", issuedAt, expiresAt, priv)
+	a, err := Sign(domain, TierCommunity, "Example GmbH", 0, issuedAt, expiresAt, priv)
 	if err != nil {
 		t.Fatalf("Sign() error = %v", err)
 	}
@@ -97,6 +97,7 @@ func TestVerifyRejectsTamperedFields(t *testing.T) {
 		{"domain", func(a *Attestation) { a.Domain = "evil.example.org" }},
 		{"tier", func(a *Attestation) { a.Tier = TierCommercial }},
 		{"subject", func(a *Attestation) { a.Subject = "Someone Else GmbH" }},
+		{"seats", func(a *Attestation) { a.Seats = a.Seats + 1 }},
 		{"issued at", func(a *Attestation) { a.IssuedAt = a.IssuedAt.Add(-time.Hour) }},
 		{"expires at", func(a *Attestation) { a.ExpiresAt = a.ExpiresAt.Add(time.Hour) }},
 		{"issuer key", func(a *Attestation) { otherPub, _, _ := ed25519.GenerateKey(nil); a.IssuerKey = otherPub }},
@@ -245,21 +246,101 @@ func TestDecodeRejectsUnsupportedVersion(t *testing.T) {
 }
 
 func TestSignRejectsWrongIssuerKeySize(t *testing.T) {
-	if _, err := Sign("chat.example.org", TierCommunity, "Example", time.Now(), time.Now().Add(time.Hour), ed25519.PrivateKey([]byte{1, 2, 3})); err == nil {
+	if _, err := Sign("chat.example.org", TierCommunity, "Example", 0, time.Now(), time.Now().Add(time.Hour), ed25519.PrivateKey([]byte{1, 2, 3})); err == nil {
 		t.Fatal("expected Sign() to reject an undersized issuer private key")
 	}
 }
 
 func TestSignRejectsEmptyDomain(t *testing.T) {
 	_, priv := mustIssuerKey(t, 1)
-	if _, err := Sign("", TierCommunity, "Example", time.Now(), time.Now().Add(time.Hour), priv); err == nil {
+	if _, err := Sign("", TierCommunity, "Example", 0, time.Now(), time.Now().Add(time.Hour), priv); err == nil {
 		t.Fatal("expected Sign() to reject an empty domain")
 	}
 }
 
 func TestSignRejectsEmptyTier(t *testing.T) {
 	_, priv := mustIssuerKey(t, 1)
-	if _, err := Sign("chat.example.org", "", "Example", time.Now(), time.Now().Add(time.Hour), priv); err == nil {
+	if _, err := Sign("chat.example.org", "", "Example", 0, time.Now(), time.Now().Add(time.Hour), priv); err == nil {
 		t.Fatal("expected Sign() to reject an empty tier")
 	}
 }
+
+func TestSignProducesCurrentVersion(t *testing.T) {
+	_, priv := mustIssuerKey(t, 1)
+	now := time.Now()
+	a := mustSign(t, priv, "chat.example.org", now, now.Add(time.Hour))
+	if a.Version != CurrentVersion {
+		t.Errorf("Version = %d, want CurrentVersion (%d)", a.Version, CurrentVersion)
+	}
+}
+
+func TestEncodeDecodeRoundTripWithSeats(t *testing.T) {
+	pub, priv := mustIssuerKey(t, 1)
+	now := time.Now()
+	a, err := Sign("chat.example.org", TierCommercial, "Example GmbH", 500, now, now.Add(30*24*time.Hour), priv)
+	if err != nil {
+		t.Fatalf("Sign() error = %v", err)
+	}
+
+	token, err := a.Encode()
+	if err != nil {
+		t.Fatalf("Encode() error = %v", err)
+	}
+	decoded, err := Decode(token)
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+
+	if decoded.Seats != 500 {
+		t.Errorf("Seats = %d, want 500", decoded.Seats)
+	}
+	if decoded.Version != Version2 {
+		t.Errorf("Version = %d, want %d", decoded.Version, Version2)
+	}
+	if err := decoded.Verify([]ed25519.PublicKey{pub}); err != nil {
+		t.Errorf("Verify() on the decoded attestation error = %v, want nil", err)
+	}
+}
+
+func TestDecodeVersion1TokenReadsSeatsAsZero(t *testing.T) {
+	// A hand-built Version1 token -- no Seats bytes at all -- must still
+	// decode and verify, with Seats reading back as 0 ("unspecified"), not
+	// as an error. Built directly rather than via Sign, which always
+	// produces CurrentVersion now: this is standing in for a token issued
+	// before Version2 existed.
+	pub, priv := mustIssuerKey(t, 1)
+	now := time.Now().Truncate(time.Second)
+	v1 := &Attestation{
+		Version:   Version1,
+		Domain:    "chat.example.org",
+		Tier:      TierCommunity,
+		Subject:   "Example GmbH",
+		IssuedAt:  now,
+		ExpiresAt: now.Add(time.Hour),
+		IssuerKey: pub,
+	}
+	buf, err := v1.signingBytes()
+	if err != nil {
+		t.Fatalf("signingBytes() error = %v", err)
+	}
+	v1.Signature = ed25519.Sign(priv, buf)
+
+	token, err := v1.Encode()
+	if err != nil {
+		t.Fatalf("Encode() error = %v", err)
+	}
+	decoded, err := Decode(token)
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if decoded.Version != Version1 {
+		t.Errorf("Version = %d, want %d", decoded.Version, Version1)
+	}
+	if decoded.Seats != 0 {
+		t.Errorf("Seats = %d, want 0 for a Version1 token", decoded.Seats)
+	}
+	if err := decoded.Verify([]ed25519.PublicKey{pub}); err != nil {
+		t.Errorf("Verify() on a decoded Version1 token error = %v, want nil", err)
+	}
+}
+

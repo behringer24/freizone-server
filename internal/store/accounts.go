@@ -238,6 +238,24 @@ func CountActiveAdmins(db DBTX) (int, error) {
 	return count, nil
 }
 
+// CountActiveAccounts reports how many accounts currently have
+// AccountStatusActive, regardless of role. Used to compare against an
+// attestation's advisory Seats ceiling (pkg/attest) -- a disabled account
+// (SetAccountStatus) or a deleted one (DeleteAccount) doesn't count, so
+// blocking rather than deleting a departing member's account is what frees
+// its seat immediately without touching the id_prefix uniqueness constraint
+// a hard delete would (see pkg/address.PrefixLength).
+func CountActiveAccounts(db DBTX) (int, error) {
+	var count int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM accounts WHERE status = ?`,
+		AccountStatusActive,
+	).Scan(&count); err != nil {
+		return 0, fmt.Errorf("store: counting active accounts: %w", err)
+	}
+	return count, nil
+}
+
 func formatTime(t time.Time) string {
 	return t.UTC().Format(time.RFC3339)
 }

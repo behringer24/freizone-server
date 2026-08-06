@@ -656,6 +656,33 @@ active admins.
   governs it afterwards, and the change persists across restarts and is
   reflected in `GET /v1/server-status`'s `federation_enabled`.
   `200 {"enabled": ...}`.
+- **`GET /v1/admin/license`** (signed, admin only) — this server's active
+  account count against its own attestation's advisory `seats` ceiling
+  (SRV-19, `pkg/attest`'s `Seats`). Deliberately not on `GET /v1/server-status`
+  or the landing page: how many accounts a server has is exactly the kind of
+  fact that turns "a server exists" into "a server worth attacking", and an
+  admin, not a random visitor, is who needs to know it's time to renew.
+  `200`:
+  ```json
+  {
+    "attested": true,
+    "tier": "commercial",
+    "seats": 500,
+    "expires_at": "2027-08-05T00:00:00Z",
+    "active_accounts": 214,
+    "over_limit": false
+  }
+  ```
+  `attested` is `false` whenever there is nothing usable to report — no
+  attestation configured, or one that fails to decode, verify, or falls
+  outside its validity window — in which case `tier`, `seats`, and
+  `expires_at` are all omitted; `active_accounts` and `over_limit` are still
+  meaningful on their own. `seats` is omitted for `0` ("unspecified or
+  unlimited"), in which case `over_limit` is always `false` — there is no
+  ceiling to compare against. Not a technical limit anywhere in this
+  protocol: nothing rejects a registration or blocks an account because of
+  it, the same way an expired attestation only warns rather than refusing to
+  boot.
 
 ### `POST /v1/devices/{device_id}/prekeys` (signed, caller must be that device)
 Uploads/replaces a device's X3DH key material. `dh_identity_cert` is

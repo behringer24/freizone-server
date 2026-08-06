@@ -441,3 +441,39 @@ working around it.
   interacts with streamed blob I/O (the store package deliberately avoids
   loading whole files into memory today, per the config reference's note on
   why blobs are files rather than DB rows)
+
+### SRV-21 — Landing page opt-out
+Status: `planned`
+
+`handleLanding` (`internal/api/landing.go`) always serves the root-path page
+explaining that the host is a Freizone server. Not every operator wants that:
+a server run privately or internally may prefer the bare domain to give
+whoever hits it net/http's plain 404 rather than confirmation that anything
+is running there at all. Same operator-kill-switch shape as
+`FederationEnabled`/`BlobsEnabled` (`internal/config/config.go`) — an env var,
+default on, that skips registering the route when off rather than changing
+what it returns.
+
+- 2026-08-06 — raised while thinking through a separate, unrelated question
+  about operator publicity preferences: declining to advertise being a
+  Freizone server at all is a real, common case, and this is the lever for
+  it
+
+### SRV-22 — Seat/capacity display for admins
+Status: `done` · Design: [design/19-attested-servers.md](design/19-attested-servers.md)
+
+An attestation (`pkg/attest`) can carry `Seats`, an advisory account-count
+ceiling from freizone-licensing (`LIC-08`), shown only to the operator's own
+admins against the server's real active-account count — never on `GET
+/v1/server-status` or the landing page, both reachable by anyone.
+
+- 2026-08-06 — shipped. `pkg/attest` gained `Version2` (`Seats uint32`, `0` =
+  unspecified/unlimited); `Decode` still reads `Version1` tokens, with `Seats`
+  coming back `0`. `Sign` always produces `Version2` now. New
+  `store.CountActiveAccounts` (status-active, any role) and admin-only `GET
+  /v1/admin/license` (`internal/api/license.go`) compare it against `Seats`
+  and report `over_limit`. The landing page's own token parser
+  (`internal/api/web/index.html`) updated to skip the new field on a
+  `Version2` token without ever reading it — verified against both a real
+  `Version2` token and a hand-built `Version1` one run through the actual
+  parser in Node, not just reasoned about

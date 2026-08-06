@@ -217,7 +217,12 @@
       var offset = 0;
 
       var version = view.getUint8(offset); offset += 1;
-      if (version !== 1) return null;
+      // Version2 (pkg/attest, LIC-08) added a Seats field -- an advisory
+      // account-count ceiling that is deliberately never shown on this
+      // page (see the seats comment below), only in the app's own admin
+      // area. This parser still has to know it is there to skip past it,
+      // or every field after it would misread.
+      if (version !== 1 && version !== 2) return null;
 
       var domainLen = view.getUint16(offset); offset += 2;
       var domain = decoder.decode(bytes.subarray(offset, offset + domainLen));
@@ -236,6 +241,12 @@
       var subjectLen = view.getUint16(offset); offset += 2;
       var subject = decoder.decode(bytes.subarray(offset, offset + subjectLen));
       offset += subjectLen;
+
+      // Seats -- read past, never surfaced here. How many accounts a server
+      // has is exactly the kind of fact that makes it a more attractive
+      // target; it belongs in the operator's own admin area
+      // (GET /v1/admin/license), not on a page anyone can load.
+      if (version >= 2) offset += 4;
 
       offset += 8; // issued_at -- not shown
       var expiresHigh = view.getUint32(offset);
