@@ -14,6 +14,22 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-08-06
+
+### Added
+
+* Server attestations (`SRV-19`): an operator running in agreement with the
+  project can carry a signed, unforgeable statement about their server —
+  domain, tier, display subject, expiry — verified by a client itself against
+  issuer keys compiled in, with nothing ever consulted online. Configured via
+  `FREIZONE_ATTESTATION`, served on `GET /v1/server-status`, and shown as a
+  small checkmark badge on the server's own landing page. The client-side
+  badge (`freizone-app`, `APP-22`) and the issuing tool (`freizone-licensing`)
+  ship alongside this
+* `docs/INSTALL.md`, `docs/HIGH-AVAILABILITY.md`, and `docs/DEVCLIENT.md` —
+  operator-facing documentation for the Docker Compose fast path, warm-standby
+  failover via Litestream, and diagnosing a server with `devclient`
+
 ## [0.13.1] — 2026-08-05
 
 No change to the server itself: the development client and the documentation
