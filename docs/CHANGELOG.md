@@ -14,6 +14,8 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-08-06
+
 ### Added
 
 * Seat/capacity display for admins (`SRV-22`): an attestation (`SRV-19`) can
