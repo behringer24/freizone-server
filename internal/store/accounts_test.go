@@ -114,6 +114,57 @@ func TestCountActiveAdmins(t *testing.T) {
 	}
 }
 
+func TestCountActiveAccounts(t *testing.T) {
+	db := newTestDB(t)
+
+	count, err := CountActiveAccounts(db)
+	if err != nil {
+		t.Fatalf("CountActiveAccounts() error = %v", err)
+	}
+	if count != 0 {
+		t.Errorf("CountActiveAccounts() = %d before any account was created, want 0", count)
+	}
+
+	if err := CreateAccount(db, testAccount("acct1", false)); err != nil {
+		t.Fatalf("CreateAccount() error = %v", err)
+	}
+	if err := CreateAccount(db, testAccount("acct2", true)); err != nil {
+		t.Fatalf("CreateAccount() error = %v", err)
+	}
+
+	count, err = CountActiveAccounts(db)
+	if err != nil {
+		t.Fatalf("CountActiveAccounts() error = %v", err)
+	}
+	if count != 2 {
+		t.Errorf("CountActiveAccounts() = %d after two accounts were created, want 2 (counts every role)", count)
+	}
+
+	// Blocking frees a seat immediately -- no need to delete the account
+	// (and so no need to give up its id_prefix) to stop it counting.
+	if err := SetAccountStatus(db, "acct1", AccountStatusDisabled); err != nil {
+		t.Fatalf("SetAccountStatus() error = %v", err)
+	}
+	count, err = CountActiveAccounts(db)
+	if err != nil {
+		t.Fatalf("CountActiveAccounts() error = %v", err)
+	}
+	if count != 1 {
+		t.Errorf("CountActiveAccounts() = %d after blocking one of two accounts, want 1", count)
+	}
+
+	if err := DeleteAccount(db, "acct2"); err != nil {
+		t.Fatalf("DeleteAccount() error = %v", err)
+	}
+	count, err = CountActiveAccounts(db)
+	if err != nil {
+		t.Fatalf("CountActiveAccounts() error = %v", err)
+	}
+	if count != 0 {
+		t.Errorf("CountActiveAccounts() = %d after deleting the remaining active account, want 0", count)
+	}
+}
+
 func TestSetAccountRole(t *testing.T) {
 	db := newTestDB(t)
 	if err := CreateAccount(db, testAccount("acct1", false)); err != nil {

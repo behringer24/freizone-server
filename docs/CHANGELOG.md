@@ -14,6 +14,15 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+### Added
+
+* Seat/capacity display for admins (`SRV-22`): an attestation (`SRV-19`) can
+  now carry an advisory account-count ceiling (`pkg/attest`'s `Seats`,
+  format bumped to `v2`, `v1` tokens still verify). Shown only to the
+  server's own admins via the new admin-only `GET /v1/admin/license`, never
+  on `GET /v1/server-status` or the landing page — how many accounts a
+  server has is attack-surface information, not something a visitor needs
+
 ## [0.14.0] — 2026-08-06
 
 ### Added

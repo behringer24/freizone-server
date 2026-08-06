@@ -31,9 +31,20 @@ import (
 	"time"
 )
 
-// Version1 is the only attestation format defined so far. Decode rejects
-// anything else outright rather than guessing at an unknown layout.
+// Version1 is the original attestation format: domain, tier, subject,
+// validity window, issuer key. Version2 adds Seats. Decode understands both;
+// anything else it rejects outright rather than guessing at an unknown
+// layout.
 const Version1 = 1
+
+// Version2 adds Seats to Version1's fields. Sign always produces Version2
+// now; Version1 stays decodable so tokens issued before this field existed
+// keep verifying (Seats reads back as 0, the same "unspecified" value a
+// Version2 token would use for the same thing).
+const Version2 = 2
+
+// CurrentVersion is the format Sign produces.
+const CurrentVersion = Version2
 
 const (
 	issuerKeySize = ed25519.PublicKeySize
@@ -67,8 +78,8 @@ const (
 // Attestation is a signed statement about one server. The zero value is not
 // meaningful on its own -- build one with Sign, or parse one with Decode.
 type Attestation struct {
-	// Version is the format this attestation was built with. Always
-	// Version1 today.
+	// Version is the format this attestation was built with -- Version1 or
+	// Version2 today, see the constants above.
 	Version int
 	// Domain is the server this attestation is about, lower-cased. Valid
 	// checks it case-insensitively against the domain a client is actually
@@ -81,6 +92,16 @@ type Attestation struct {
 	// Subject is a display name for the operator, e.g. "Example GmbH". Not
 	// used for anything but presentation.
 	Subject string
+	// Seats is an advisory account-count ceiling shown to the operator's own
+	// admins, not a technical limit -- nothing in this package or the server
+	// enforces it, the same way expiry is warned about rather than enforced
+	// (docs/design/19-attested-servers.md). 0 means "unspecified" -- either
+	// an unlimited seat count, or a Version1 token that predates this field
+	// entirely; the two are indistinguishable on purpose, since neither
+	// implies a ceiling to warn about. Present on every tier, not only
+	// commercial -- a community server can just as well be attested for an
+	// unbounded seat count. Added in Version2.
+	Seats uint32
 	// IssuedAt and ExpiresAt bound the attestation's validity window.
 	// Signing truncates both to whole seconds; sub-second precision is
 	// never carried across Encode/Decode.
@@ -116,8 +137,9 @@ func GenerateIssuerKey() (ed25519.PublicKey, ed25519.PrivateKey, error) {
 // until expiresAt, under issuerPriv. The domain is normalized (trimmed,
 // lower-cased) before it is stored and signed, so Valid's case-insensitive
 // comparison is really comparing two values already in the same form rather
-// than doing the work itself.
-func Sign(domain, tier, subject string, issuedAt, expiresAt time.Time, issuerPriv ed25519.PrivateKey) (*Attestation, error) {
+// than doing the work itself. seats is 0 for "unspecified/unlimited" -- see
+// the Seats field doc.
+func Sign(domain, tier, subject string, seats uint32, issuedAt, expiresAt time.Time, issuerPriv ed25519.PrivateKey) (*Attestation, error) {
 	if len(issuerPriv) != ed25519.PrivateKeySize {
 		return nil, fmt.Errorf("attest: issuer private key must be %d bytes, got %d", ed25519.PrivateKeySize, len(issuerPriv))
 	}
@@ -127,10 +149,11 @@ func Sign(domain, tier, subject string, issuedAt, expiresAt time.Time, issuerPri
 	}
 
 	a := &Attestation{
-		Version:   Version1,
+		Version:   CurrentVersion,
 		Domain:    strings.ToLower(strings.TrimSpace(domain)),
 		Tier:      tier,
 		Subject:   subject,
+		Seats:     seats,
 		IssuedAt:  issuedAt,
 		ExpiresAt: expiresAt,
 		IssuerKey: pub,
@@ -227,7 +250,7 @@ func Decode(token string) (*Attestation, error) {
 	if err != nil {
 		return nil, fmt.Errorf("attest: truncated token (version): %w", err)
 	}
-	if version != Version1 {
+	if version != Version1 && version != Version2 {
 		return nil, fmt.Errorf("attest: unsupported version %d", version)
 	}
 
@@ -242,6 +265,13 @@ func Decode(token string) (*Attestation, error) {
 	subject, err := readLenPrefixed16(r)
 	if err != nil {
 		return nil, fmt.Errorf("attest: truncated token (subject): %w", err)
+	}
+	var seats uint32
+	if version >= Version2 {
+		seats, err = readUint32(r)
+		if err != nil {
+			return nil, fmt.Errorf("attest: truncated token (seats): %w", err)
+		}
 	}
 	issuedAt, err := readUnixSeconds(r)
 	if err != nil {
@@ -268,6 +298,7 @@ func Decode(token string) (*Attestation, error) {
 		Domain:    string(domain),
 		Tier:      string(tier),
 		Subject:   string(subject),
+		Seats:     seats,
 		IssuedAt:  issuedAt,
 		ExpiresAt: expiresAt,
 		IssuerKey: ed25519.PublicKey(issuerKey),
@@ -279,10 +310,12 @@ func Decode(token string) (*Attestation, error) {
 // cross-repo wire-format contract in the same spirit as pkg/devicecert's,
 // except this one is public precisely because third-party clients must be
 // able to reproduce it (see the package doc comment on the MIT licence).
-// Field order and every length prefix are part of the contract -- changing
-// either would need a new Version.
+// Field order and every length prefix are part of the contract for a given
+// Version -- changing either needs a new one, which is exactly what
+// Version2's Seats field did: everything through Subject is unchanged, then
+// Version2 inserts four bytes before IssuedAt that Version1 never had.
 func (a *Attestation) signingBytes() ([]byte, error) {
-	if a.Version != Version1 {
+	if a.Version != Version1 && a.Version != Version2 {
 		return nil, fmt.Errorf("attest: unsupported version %d", a.Version)
 	}
 	if len(a.Domain) == 0 || len(a.Domain) > maxDomainLen {
@@ -303,6 +336,9 @@ func (a *Attestation) signingBytes() ([]byte, error) {
 	writeLenPrefixed16(&buf, []byte(a.Domain))
 	writeLenPrefixed8(&buf, []byte(a.Tier))
 	writeLenPrefixed16(&buf, []byte(a.Subject))
+	if a.Version >= Version2 {
+		writeUint32(&buf, a.Seats)
+	}
 	writeUnixSeconds(&buf, a.IssuedAt)
 	writeUnixSeconds(&buf, a.ExpiresAt)
 	buf.Write(a.IssuerKey)
@@ -319,6 +355,20 @@ func writeLenPrefixed16(buf *bytes.Buffer, data []byte) {
 func writeLenPrefixed8(buf *bytes.Buffer, data []byte) {
 	buf.WriteByte(byte(len(data)))
 	buf.Write(data)
+}
+
+func writeUint32(buf *bytes.Buffer, v uint32) {
+	var b [4]byte
+	binary.BigEndian.PutUint32(b[:], v)
+	buf.Write(b[:])
+}
+
+func readUint32(r *bytes.Reader) (uint32, error) {
+	var b [4]byte
+	if _, err := io.ReadFull(r, b[:]); err != nil {
+		return 0, err
+	}
+	return binary.BigEndian.Uint32(b[:]), nil
 }
 
 func writeUnixSeconds(buf *bytes.Buffer, t time.Time) {

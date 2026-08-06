@@ -15,6 +15,7 @@ sets:
 | `domain` | the server this is about |
 | `tier` | `community` · `commercial`, open-ended (below) |
 | `subject` | display name |
+| `seats` | advisory account-count ceiling, `0` = unspecified/unlimited (Version2) |
 | `issued` / `expires` | validity window |
 | `issuer_key` | which issuer public key signed this |
 
@@ -75,6 +76,32 @@ the page is served by the very server it describes, and no visitor verifies an
 Ed25519 signature by eye. A public register of attested domains would turn it
 into a checkable claim; that is a later question, and the badge is useful in the
 app without one.
+
+**Seats (Version2) is advisory, and deliberately never public.** An
+attestation can carry an account-count ceiling, shown to the operator's own
+admins via `GET /v1/admin/license` alongside the server's actual active-account
+count, with a warning once the count passes it. Nothing enforces it — no
+registration is rejected, no account blocked — the same "warn, never refuse"
+posture the expiry check already takes. It is absent from `GET
+/v1/server-status`, the landing page, and any future public register
+(freizone-licensing's own roadmap tracks that side): how many accounts a
+server has is exactly the kind of fact that turns "a server exists" into "a
+server worth attacking", and it tells a visitor nothing about whether to trust
+the operator, unlike the attestation itself. `0` means "unspecified" on
+purpose rather than getting a separate flag -- a Version1 token (issued before
+this field existed) and a deliberately unlimited Version2 one are the same
+case for every consumer that only wants to know whether there is a ceiling to
+warn about.
+
+Adding it cost a format version, which is the one lesson worth keeping for
+whatever gets added after Seats: `pkg/attest`'s wire format is a fixed byte
+layout signed as a whole, not a self-describing structure, and `Decode`
+rejects any version number it doesn't recognise outright rather than skipping
+unknown fields. A field that turns out to matter later is cheap to add only
+before real adoption exists to break -- while there are still a handful of
+issued tokens and few or no third-party verifiers, not after. Version2 stays
+compatible the other direction, though: it can still decode a Version1 token,
+reading `Seats` back as `0`.
 
 **What the attestation claims stays narrow.** It says the operator is known to
 the project. It says nothing about message security — end-to-end encryption is

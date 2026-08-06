@@ -51,7 +51,7 @@ func TestCheckAttestationNoTrustedIssuersWarns(t *testing.T) {
 		t.Fatalf("GenerateIssuerKey() error = %v", err)
 	}
 	now := time.Now()
-	a, err := attest.Sign("chat.example.org", attest.TierCommunity, "Example", now, now.Add(24*time.Hour), priv)
+	a, err := attest.Sign("chat.example.org", attest.TierCommunity, "Example", 0, now, now.Add(24*time.Hour), priv)
 	if err != nil {
 		t.Fatalf("Sign() error = %v", err)
 	}
@@ -83,7 +83,7 @@ func TestCheckAttestationUntrustedSignerWarns(t *testing.T) {
 	withTestIssuer(t, otherPub) // trusts a *different* key than the one signing below
 
 	now := time.Now()
-	a, err := attest.Sign("chat.example.org", attest.TierCommunity, "Example", now, now.Add(24*time.Hour), signerPriv)
+	a, err := attest.Sign("chat.example.org", attest.TierCommunity, "Example", 0, now, now.Add(24*time.Hour), signerPriv)
 	if err != nil {
 		t.Fatalf("Sign() error = %v", err)
 	}
@@ -114,7 +114,7 @@ func TestCheckAttestationUnsetDomainDoesNotWarn(t *testing.T) {
 	withTestIssuer(t, pub)
 
 	now := time.Now()
-	a, err := attest.Sign("chat.example.org", attest.TierCommunity, "Example", now, now.Add(24*time.Hour), priv)
+	a, err := attest.Sign("chat.example.org", attest.TierCommunity, "Example", 0, now, now.Add(24*time.Hour), priv)
 	if err != nil {
 		t.Fatalf("Sign() error = %v", err)
 	}
@@ -143,7 +143,7 @@ func TestCheckAttestationValidLogsInfo(t *testing.T) {
 	withTestIssuer(t, pub)
 
 	now := time.Now()
-	a, err := attest.Sign("chat.example.org", attest.TierCommunity, "Example", now, now.Add(24*time.Hour), priv)
+	a, err := attest.Sign("chat.example.org", attest.TierCommunity, "Example", 0, now, now.Add(24*time.Hour), priv)
 	if err != nil {
 		t.Fatalf("Sign() error = %v", err)
 	}
@@ -171,7 +171,7 @@ func TestCheckAttestationWrongDomainWarns(t *testing.T) {
 	withTestIssuer(t, pub)
 
 	now := time.Now()
-	a, err := attest.Sign("chat.example.org", attest.TierCommunity, "Example", now, now.Add(24*time.Hour), priv)
+	a, err := attest.Sign("chat.example.org", attest.TierCommunity, "Example", 0, now, now.Add(24*time.Hour), priv)
 	if err != nil {
 		t.Fatalf("Sign() error = %v", err)
 	}
@@ -195,7 +195,7 @@ func TestCheckAttestationExpiredWarns(t *testing.T) {
 	withTestIssuer(t, pub)
 
 	now := time.Now()
-	a, err := attest.Sign("chat.example.org", attest.TierCommunity, "Example", now.Add(-48*time.Hour), now.Add(-24*time.Hour), priv)
+	a, err := attest.Sign("chat.example.org", attest.TierCommunity, "Example", 0, now.Add(-48*time.Hour), now.Add(-24*time.Hour), priv)
 	if err != nil {
 		t.Fatalf("Sign() error = %v", err)
 	}
