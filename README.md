@@ -216,6 +216,9 @@ go test ./...
 
 | File | What it is |
 | --- | --- |
+| [docs/INSTALL.md](docs/INSTALL.md) | Docker Compose setup using the published image — the fast path, no build step |
+| [docs/HIGH-AVAILABILITY.md](docs/HIGH-AVAILABILITY.md) | Warm-standby failover via Litestream + DNS, for operators who want more than a single box |
+| [docs/DEVCLIENT.md](docs/DEVCLIENT.md) | Using `devclient` to diagnose a misbehaving server or session, beyond the getting-started walkthrough above |
 | [docs/PROTOCOL.md](docs/PROTOCOL.md) | The wire protocol — addressing, authentication, endpoints, X3DH/Double Ratchet, federation, blobs. A contract, so anything here is binding on every client |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Planned and shipped work, one short entry per item with a dated status log |
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | Released versions and what each contained |

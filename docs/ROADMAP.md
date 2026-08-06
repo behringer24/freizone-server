@@ -368,7 +368,7 @@ outcomes, and the file dropped when the last recipient row goes.
   ruled out. Reasoning in freizone-app's `docs/design/16-groups.md`
 
 ### SRV-19 — Attested servers
-Status: `in progress` · Also affects: freizone-app (APP-22)
+Status: `done` · Also affects: freizone-app (APP-22)
 Design: [design/19-attested-servers.md](design/19-attested-servers.md)
 
 A server may carry a signed attestation issued by the project — domain, tier,
@@ -414,3 +414,30 @@ landing-page badge.
   actually connected to regardless. Covered by `cmd/server/attestation_test.go`
   (new -- this package had no tests before). Not yet done: issuance and the
   app-side badge (APP-22), both outside this repo
+- 2026-08-06 — app-side badge (APP-22) shipped in freizone-app: native-core
+  verification importing this repo's `pkg/attest` directly (no reimplemented
+  format, no drift risk), placement in the setup wizard, the account switcher,
+  a peer's profile, one's own profile, and the admin area with an expiry
+  warning. Issuance (`freizone-licensing`, `LIC-01`–`LIC-03`) also shipped; the
+  two attestations already live on this repo's own production servers
+  (`chat.behringer24.de`, `chatcentral.de`) were issued through it
+
+### SRV-20 — Object-storage-backed blob storage
+Status: `planned`
+
+`FREIZONE_BLOB_DIR` stores attachment ciphertext as plain files on disk,
+which Litestream-based database replication (see
+[HIGH-AVAILABILITY.md](HIGH-AVAILABILITY.md)) doesn't cover — a warm-standby
+failover can lose attachments uploaded since the last periodic `rclone`/`rsync`
+pass even though the database row referencing them survived intact. An
+option to store blob bytes directly in an S3-compatible bucket instead of
+local disk would let one replication mechanism (the bucket) cover both the
+database and attachments, closing that gap architecturally instead of
+working around it.
+
+- 2026-08-06 — raised while writing `docs/HIGH-AVAILABILITY.md`; not designed
+  yet. Open questions include whether this replaces local-disk storage
+  outright or becomes a second backend selected by config, and how it
+  interacts with streamed blob I/O (the store package deliberately avoids
+  loading whole files into memory today, per the config reference's note on
+  why blobs are files rather than DB rows)
