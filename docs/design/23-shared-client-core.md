@@ -187,6 +187,36 @@ With that, `local_state.dart` is covered except for three maps —
 group *coordination* rather than storage and belong with the rest of the group
 orchestration in stage 5.
 
+## Where the compatibility rule actually lives
+
+[10-compatibility.md](10-compatibility.md) says availability is discovered,
+never assumed. Moving `GET /v1/server-status` into the core turns that from a
+principle into a decoding problem, because **two of its silences mean the
+opposite of Go's zero value**:
+
+- `federation_enabled` absent means **true**. A server predating the switch
+  federates, and reading silence as "off" strands every conversation with one.
+- `max_blob_recipients` absent means **1**, not unlimited. An older server
+  ignores the extra recipients, stores the blob for the first one and still
+  answers `201` — so a sender that assumed otherwise would deliver a group
+  picture to exactly one member and report success.
+
+Decoding straight into a plain struct gets both wrong, silently, and only
+against servers nobody is testing on. `ServerStatus` therefore decodes through a
+wire type with pointers wherever absent and false differ, and applies each
+documented default explicitly. The tests assert the older-server case as its own
+scenario rather than as an afterthought — an explicit `federation_enabled:false`
+from an operator who switched it off has to survive too, which is what makes the
+pointer necessary rather than a default value sufficient.
+
+The same care goes into telling two failures apart that a single "request
+failed" would merge: a Freizone server refusing something answers JSON and
+becomes an `APIError` carrying its own code, while a host answering HTML or
+nothing becomes a `NotFreizoneServerError`. That distinction is not tidiness —
+"the server said no" and "you typed the wrong address" need different words in
+front of a user, and the second is what a mistyped domain or a parked page
+actually produces.
+
 ## Sequence
 
 `cmd/devclient` is the foundation, not a drop-in. It knows re-keying, receipts,

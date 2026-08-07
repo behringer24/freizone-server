@@ -585,3 +585,21 @@ a one-time reset. No wire-format change.
   except for `pendingGroupEvents`, `groupSnapshotDebts` and
   `groupPeerStateHashes`, which are group coordination rather than storage and
   belong with stage 5
+- 2026-08-07 — stage 2 begun (first slice): the signed HTTP transport in
+  `pkg/client`. All three auth modes (public, device-signed, and the federated
+  one that names the key by its base64 public key because a foreign server has
+  no row to look a device id up in), the error model, and
+  `GET /v1/server-status`. Everything takes a `context.Context` and the HTTP
+  client carries no timeout of its own, since the message stream is a long-lived
+  response and the context is the real deadline. Two things worth the design
+  doc: failures are split into `APIError` (a Freizone server refusing in its own
+  JSON) and `NotFreizoneServerError` (a host answering HTML or nothing), because
+  "the server said no" and "you typed the wrong address" need different words in
+  front of a user; and `ServerStatus` decodes through pointers so the two
+  capability silences that mean the opposite of Go's zero value —
+  `federation_enabled` absent is *true*, `max_blob_recipients` absent is *1* —
+  are applied rather than guessed. 13 tests, 39 in the package; the signature
+  test verifies with `pkg/httpsig`'s own `Verify` against a real `httptest`
+  server rather than restating the canonical string, so a disagreement about
+  what it covers surfaces here instead of in the field. Still to come in this
+  stage: the message endpoints, the SSE stream and the event channel
