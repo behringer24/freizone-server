@@ -550,3 +550,22 @@ a one-time reset. No wire-format change.
   clang only targets Android) plus a test-only `libraryPath` parameter that
   leaves the production loader alone. That capability outlasts the vectors —
   it is what makes the whole state layer testable for the first time
+- 2026-08-07 — stage 1 (first slice) on `dev_go`: `pkg/client` exists, with the
+  crypto-layer state on SQLite — identity, one-time prekeys, sending/inbound
+  sessions, processed-message ids, decrypt-failure counts, per-peer session
+  health, and the conversation metadata those rules reference. Cut there
+  deliberately: local_state.dart calls conversations "the UI/history layer on
+  top of sessions's crypto layer", so the transcript is the next slice rather
+  than a half-finished part of this one. The app's semantics are reproduced
+  exactly, including the ones easy to get subtly wrong — re-marking a processed
+  id does not refresh its eviction position, reaching the decrypt-failure limit
+  clears the counter as it reports it, and desync evidence is refused for a peer
+  with no conversation so a stranger cannot grow the database one row per
+  invented account id. 17 tests, including concurrent writers and two accounts
+  in one process. Size, measured not estimated: `pkg/client` costs +7.04 MB on
+  an `android/arm64` c-shared build, taking the shipped core from 5.96 MB to
+  ~13 MB and the release APK from 78.1 MB to ~85 MB (+9%). Design doc carries
+  the numbers and two corrections they force — the pure-Go argument for
+  `modernc.org/sqlite` is weaker than written, since the core is already cgo,
+  and the driver choice is a one-function change behind `database/sql`, so it
+  need not be settled now
