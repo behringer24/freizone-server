@@ -112,11 +112,38 @@ then inside Xcode, is precisely the friction that makes the iOS step expensive.
 The server already runs on SQLite, so the pattern is familiar in-house.
 
 **The accepted cost is binary size,** which sits in tension with the project's
-preference for compact builds. It is therefore measured rather than estimated:
-reporting the per-ABI growth of `libfreizonecore.so` is part of accepting the
-first stage. The decision stays reversible until the reset release ships, and
-not cheaply afterwards — a later change of format would cost testers a second
-reset.
+preference for compact builds. Measured rather than estimated, on
+`android/arm64` with `-buildmode=c-shared`, by building the same probe with and
+without `pkg/client`:
+
+| | size | |
+| --- | --- | --- |
+| probe without `pkg/client` | 2.59 MB | |
+| probe with `pkg/client` | 9.63 MB | **+7.04 MB** |
+| the real core as shipped today | 5.96 MB | |
+| projected with `pkg/client` | ~13 MB | +118% |
+| release APK today | 78.1 MB | |
+| projected | ~85 MB | **+9%** |
+
+The honest headline is the last row, not the first: the core more than doubles,
+but what a user downloads grows by about a tenth, once, and Play ships per-ABI
+splits so it is not paid twice. Notable, not disqualifying.
+
+Two corrections this measurement forces:
+
+- **The "pure Go avoids C friction" argument above is weaker than it reads.**
+  The core is already cgo — it cannot be built without a C toolchain on any
+  platform — so compiling one more C library is the same class of problem, not
+  a new one. Pure Go still avoids a second thing that can break per platform,
+  which is worth something, but it is not the decisive argument it was written
+  as. `mattn/go-sqlite3` links the real SQLite and is materially smaller; it has
+  not been measured here.
+- **The decision is cheap to defer and cheap to reverse.** Both drivers sit
+  behind `database/sql`, so swapping is the import, the driver name and the
+  pragma syntax in one DSN string — a single function in `store.go`, not a
+  rewrite. The format on disk is plain SQLite either way. So this does not have
+  to be settled before the reset release after all; only before anyone relies
+  on the file being readable by a specific driver, which nothing does.
 
 **The wire protocol does not change.** [`PROTOCOL.md`](../PROTOCOL.md) is
 untouched: this is a rearrangement of client-side implementation, nothing more.
