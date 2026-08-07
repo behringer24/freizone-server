@@ -152,6 +152,41 @@ stage is still exercised against an older counterpart, per the standing
 constraint in [10-compatibility.md](10-compatibility.md) — an arbitrary mix of
 app and server versions is in the field permanently.
 
+## Three rules the transcript turned up
+
+Modelling the history layer surfaced decisions that look like details and are
+not, each one a place where a reasonable-looking schema diverges from the app.
+
+**Arrival order, not time order.** The app appends to a list and never sorts it
+— the only `sort` calls in the codebase order chat *lists* by activity, not
+lines within a transcript. So a message decrypted late, carrying an older
+timestamp, belongs where it arrived rather than where its clock says. The table
+therefore has an explicit `seq` and is only ever read by it. Ordering by
+`timestamp` would have looked more natural, quietly rearranged exactly the
+transcripts that had something go wrong, and given system lines — which have no
+sender clock at all — nowhere sensible to sit.
+
+**A pending send is settled when the database is opened, not when it is read.**
+The app's rule is that a message written while in flight loads back as failed,
+because nothing is in flight in a process that no longer exists. Transcribing
+that as "read `pending` as `failed`" is the obvious move and is wrong: a send
+that is genuinely running *in this process* would report as already failed the
+moment anything drew the bubble. The transformation belongs at `Open`, which is
+where "a process that no longer exists" is actually established, and where the
+app's own load-from-file happens to do it too.
+
+**`chat_id` is one namespace for peers and groups.** Not a shortcut: the app
+says both ids are 21-character bech32m strings differing only in a version
+marker, "so anything keyed by this needs no second form". Following it means the
+transcript, its attachments, its pins and its per-recipient deliveries all work
+for a group already, and stage 5 has only the group's signed fact set left to
+add rather than a parallel set of tables.
+
+With that, `local_state.dart` is covered except for three maps —
+`pendingGroupEvents`, `groupSnapshotDebts`, `groupPeerStateHashes` — which are
+group *coordination* rather than storage and belong with the rest of the group
+orchestration in stage 5.
+
 ## Sequence
 
 `cmd/devclient` is the foundation, not a drop-in. It knows re-keying, receipts,

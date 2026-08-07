@@ -569,3 +569,19 @@ a one-time reset. No wire-format change.
   `modernc.org/sqlite` is weaker than written, since the core is already cgo,
   and the driver choice is a one-function change behind `database/sql`, so it
   need not be settled now
+- 2026-08-07 — stage 1 finished: the transcript. Messages, attachment metadata,
+  per-recipient group deliveries and local pins, keyed by a `chat_id` that is a
+  peer account id or a group id without distinguishing — following the app,
+  where both are 21-character bech32m strings differing only in a version
+  marker, so stage 5 inherits working group transcripts and has only the signed
+  fact set left to add. Three rules the modelling turned up are in the design
+  doc: the transcript is read in arrival order and never by timestamp (the app
+  appends and never sorts, so a late-decrypted message stays where it arrived);
+  a `pending` send is settled to `failed` when the database is *opened* rather
+  than when it is read, since transcribing the app's load-time rule as a
+  read-time one would report a send genuinely in flight in this process as
+  already failed; and attachments, deliveries and pins cascade with their
+  message. 10 further tests, 27 in total. `local_state.dart` is now covered
+  except for `pendingGroupEvents`, `groupSnapshotDebts` and
+  `groupPeerStateHashes`, which are group coordination rather than storage and
+  belong with stage 5
