@@ -496,7 +496,7 @@ admins against the server's real active-account count — never on `GET
   parser in Node, not just reasoned about
 
 ### SRV-23 — Shared protocol client core
-Status: `planned` · Also affects: freizone-app, future freizone-bot
+Status: `in progress` · Also affects: freizone-app, future freizone-bot
 Design: [design/23-shared-client-core.md](design/23-shared-client-core.md)
 
 The protocol is implemented twice: `cmd/devclient` (3,236 lines of Go) and
@@ -523,3 +523,30 @@ a one-time reset. No wire-format change.
   planned Go-based freizone-bot as a third consumer, which fixes the core's API
   as idiomatic Go rather than the app's FFI shape, concurrent, and
   multi-identity. Not started — implementation waits for explicit go-ahead
+- 2026-08-07 — stage 0 done on `dev_go`: `pkg/conformance` holds nine authored
+  receive-path vectors (expectations written from PROTOCOL.md, deliberately not
+  recorded from either implementation, so a vector can fail on both sides and
+  still be right), and `cmd/devclient/conformance_test.go` runs this repo's
+  client against them. Four pass — first contact, the tie-break both ways, the
+  SRV-17 re-key override — and five fail, all real defects here: no
+  processed-message-id tracking, the ratchet's `FailureCode`/`SuggestsDesync`
+  classification discarded by an `fmt.Errorf` without `%w` (so a harmless
+  redelivery is indistinguishable from a desync), a one-time prekey consumed
+  before the responder session has decrypted anything, and no content fallback
+  for a pre-SRV-17 sender's re-key. Recorded in the test's `knownDivergences`
+  with their causes so the suite stays green while the defects stay visible;
+  the list fails if a listed step starts conforming, which makes emptying it
+  the completion signal. Design doc carries the findings, and one expectation
+  the vectors disproved
+- 2026-08-07 — app half of the suite running too, and it changes the plan's
+  shape: **freizone-app passes all nine vectors, this client four.** Where the
+  two disagree the app is right every time, so `pkg/client` is not "extract
+  devclient and tidy up" — the app is the specification and devclient is what
+  gets raised to it. Reaching that measurement needed a host build of the core:
+  the bindings only ever loaded the Android `.so` and fell back to
+  `DynamicLibrary.process()`, which finds nothing in a test process, so all
+  8,700 lines of the app's `lib/state/` were untestable on a dev host. Now
+  buildable via a new `native/build_desktop.ps1` (mingw-w64 for cgo; the NDK's
+  clang only targets Android) plus a test-only `libraryPath` parameter that
+  leaves the production loader alone. That capability outlasts the vectors —
+  it is what makes the whole state layer testable for the first time

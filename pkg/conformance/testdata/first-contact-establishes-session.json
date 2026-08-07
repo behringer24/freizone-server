@@ -1,0 +1,42 @@
+{
+  "name": "first-contact-establishes-session",
+  "description": "No session and an envelope carrying a prekey block: the receiver runs X3DH as responder, decrypts, and consumes the referenced one-time prekey.",
+  "reference": "PROTOCOL.md §5",
+  "receiver": {
+    "account_id": "fz1mmmm00000000000000000000000000receiver",
+    "dh_identity_priv": "V8Vv8AwD+2FWVTe9akdCUcxNznxuV8GK91jhl6ledmE=",
+    "signed_prekey_priv": "X//xc+LE42oU1SvH41t5UQaMknT5X0s7LflAcGXDiE0=",
+    "one_time_prekeys": {
+      "1": "2CA9Z5E/6hkAxUUkljy12E8jFGKBmR/ENCtUWdum0Cw="
+    }
+  },
+  "steps": [
+    {
+      "label": "alice's first message",
+      "message_id": "m1",
+      "sender_account_id": "fz1zzzz000000000000000000000000000000peer",
+      "payload": {
+        "prekey": {
+          "sender_dh_identity_pub": "JPeFN/qq1vz1cg9hC6fIKnQv9X8m17ik/3mtKbuqWCw=",
+          "sender_ephemeral_pub": "LNTrvNUsdTLuwdCpUyCz2vydqxr34nuLijPrYTlFQAU=",
+          "signed_prekey_id": 1,
+          "one_time_prekey_id": 1,
+          "rekey": false
+        },
+        "header": {
+          "dh_pub": "POMbZ+6JS8dWP/C3bVMQnx1mGhWKlPG6RP6m1BGsoFM=",
+          "pn": 0,
+          "n": 0
+        },
+        "ciphertext": "OTFiVptxj4qhA2NVE3ElYyW94nrik9Kk4UaDrDFcKz3I8e7n3tnW/zReAGL9vmPU57t17cqQJqzU4V8BTLwft+Y="
+      },
+      "expect": {
+        "outcome": "decrypted",
+        "text": "hello",
+        "session_effect": "established",
+        "inbound_session_kept": false,
+        "one_time_prekeys_remaining": 0
+      }
+    }
+  ]
+}

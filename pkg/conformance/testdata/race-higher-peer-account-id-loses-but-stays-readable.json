@@ -1,0 +1,54 @@
+{
+  "name": "race-higher-peer-account-id-loses-but-stays-readable",
+  "description": "The peer's account id sorts higher, so the receiver keeps its own session for sending -- but the peer goes on sending from theirs until the receiver's next message lands, so it must be kept for reading rather than discarded.",
+  "reference": "PROTOCOL.md §5",
+  "receiver": {
+    "account_id": "fz1mmmm00000000000000000000000000receiver",
+    "dh_identity_priv": "rNpCTJluXPWLd9rmggmwfomkQKv7TMGIXd9j8gQctgs=",
+    "signed_prekey_priv": "5TNfdk2q4PgLSQ9DsKINkmF1+dB2Gp5W6pFjfeE83SE=",
+    "one_time_prekeys": {
+      "1": "Yibv/l1aRO38/pS/IFnLtUJv1d5/XvKk0z0gdjHkSaE="
+    },
+    "sessions": {
+      "fz1zzzz000000000000000000000000000000peer": {
+        "role": "initiator",
+        "ad": "7gOdFnR1HoAR3Gk7Ba0YnoG49K3yn0dumXegfAWvvzM2K0BfCfsBIOXpUFdyTQrGN5kbPSedA6FQV+CsCNBcTA==",
+        "dhs_priv": "RsUarrJvnp39dBMG4JmCiddy840whzuBIRH8bMd6uSg=",
+        "dhr_pub": "Uw2nkUiseylBDW1KlHpZGFsc/2zC/J32esyloXJTWEY=",
+        "rk": "SnSjIRC8IFfHbvmYncuySkb/iUkdRqdazJbgbBubDbw=",
+        "cks": "8i4iCRhlpXhOzyQuA0kXD9drNHIp/enbwVSwb9wZ8vU=",
+        "ns": 0,
+        "nr": 0,
+        "pn": 0
+      }
+    }
+  },
+  "steps": [
+    {
+      "label": "peer's own initial arrives",
+      "message_id": "m1",
+      "sender_account_id": "fz1zzzz000000000000000000000000000000peer",
+      "payload": {
+        "prekey": {
+          "sender_dh_identity_pub": "NitAXwn7ASDl6VBXck0KxjeZGz0nnQOhUFfgrAjQXEw=",
+          "sender_ephemeral_pub": "RqmwOp4q6h3zqqm4GmGp9a9ypIyTtVj4P1EF3QWYzH8=",
+          "signed_prekey_id": 1,
+          "one_time_prekey_id": 1,
+          "rekey": false
+        },
+        "header": {
+          "dh_pub": "sda56BKYgiBJgBFhWj6R8H7MlvFOp+tuYpeh8I4LH0s=",
+          "pn": 0,
+          "n": 0
+        },
+        "ciphertext": "j8W7d5VRIbniIqfId1h4k67QF/AfEQxuppxhEDtuSB7dkhJlVEDKyVTpUI7nRbzQI5ZcmZ7z8dO5zd+zBdw="
+      },
+      "expect": {
+        "outcome": "decrypted",
+        "text": "hi",
+        "session_effect": "unchanged",
+        "inbound_session_kept": true
+      }
+    }
+  ]
+}

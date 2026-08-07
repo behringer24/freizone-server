@@ -1,0 +1,39 @@
+{
+  "name": "failed-responder-attempt-must-not-burn-prekey",
+  "description": "An initial referencing a held one-time prekey, whose ciphertext does not verify. The prekey may only be marked consumed once a session built from it actually decrypts something: consuming it up front means every stale, damaged or redelivered initial drains the pool, and a drained pool downgrades every later first contact to the weaker no-one-time-prekey path.",
+  "reference": "PROTOCOL.md §5",
+  "receiver": {
+    "account_id": "fz1mmmm00000000000000000000000000receiver",
+    "dh_identity_priv": "qMoAhr+Ardfx9EvVAywkRHb0r4WxPuV93SWrD27Xg5g=",
+    "signed_prekey_priv": "R7ABSzwgSbSPVBd3xrbPe4q/MxbqerFCmap/+7nhvM4=",
+    "one_time_prekeys": {
+      "1": "716OEbI0Duk29pB4rIUCTdSzwFGJYoKDN12tah4m7bE="
+    }
+  },
+  "steps": [
+    {
+      "label": "damaged first contact",
+      "message_id": "m1",
+      "sender_account_id": "fz1zzzz000000000000000000000000000000peer",
+      "payload": {
+        "prekey": {
+          "sender_dh_identity_pub": "ObpSWtvZ7EKansPJIN2Lit9NdDPmL8dOx5qyhDyZTBA=",
+          "sender_ephemeral_pub": "bg2mjfdIoX8XE0u7QbT0Ae3iIiMpRoWI8O/Ci7///xQ=",
+          "signed_prekey_id": 1,
+          "one_time_prekey_id": 1
+        },
+        "header": {
+          "dh_pub": "4FyU44vGcQXWKiqSDyRsYqczBsE3b/EG7kGEC9S5RXw=",
+          "pn": 0,
+          "n": 0
+        },
+        "ciphertext": "QsCC4B+Z52nG7LyKv3QjyvhqTs0l3IdjSpeMZNt5fj+RlXDk+bcCWWLq59IXRfZMttbb4+LRcAbVQchjaUzKX2fvyN1lAQ=="
+      },
+      "expect": {
+        "outcome": "undecryptable",
+        "session_effect": "unchanged",
+        "one_time_prekeys_remaining": 1
+      }
+    }
+  ]
+}

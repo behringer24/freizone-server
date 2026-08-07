@@ -1,0 +1,53 @@
+{
+  "name": "race-lower-peer-account-id-wins",
+  "description": "Both sides established at once and the peer's account id sorts lower, so the peer's session wins and the receiver adopts it. Positive control for the tie-break itself.",
+  "reference": "PROTOCOL.md §5",
+  "receiver": {
+    "account_id": "fz1mmmm00000000000000000000000000receiver",
+    "dh_identity_priv": "AddUt/r3kCQ7719SrxX4xmLUTFtRCyV9BnAjXLgUSCA=",
+    "signed_prekey_priv": "9lJowmTR+g4q0mAAGQYtae894DHfOg7Hb1Xv1u8e/Ug=",
+    "one_time_prekeys": {
+      "1": "awFuGgf90/nfUpzN6DRKrlVOGjTUkjh62dJh0TI/E88="
+    },
+    "sessions": {
+      "fz1aaaa000000000000000000000000000000peer": {
+        "role": "initiator",
+        "ad": "6fGN4wuV3vg7ViIuBpMM3Ydb89oWsFb5n1rV3lxbdm+npjvrvD/2LitZpUS9XIckdhC5aBkaXB/GTKCBjVqVcQ==",
+        "dhs_priv": "bPJTLTdpaguAJbLJVaqWrQyxKWtcfii79zswi5XVe+c=",
+        "dhr_pub": "nFcE1YD8vYbDR3OHc9/Xa7b/pzGrzflb0MfaveSwIDg=",
+        "rk": "XqRVbVF7cRpu6Rs4vR3aZoa7/hXiWErmNWf2AVKY2ws=",
+        "cks": "TjoB3gf7sbCyqWPxCralv2LWsThgXKdW16MJfX8rYrw=",
+        "ns": 0,
+        "nr": 0,
+        "pn": 0
+      }
+    }
+  },
+  "steps": [
+    {
+      "label": "peer's own initial arrives",
+      "message_id": "m1",
+      "sender_account_id": "fz1aaaa000000000000000000000000000000peer",
+      "payload": {
+        "prekey": {
+          "sender_dh_identity_pub": "p6Y767w/9i4rWaVEvVyHJHYQuWgZGlwfxkyggY1alXE=",
+          "sender_ephemeral_pub": "kI5S1/cGv3U3GLWljIx3ULGKU14Vl8S9ifOTuQRvSj0=",
+          "signed_prekey_id": 1,
+          "one_time_prekey_id": 1,
+          "rekey": false
+        },
+        "header": {
+          "dh_pub": "M/fA/3W/vmeBnmRMUF4dTHeZX4k9XVPJNzhbnCTg00w=",
+          "pn": 0,
+          "n": 0
+        },
+        "ciphertext": "R8v+q7SzZnhswnqmTuJawvuWHfiTBz2qBi6IwZxSbHVHfgeMIYCIE9hqY6OnNa3bgELduXRdqSrKmkuuO7k="
+      },
+      "expect": {
+        "outcome": "decrypted",
+        "text": "hi",
+        "session_effect": "adopted_peer"
+      }
+    }
+  ]
+}
