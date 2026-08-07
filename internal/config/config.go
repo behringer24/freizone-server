@@ -103,6 +103,16 @@ type Config struct {
 	// Turning it off leaves existing blobs downloadable until they expire.
 	BlobsEnabled bool
 
+	// LandingPageEnabled controls whether GET / (internal/api/landing.go)
+	// is registered at all (SRV-21). Unlike FederationEnabled/BlobsEnabled,
+	// which change what their routes *return*, turning this off skips
+	// registering the route in the first place -- a server run privately
+	// gives the bare domain net/http's plain 404 rather than confirmation
+	// that anything is running there, which a JSON "disabled" response
+	// would still give away. Defaults to true: most operators are happy to
+	// have Freizone explain itself at the root.
+	LandingPageEnabled bool
+
 	// BlobDir is where blob ciphertext files live, defaulting to a "blobs"
 	// subdirectory of DataDir. Deliberately the filesystem rather than a
 	// SQLite column: the driver has no incremental blob I/O, so storing
@@ -174,6 +184,8 @@ const (
 	envMaxBlobsPerDevice     = "FREIZONE_MAX_BLOBS_PER_DEVICE"
 	envMaxBlobRecipients     = "FREIZONE_MAX_BLOB_RECIPIENTS"
 	envBlobRetentionDays     = "FREIZONE_BLOB_RETENTION_DAYS"
+
+	envLandingPageEnabled = "FREIZONE_LANDING_PAGE_ENABLED"
 
 	envAttestation = "FREIZONE_ATTESTATION"
 )
@@ -382,6 +394,16 @@ func Load(getenv func(string) string) (*Config, error) {
 		blobRetentionDays = parsed
 	}
 	cfg.BlobRetentionDays = blobRetentionDays
+
+	landingPageEnabled := true
+	if v := getenv(envLandingPageEnabled); v != "" {
+		parsed, err := strconv.ParseBool(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: invalid value %q (must be true or false)", envLandingPageEnabled, v)
+		}
+		landingPageEnabled = parsed
+	}
+	cfg.LandingPageEnabled = landingPageEnabled
 
 	if err := cfg.validate(); err != nil {
 		return nil, err

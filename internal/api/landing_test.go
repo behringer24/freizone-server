@@ -72,3 +72,23 @@ func TestLandingRouteLeavesAPIIntact(t *testing.T) {
 		t.Errorf("Content-Type = %q, want JSON", ct)
 	}
 }
+
+// SRV-21: with LandingPageEnabled off, the route must not exist at all --
+// net/http's plain 404, not a JSON "disabled" response like BlobsEnabled's,
+// since the whole point is giving a privately-run server no sign that
+// anything Freizone-shaped is listening at the root.
+func TestHandleLandingDisabledGivesPlainNotFound(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+	a.Config.LandingPageEnabled = false
+
+	rec := doRequest(t, a.Router(), http.MethodGet, "/", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404, body = %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "<html") {
+		t.Error("landing HTML was served despite LandingPageEnabled = false")
+	}
+	if ct := rec.Header().Get("Content-Type"); strings.Contains(ct, "json") {
+		t.Errorf("Content-Type = %q; net/http's default 404 is plain text, not JSON", ct)
+	}
+}
