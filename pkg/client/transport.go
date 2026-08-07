@@ -137,16 +137,21 @@ func decodeResponse(resp *http.Response, out any) error {
 		return fmt.Errorf("client: reading response body: %w", err)
 	}
 
-	// A Freizone server always answers with a JSON object. Anything else --
-	// HTML, an empty page, a bare JSON value -- is the reliable tell that the
-	// far end is not one, whatever the status code says.
-	var probe map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &probe); err != nil {
+	// A Freizone server always answers with a JSON object or, for the list
+	// endpoints, a bare JSON array. Anything else -- HTML, an empty page, a
+	// bare scalar -- is the reliable tell that the far end is not one, whatever
+	// the status code says.
+	//
+	// Accepting arrays matters: GET /v1/messages answers with one, so probing
+	// for an object alone would report a perfectly good server as the wrong
+	// address the moment anything fetched the queue.
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[') || !json.Valid(trimmed) {
 		return &NotFreizoneServerError{StatusCode: resp.StatusCode, Host: hostOf(resp)}
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return apiErrorFrom(resp.StatusCode, probe)
+		return apiErrorFrom(resp.StatusCode, trimmed)
 	}
 
 	if out == nil {
@@ -158,10 +163,16 @@ func decodeResponse(resp *http.Response, out any) error {
 	return nil
 }
 
-func apiErrorFrom(status int, body map[string]json.RawMessage) error {
+func apiErrorFrom(status int, body []byte) error {
 	apiErr := &APIError{StatusCode: status, Message: http.StatusText(status)}
 
-	detail, ok := body["error"]
+	// Only an object can carry the error envelope. An array that fails is
+	// still a Freizone server refusing something, just without a diagnosis.
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return apiErr
+	}
+	detail, ok := fields["error"]
 	if !ok {
 		return apiErr
 	}
