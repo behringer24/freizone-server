@@ -423,7 +423,7 @@ but the private key itself isn't gone anywhere) nothing — there's simply
 no path back to the same identity.
 
 A chat partner who writes to a deleted account afterward gets an
-immediate `404 not_found` (their client has no device to deliver to,
+immediate `404 unknown_recipient` (their client has no device to deliver to,
 since the cascade already removed it) — not a silently growing queue.
 Messages already sent to others *before* deletion, if not yet fetched,
 are unaffected: they remain deliverable, same as already-sent mail isn't
@@ -738,12 +738,34 @@ purely diagnostic: the two cases are otherwise indistinguishable, and a client
 should be able to notice that its own credentials were not accepted rather than
 mistake it for a drained peer.
 
-`404` if the device is unknown, inactive, or has never uploaded prekeys. If this
-claim leaves the pool below a low-water mark and the device has no live SSE
-stream open, the server fires a push wake (see "Push notifications" below) so a
-rarely-opened device gets a chance to replenish before the pool actually runs
-dry — which, since only an entitled claimant consumes a key, is no longer
-something an arbitrary caller can trigger on demand.
+Three conditions answer `404`, under **distinct codes** so a caller can react
+mechanically rather than parse prose: `unknown_device` (no such device id on
+this server), `no_prekey_bundle` (the device exists but is revoked or has
+never uploaded prekeys), and `federation_disabled` (the claim carried a
+federated identity but this server has federation switched off — see
+"Claimant authentication" below).
+
+**Stale-device rule.** To a sender, `unknown_device` and `no_prekey_bundle`
+both mean the same thing: the device id it holds for this peer is dead.
+Cached device ids go stale legitimately — a device gets revoked (§2), or an
+account is deleted and re-created from the same root key's seed, which
+cascades every old device row away entirely — and nothing pushes that fact
+to other servers (§9's known revocation gap). The specified reaction is:
+**discard the cached device id, re-fetch `GET /v1/accounts/{id}` on the
+peer's home server, verify the chain and adopt the active device it names,
+and retry once.** A second failure is a real error to surface, not to
+retry-loop. `federation_disabled` must *not* trigger this — the device may
+be perfectly fine behind a switch the operator flipped, and discarding
+working state over it would force a needless re-key when the switch comes
+back. A message send answering `unknown_recipient` (§7) is the
+queueing-time form of the same discovery and warrants the same reaction —
+plus discarding the ratchet session, which is bound to the dead device.
+
+If this claim leaves the pool below a low-water mark and the device has no
+live SSE stream open, the server fires a push wake (see "Push notifications"
+below) so a rarely-opened device gets a chance to replenish before the pool
+actually runs dry — which, since only an entitled claimant consumes a key, is
+no longer something an arbitrary caller can trigger on demand.
 
 #### Claimant authentication
 
@@ -761,9 +783,9 @@ Three forms, in this order:
    ```
    signed with the **self-describing-key variant** (§3): `Signature-Key-Id` is
    the base64 device public key named in the certificate. Subject to the same
-   rules as a federated message: `404` when this server has federation switched
-   off, `403` for a sender on the federation blocklist, `400` for a certificate
-   that does not verify under the claimed root key.
+   rules as a federated message: `404 federation_disabled` when this server has
+   federation switched off, `403` for a sender on the federation blocklist,
+   `400` for a certificate that does not verify under the claimed root key.
 2. **An ordinary §3 device signature, no body** — for a claimant registered on
    this server. Rejected with `401` like any other signed route if it does not
    verify.
@@ -1037,6 +1059,8 @@ interoperate, and implemented in freizone-app (`lib/state/`).
 | `1` | Chat content — text, message id, reply reference, attachment references (§10). | yes |
 | `2` | Delivery/read receipt. | no |
 | `3` | Session re-key signal (below). | no |
+| `4` | Group chat content (below). | yes |
+| `5` | Group control — membership/role facts (below). | no |
 
 `v: 1` is frozen: ordinary chat messages never change shape, so every later
 control envelope gets its own version. A client that meets a `v` it does not
@@ -1065,6 +1089,53 @@ useful for wording the transcript marker (a recovery the user triggered reads
 differently from one the app performed) and for diagnostics; an unrecognized
 value is treated as `unspecified` and never affects any security decision.
 
+**Group chat content (`v: 4`)** — `v: 1`'s fields unchanged, plus:
+
+```json
+{
+  "v": 4,
+  "group_id": "...",
+  "state_hash": "sha256 hex, over the sender's applied group event ids",
+  "...": "every v: 1 field (text, message id, reply reference, attachments)"
+}
+```
+
+Shown to the user exactly like an ordinary chat message; `group_id` and
+`state_hash` exist only so a recipient can detect that it is missing a
+membership fact (see `v: 5` below) and are not otherwise part of rendering.
+
+**Group control (`v: 5`)** — invisible, carries the group's membership and
+role facts, never chat content:
+
+```json
+{
+  "v": 5,
+  "kind": "events" | "snapshot" | "sync_request",
+  "group_id": "...",
+  "events": [
+    { "type": "member_add", "fields": { }, "signer": { }, "signature": "base64" }
+  ],
+  "state_hash": "..."
+}
+```
+
+Each entry in `events` is one signed fact (`genesis`, `role_grant`,
+`role_revoke`, `member_add`, `member_remove`, `join_accept`, `leave`,
+`group_meta`, or `dissolve`). `signer` is §9's identity block verbatim,
+omitted when an event is signed directly by the group root key (its public
+key is already in the group's `genesis` event, so no separate identity block
+is needed to verify it). `kind: "events"` carries one act plus whatever
+certificate chain authorizes it; `kind: "snapshot"` carries a party's entire
+known fact set, sent once per learned `state_hash` mismatch; `kind:
+"sync_request"` asks for one without yet having anything to compare against.
+
+§6 documents only this wire shape. The membership/role model behind it — the
+founder/admin/moderator/member hierarchy, the fold these facts feed, why
+`state_hash` convergence is safe without server-side consensus, and the
+`freizone://group?id=...&via=...` invitation link — is
+[`docs/design/01-groups.md`](design/01-groups.md)'s subject, not repeated
+here.
+
 ## 7. Message REST endpoints
 
 ### `POST /v1/messages` (signed)
@@ -1077,7 +1148,10 @@ Enqueues a message envelope (§6) for a recipient device.
 }
 ```
 `202 {"status":"queued"}` — durably queued, not yet necessarily delivered ·
-`404` unknown/inactive recipient device · `409` `message_id` already used ·
+`404 unknown_recipient` unknown/inactive recipient device — the same word the
+batch form uses as its per-item status, and to a sender the queueing-time form
+of a stale cached device id (§4's stale-device rule) · `409` `message_id`
+already used ·
 `429` recipient device's queue is already at `FREIZONE_MAX_QUEUED_MESSAGES_PER_DEVICE`
 (§9) · `413` request body exceeds `FREIZONE_MAX_REQUEST_BODY_BYTES` (enforced
 as middleware ahead of every route *except* the two blob upload routes, which
@@ -1390,7 +1464,12 @@ someone using a stolen, not-yet-revoked device key — can trivially omit
 or falsify it, or simply wait out a transient unreachability window. A
 best-effort version remains a natural future addition (reusing the
 already-public `GET /v1/accounts/{id}`, no new endpoint needed) but isn't
-built in this version.
+built in this version. The *sending* half of the gap, though — a sender
+holding a cached device id that its peer has since replaced, and failing
+against it forever — is closed by §4's stale-device rule: the first
+`unknown_device`/`no_prekey_bundle`/`unknown_recipient` answer tells the
+sender to re-resolve the peer's device list and heal, so a replaced
+device costs one failed request, not the conversation.
 
 **`FREIZONE_FEDERATION_ENABLED`** (default `true`): seeds the inbound-
 federation switch on first boot. Turned off, `POST /v1/federation/messages`

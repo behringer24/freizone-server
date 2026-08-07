@@ -14,6 +14,29 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+### Added
+
+* Landing page opt-out (`SRV-21`): `FREIZONE_LANDING_PAGE_ENABLED=false`
+  skips registering the root route entirely, so a privately-run server
+  answers its bare domain with net/http's plain `404` instead of a page
+  announcing that it is a Freizone server. Default unchanged (`true`)
+
+### Changed
+
+* Stale-device rule: the delivery-path `404`s now carry distinct error codes
+  instead of a uniform `not_found`, so a sender holding a dead cached device
+  id can tell "re-resolve this peer's device list" apart from "this server
+  won't talk to me": the prekey-bundle claim answers `unknown_device` /
+  `no_prekey_bundle` / `federation_disabled`, message and blob delivery
+  answer `unknown_recipient` (the word their batch forms always used
+  per-item), and the federation endpoints answer `federation_disabled` when
+  switched off. HTTP statuses, message texts, and batch per-item statuses are
+  all unchanged. `docs/PROTOCOL.md` §4 now specifies the client reaction
+  (discard the cached device id, re-fetch `GET /v1/accounts/{id}`, retry
+  once) — the healing half of §9's known cross-server revocation gap, found
+  via a live group where one member's re-created account left every peer
+  claiming a prekey bundle for a device id that no longer existed
+
 ## [0.15.0] — 2026-08-06
 
 ### Added
