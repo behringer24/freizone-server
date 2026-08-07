@@ -119,7 +119,10 @@ func (o enqueueOutcome) asError() (status int, code, message string) {
 		return http.StatusBadRequest, "invalid_request",
 			"message_id, recipient_device_id, and payload are required, and recipient_account_id must match recipient_device_id"
 	case enqueueUnknownRecipient:
-		return http.StatusNotFound, "not_found", "unknown or inactive recipient"
+		// Same word the batch endpoints use as the per-item status, so a
+		// sender can key one stale-device reaction off both shapes (see
+		// docs/PROTOCOL.md §4's stale-device rule).
+		return http.StatusNotFound, "unknown_recipient", "unknown or inactive recipient"
 	case enqueueDuplicate:
 		return http.StatusConflict, "message_exists", "message_id already used"
 	case enqueueQueueFull:

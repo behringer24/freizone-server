@@ -187,6 +187,11 @@ func TestClaimPrekeyBundleRefusesFederatedSenderWhenFederationIsOff(t *testing.T
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404, body = %s", rec.Code, rec.Body.String())
 	}
+	// Same status as a dead device id, different code -- a sender must not
+	// react to a switched-off federation by discarding its cached device.
+	if code := errorCodeT(t, rec); code != "federation_disabled" {
+		t.Errorf("error code = %q, want federation_disabled", code)
+	}
 
 	// A local claimant is unaffected -- switching federation off must not stop
 	// this server's own users starting conversations with each other.

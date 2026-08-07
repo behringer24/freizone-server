@@ -153,6 +153,11 @@ func TestHandleSendMessageUnknownRecipient(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404, body = %s", rec.Code, rec.Body.String())
 	}
+	// The single-message form names the same condition the batch form reports
+	// as a per-item status, under the same word (stale-device rule, §4).
+	if code := errorCodeT(t, rec); code != "unknown_recipient" {
+		t.Errorf("error code = %q, want unknown_recipient", code)
+	}
 }
 
 func TestHandleSendMessageDuplicateID(t *testing.T) {

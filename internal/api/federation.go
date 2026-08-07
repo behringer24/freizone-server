@@ -32,7 +32,7 @@ func (a *API) handleReceiveFederatedMessage(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if !enabled {
-		writeError(w, http.StatusNotFound, "not_found", "federation is disabled on this server")
+		writeError(w, http.StatusNotFound, "federation_disabled", "federation is disabled on this server")
 		return
 	}
 
@@ -96,7 +96,7 @@ func (a *API) handleReceiveFederatedMessageBatch(w http.ResponseWriter, r *http.
 		return
 	}
 	if !enabled {
-		writeError(w, http.StatusNotFound, "not_found", "federation is disabled on this server")
+		writeError(w, http.StatusNotFound, "federation_disabled", "federation is disabled on this server")
 		return
 	}
 

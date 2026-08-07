@@ -24,6 +24,18 @@ type uploadedPrekeys struct {
 	otpkPrivs map[uint32]*ecdh.PrivateKey
 }
 
+// errorCodeT decodes rec's error body and returns its machine-readable code.
+// The claim endpoint's 404 variants carry distinct codes on purpose (a stale
+// cached device id must be tellable from a switched-off federation, see
+// docs/PROTOCOL.md §4's stale-device rule), so tests pin the code, not just
+// the status.
+func errorCodeT(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	var resp errorResponse
+	decodeJSON(t, rec, &resp)
+	return resp.Error.Code
+}
+
 // claimBundleT claims targetDeviceID's prekey bundle the way a real initiator
 // does since SRV-04: signed as claimant, which is what earns a one-time prekey.
 // Anonymous claims still work but get no key, so tests about the pool must go
@@ -196,6 +208,25 @@ func TestHandleClaimPrekeyBundleNotFoundBeforeUpload(t *testing.T) {
 	rec := doRequest(t, a.Router(), http.MethodPost, "/v1/devices/"+k.deviceID+"/prekey-bundle", nil)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404, body = %s", rec.Code, rec.Body.String())
+	}
+	if code := errorCodeT(t, rec); code != "no_prekey_bundle" {
+		t.Errorf("error code = %q, want no_prekey_bundle", code)
+	}
+}
+
+// A device id the server has never seen answers with a code distinct from
+// "exists but has no bundle": an initiator holding a cached device id needs
+// to know the id itself is dead (re-resolve the peer's device list via
+// GET /v1/accounts/{id}) rather than merely not yet provisioned.
+func TestHandleClaimPrekeyBundleUnknownDevice(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+
+	rec := doRequest(t, a.Router(), http.MethodPost, "/v1/devices/no-such-device/prekey-bundle", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404, body = %s", rec.Code, rec.Body.String())
+	}
+	if code := errorCodeT(t, rec); code != "unknown_device" {
+		t.Errorf("error code = %q, want unknown_device", code)
 	}
 }
 
