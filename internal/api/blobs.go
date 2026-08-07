@@ -59,7 +59,7 @@ func (a *API) handleUploadFederatedBlob(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if !enabled {
-		writeError(w, http.StatusNotFound, "not_found", "federation is disabled on this server")
+		writeError(w, http.StatusNotFound, "federation_disabled", "federation is disabled on this server")
 		return
 	}
 
@@ -102,7 +102,7 @@ const (
 func (o blobRecipientOutcome) asError() (status int, code, message string) {
 	switch o {
 	case blobUnknownRecipient:
-		return http.StatusNotFound, "not_found", "unknown or inactive recipient device"
+		return http.StatusNotFound, "unknown_recipient", "unknown or inactive recipient device"
 	case blobQuotaExceeded:
 		return http.StatusTooManyRequests, "blob_quota_exceeded", "recipient device's blob storage is full"
 	default:

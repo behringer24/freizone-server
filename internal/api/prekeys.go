@@ -250,7 +250,7 @@ func (a *API) authenticateBundleClaimant(w http.ResponseWriter, r *http.Request)
 				return bundleClaimant{}, false
 			}
 			if !enabled {
-				writeError(w, http.StatusNotFound, "not_found", "federation is disabled on this server")
+				writeError(w, http.StatusNotFound, "federation_disabled", "federation is disabled on this server")
 				return bundleClaimant{}, false
 			}
 			sender, ok := a.verifyFederatedSender(w, r, federatedSenderClaim{
@@ -295,24 +295,29 @@ func (a *API) handleClaimPrekeyBundle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The three 404s carry distinct codes on purpose: a claimant holding a
+	// cached device id needs to tell "this id is dead, re-resolve the peer's
+	// device list" (unknown_device / no_prekey_bundle) apart from "this whole
+	// server won't talk to me" (federation_disabled, above) — see
+	// docs/PROTOCOL.md §4's stale-device rule.
 	device, err := store.GetDevice(a.DB, deviceID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "not_found", "unknown device")
+			writeError(w, http.StatusNotFound, "unknown_device", "unknown device")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
 		return
 	}
 	if device.Status != store.DeviceStatusActive || device.DHIdentityPubKey == nil {
-		writeError(w, http.StatusNotFound, "not_found", "device has no prekey bundle available")
+		writeError(w, http.StatusNotFound, "no_prekey_bundle", "device has no prekey bundle available")
 		return
 	}
 
 	spk, err := store.GetSignedPrekey(a.DB, deviceID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "not_found", "device has no prekey bundle available")
+			writeError(w, http.StatusNotFound, "no_prekey_bundle", "device has no prekey bundle available")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
