@@ -638,6 +638,20 @@ a one-time reset. No wire-format change.
   and `disconnected` carries no error text, matching the app's rule that only a
   failed connect attempt reaches the user. 9 tests, 40 in the native package.
   This is also the commit where SQLite's dependencies actually land in the app
-  module, as the +7.04 MB measurement predicted. Next: the Dart bindings and
-  replacing `sse_client.dart` in `AppSession._startStream`, which is what puts
-  the core on the Pixel
+  module. Next: the Dart bindings and replacing `sse_client.dart` in
+  `AppSession._startStream`, which is what puts the core on the Pixel
+- 2026-08-08 — `sse_client.dart` replaced by `CoreStream`: the message stream
+  now runs through the core over the FFI bridge, and `AppSession` changed by a
+  type name because `CoreStream` keeps the old class's shape deliberately. Four
+  host tests drive the whole chain — Dart to FFI to core to a real HTTP server
+  and back — and caught three defects none of which would have shown on a
+  device: the poll isolate opened the core with no library path (invisible on
+  Android, where it is found by name anyway), a throwing poll escaped as an
+  unhandled async error and killed the stream silently, and the database path
+  was not injectable so no plain `flutter test` could reach it. Verified that
+  the existing VS Code build/deploy tasks are unaffected: `build_android.ps1`
+  produces both ABIs in 25s and `flutter build apk --debug` succeeds.
+  **Size, now measured on the real core rather than estimated from a probe:
+  arm64-v8a 5.96 → 15.07 MB and x86_64 6.40 → 15.83 MB, so about +9.1 MB and
+  not the +7.04 MB the probe suggested** — a probe linking fewer packages than
+  the real thing understates the delta. Release APK lands around 87 MB, ~+12%

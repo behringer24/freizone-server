@@ -116,18 +116,25 @@ preference for compact builds. Measured rather than estimated, on
 `android/arm64` with `-buildmode=c-shared`, by building the same probe with and
 without `pkg/client`:
 
-| | size | |
-| --- | --- | --- |
-| probe without `pkg/client` | 2.59 MB | |
-| probe with `pkg/client` | 9.63 MB | **+7.04 MB** |
-| the real core as shipped today | 5.96 MB | |
-| projected with `pkg/client` | ~13 MB | +118% |
-| release APK today | 78.1 MB | |
-| projected | ~85 MB | **+9%** |
+First estimated with a probe, then measured on the real core once it actually
+linked `pkg/client`. The estimate was low, which is the reason the acceptance
+criterion said *measure*:
+
+| | before | after | |
+| --- | --- | --- | --- |
+| probe (three packages) | 2.59 MB | 9.63 MB | +7.04 MB, the estimate |
+| **real core, arm64-v8a** | 5.96 MB | **15.07 MB** | **+9.11 MB** |
+| **real core, x86_64** | 6.40 MB | **15.83 MB** | **+9.43 MB** |
+| release APK | 78.1 MB | ~87 MB | ~+12% |
 
 The honest headline is the last row, not the first: the core more than doubles,
-but what a user downloads grows by about a tenth, once, and Play ships per-ABI
-splits so it is not paid twice. Notable, not disqualifying.
+but what a user downloads grows by about an eighth, once, and Play ships
+per-ABI splits so it is not paid twice. Notable, not disqualifying.
+
+Worth keeping in mind for any future estimate of this kind: a probe that links
+fewer packages than the real thing understates the delta rather than matching
+it, because what the new dependency shares with what was already there differs
+between the two.
 
 Two corrections this measurement forces:
 
