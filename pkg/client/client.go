@@ -86,12 +86,20 @@ type Client struct {
 // Open opens the account database at path, creating and migrating it if it
 // does not exist. A fresh database has no identity yet -- [Client.Identity]
 // reports [ErrNoIdentity] until [Client.SetIdentity] is called.
+//
+// Opening also settles anything the previous process left mid-send: a message
+// still marked pending belonged to a send that cannot still be running, so it
+// becomes a failure to retry rather than a spinner nobody will ever resolve.
 func Open(path string) (*Client, error) {
 	db, err := openDB(path)
 	if err != nil {
 		return nil, err
 	}
 	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := failInFlightSends(db); err != nil {
 		db.Close()
 		return nil, err
 	}
