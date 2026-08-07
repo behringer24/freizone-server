@@ -250,6 +250,18 @@ reading from it. A healthy stream is idle for as long as nobody writes to the
 account, with only a heartbeat comment every 25 seconds — a read deadline would
 kill exactly the connections that are working.
 
+On the FFI side of that channel, four choices are worth recording. The bridge
+lives in a **cgo-free** file next to `logic.go` for the reason that file already
+gives — only the `//export` wrappers need cgo, so the handle lifecycle and the
+poll semantics stay coverable by ordinary `go test` instead of only by running
+the app. `CorePoll` returns a **batch**, because one crossing per event is pure
+overhead exactly when a reconnect has just delivered a backlog. Event kinds cross
+as **strings**, not the core's integer enum, so a Dart build and a core build
+that disagree about the set fail visibly on an unknown name rather than silently
+reinterpreting a number. And `disconnected` deliberately carries **no error
+text** even when the core has one: only a failed connect attempt is meant to
+reach the user, and a clean end just reconnects.
+
 Two behaviours on the message endpoints are worth stating because the naive
 reading of each is wrong. `SendMessage` treats **409 as delivered**: the server
 de-duplicates by message id, so a retry's second copy being refused is the retry
