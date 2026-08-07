@@ -217,6 +217,48 @@ nothing becomes a `NotFreizoneServerError`. That distinction is not tidiness —
 front of a user, and the second is what a mistyped domain or a parked page
 actually produces.
 
+## The stream, and why it is one channel
+
+`Client.Stream` returns a single channel of a tagged union — connected,
+message, disconnected, failed — rather than one channel per concern. In Go that
+is merely fine; the reason it is *right* is the FFI wrapper, which can only
+offer a blocking "give me the next event" call across the boundary. Several
+channels would have to be multiplexed back into one there, putting the
+multiplexing on the side least able to test it.
+
+Events are dropped when the buffer is full rather than blocking the reader.
+A consumer that has gone away must not be able to stall the connection, because
+a stalled connection is indistinguishable, from the server's side, from a client
+that is still listening.
+
+The reconnect policy is the app's, including the part that only gets written
+after real failures: **two distinct regimes**, not one backoff. A stream that
+came up and then ended is a resume from background or a brief blip, so it
+reconnects after ~500ms *with the backoff reset* — the difference between a
+resume feeling instant and feeling broken. A stream that never came up backs off
+exponentially from 3s to 30s with ±20% jitter, so an offline home server is
+probed ever less aggressively instead of hammered, and several sessions against
+one server do not return as a thundering herd.
+
+One detail transcribes rather than translates. The app closes its per-attempt
+HTTP client in a `finally` because otherwise every backoff retry against a
+dead-but-routed host leaves another dial in SYN-SENT, clearing only on the
+OS-level TCP timeout minutes later. The Go equivalent is a cancellable context
+per attempt, cancelled on every exit path, with the connect deadline driven by a
+timer that cancels it. Note what the deadline covers: *reaching* the stream, not
+reading from it. A healthy stream is idle for as long as nobody writes to the
+account, with only a heartbeat comment every 25 seconds — a read deadline would
+kill exactly the connections that are working.
+
+Two behaviours on the message endpoints are worth stating because the naive
+reading of each is wrong. `SendMessage` treats **409 as delivered**: the server
+de-duplicates by message id, so a retry's second copy being refused is the retry
+working, and reading it as failure is how a client ends up either sending twice
+or reporting a delivered message as failed. `AckMessage` treats **404 as
+success**, because something already deleted is deleted, and the acknowledgement
+is best-effort by design — a lost one means redelivery, which the duplicate
+check absorbs.
+
 ## Sequence
 
 `cmd/devclient` is the foundation, not a drop-in. It knows re-keying, receipts,

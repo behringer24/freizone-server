@@ -603,3 +603,25 @@ a one-time reset. No wire-format change.
   server rather than restating the canonical string, so a disagreement about
   what it covers surfaces here instead of in the field. Still to come in this
   stage: the message endpoints, the SSE stream and the event channel
+- 2026-08-07 — stage 2 finished: message endpoints and the SSE stream.
+  `Client.Stream` returns one channel of a tagged union (connected, message,
+  disconnected, failed) rather than a channel per concern — in Go merely fine,
+  but right because the FFI wrapper can only offer a blocking "next event" call
+  and would otherwise have to multiplex on the side least able to test it.
+  Events drop when the buffer fills rather than blocking, since a consumer that
+  went away must not stall a connection the server cannot tell from a listening
+  one. The app's reconnect policy is reproduced whole, including its two
+  distinct regimes: a stream that came up and dropped retries in ~500ms with the
+  backoff *reset*, while one that never came up backs off 3s→30s with ±20%
+  jitter. Its per-attempt-client trick — which exists because a dead-but-routed
+  host otherwise leaves a SYN-SENT dial per retry — becomes a cancellable
+  context per attempt, with the deadline covering *reaching* the stream and not
+  reading from it, since a healthy stream is idle but for a heartbeat every 25s.
+  Also fixed a bug in the previous slice found while writing this one: the
+  transport probed for a JSON object to detect a non-Freizone host, which would
+  have misreported every `GET /v1/messages` (a bare array) as a wrong address.
+  `SendMessage` counts 409 as delivered and `AckMessage` counts 404 as success,
+  both for reasons the design doc records. 22 further tests, 50 in the package,
+  and the package is clean under `-race` — newly possible at all, since the race
+  detector needs cgo and the mingw toolchain only arrived with the Dart half of
+  stage 0
