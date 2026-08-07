@@ -14,6 +14,8 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-08-07
+
 ### Added
 
 * Landing page opt-out (`SRV-21`): `FREIZONE_LANDING_PAGE_ENABLED=false`
