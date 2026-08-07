@@ -280,12 +280,17 @@ codes per account is needed before this ships.
 
 ### SRV-16 — Broadcast lists
 Status: `planned` · Also affects: freizone-app
+Design: [design/16-broadcast.md](design/16-broadcast.md)
 
 Split out of SRV-01 on 2026-08-02. Shares that item's fan-out and identity
 model, but is not a flag on a group: a broadcast's recipient list must
 specifically *not* be shared with its recipients, which removes the whole
-snapshot / `state_hash` convergence layer and makes delivery one-directional.
-Deliberately not designed until groups ship.
+snapshot / `state_hash` convergence layer *toward them* and makes delivery
+one-directional. Designed once groups shipped, and grown in the process: a
+list also needs to carry notifications from future Freizone bots, so it gets
+its own founder/admin/sender authority tier that *does* converge normally
+among itself, plus an `open`/`apply` subscribe policy for recipients joining
+themselves rather than always being added.
 
 ### SRV-17 — Say in the prekey block whether it is a re-key
 Status: `done` · Also affects: freizone-app
@@ -443,7 +448,7 @@ working around it.
   why blobs are files rather than DB rows)
 
 ### SRV-21 — Landing page opt-out
-Status: `planned`
+Status: `done`
 
 `handleLanding` (`internal/api/landing.go`) always serves the root-path page
 explaining that the host is a Freizone server. Not every operator wants that:
@@ -458,6 +463,18 @@ what it returns.
   about operator publicity preferences: declining to advertise being a
   Freizone server at all is a real, common case, and this is the lever for
   it
+- 2026-08-07 — shipped as `FREIZONE_LANDING_PAGE_ENABLED` (default `true`),
+  exactly the shape sketched above: `Router()` skips the
+  `GET /{$}` registration when it is off, so the root falls through to the
+  mux's own 404 rather than to a handler that answers differently.
+  Deliberately *not* the `BlobsEnabled` treatment of a route that exists and
+  returns `404 not_found` with a JSON body explaining itself — that body is
+  itself the confirmation this switch exists to withhold. Also deliberately
+  not surfaced on `GET /v1/server-status` and not runtime-switchable via an
+  admin endpoint the way federation is: no client behaviour depends on it
+  (nothing but a browser ever fetches `/`), so there is nothing for a peer to
+  adapt to, and a DB-backed setting would only add a query to a hot path for
+  a decision an operator makes once at deploy time
 
 ### SRV-22 — Seat/capacity display for admins
 Status: `done` · Design: [design/19-attested-servers.md](design/19-attested-servers.md)
@@ -477,3 +494,32 @@ admins against the server's real active-account count — never on `GET
   `Version2` token without ever reading it — verified against both a real
   `Version2` token and a hand-built `Version1` one run through the actual
   parser in Node, not just reasoned about
+
+### SRV-23 — Shared protocol client core
+Status: `planned` · Also affects: freizone-app, future freizone-bot
+Design: [design/23-shared-client-core.md](design/23-shared-client-core.md)
+
+The protocol is implemented twice: `cmd/devclient` (3,236 lines of Go) and
+freizone-app's Dart state layer (~12,400 lines of non-UI Dart,
+`lib/state/app_session.dart` alone 4,461). Both build on the same `pkg/`
+primitives, so the cryptography is shared — the orchestration around it is
+not, and nothing forces the two to agree. A new `pkg/client` holds state,
+persistence, network and every protocol decision once, consumed by the CLI, by
+freizone-app through its cgo core, and later by freizone-bot. Staged, each
+stage shipping on its own; local storage moves to SQLite, which costs testers
+a one-time reset. No wire-format change.
+
+- 2026-08-07 — raised out of a different question: whether to drop Flutter for
+  two natively written apps (Kotlin, Swift). The measurement said the blocker
+  is not the UI framework but that half the protocol lives in Dart, so going
+  native would mean hand-writing the session lifecycle two more times — with
+  divergence landing where it destroys messages rather than pixels, and no iOS
+  device to catch it. Decided: core first, UI question re-asked afterwards,
+  when each additional UI is view code over one implementation. Flutter stays
+  meanwhile. Two things settled the same day: the closed-beta tester circle
+  makes a data reset acceptable, which frees the storage format from
+  compatibility and puts SQLite (`modernc.org/sqlite`, pure Go — the c-shared
+  build has to reach `ios/arm64`) in place of the monolithic JSON store; and a
+  planned Go-based freizone-bot as a third consumer, which fixes the core's API
+  as idiomatic Go rather than the app's FFI shape, concurrent, and
+  multi-identity. Not started — implementation waits for explicit go-ahead
