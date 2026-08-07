@@ -58,7 +58,15 @@ func (a *API) Router() http.Handler {
 	// Exactly "/" (the {$} anchor), never a catch-all: unknown paths still
 	// fall through to the mux's default 404, so this never shadows the /v1/
 	// API or its JSON error contract. See handleLanding for the rest.
-	mux.HandleFunc("GET /{$}", a.handleLanding)
+	//
+	// Registered only when LandingPageEnabled (SRV-21): an operator who
+	// wants the bare domain to give no sign anything is running there needs
+	// net/http's plain 404, not a route that exists but answers differently
+	// -- so the route is skipped here rather than made conditional inside
+	// handleLanding.
+	if a.Config.LandingPageEnabled {
+		mux.HandleFunc("GET /{$}", a.handleLanding)
+	}
 
 	mux.HandleFunc("GET /healthz", a.handleHealth)
 

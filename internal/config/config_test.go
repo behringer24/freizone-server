@@ -26,6 +26,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.MessageRetentionDays != defaultMessageRetentionDays {
 		t.Errorf("MessageRetentionDays = %d, want %d", cfg.MessageRetentionDays, defaultMessageRetentionDays)
 	}
+	if !cfg.LandingPageEnabled {
+		t.Error("default LandingPageEnabled = false, want true")
+	}
 }
 
 func TestLoadInvalidTLSMode(t *testing.T) {
@@ -104,6 +107,20 @@ func TestLoadExplicitMessageRetentionDays(t *testing.T) {
 func TestLoadRejectsNonNumericMessageRetentionDays(t *testing.T) {
 	if _, err := Load(envMap(map[string]string{envMessageRetentionDays: "not-a-number"})); err == nil {
 		t.Error("expected error for non-numeric message retention days")
+	}
+}
+
+func TestLoadLandingPageEnabled(t *testing.T) {
+	cfg, err := Load(envMap(map[string]string{envLandingPageEnabled: "false"}))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.LandingPageEnabled {
+		t.Error("LandingPageEnabled = true after setting the env var to false")
+	}
+
+	if _, err := Load(envMap(map[string]string{envLandingPageEnabled: "maybe"})); err == nil {
+		t.Error("expected error for a non-boolean landing page setting")
 	}
 }
 
