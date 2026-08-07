@@ -625,3 +625,19 @@ a one-time reset. No wire-format change.
   and the package is clean under `-race` — newly possible at all, since the race
   detector needs cgo and the mingw toolchain only arrived with the Dart half of
   stage 0
+- 2026-08-07 — FFI surface for the core, in freizone-app's `native/`
+  (`CoreOpen`/`CoreClose`/`CoreSetIdentity`/`CoreStreamStart`/`CoreStreamStop`/
+  `CorePoll`). Taken before stages 3-5 on purpose: the plan's own decision point
+  after stage 2 was to get the core genuinely running on the device rather than
+  spend another nine sessions with nothing shippable, and `SetIdentity` is what
+  makes that possible before the app's state layer has migrated — the identity
+  is handed across once and the core can then sign and stream on its own. The
+  bridge is a cgo-free file so the handle lifecycle and poll semantics are
+  covered by `go test`; `CorePoll` returns a batch rather than one event per
+  crossing; event kinds cross as strings so a version mismatch fails visibly;
+  and `disconnected` carries no error text, matching the app's rule that only a
+  failed connect attempt reaches the user. 9 tests, 40 in the native package.
+  This is also the commit where SQLite's dependencies actually land in the app
+  module, as the +7.04 MB measurement predicted. Next: the Dart bindings and
+  replacing `sse_client.dart` in `AppSession._startStream`, which is what puts
+  the core on the Pixel
