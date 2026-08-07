@@ -1,0 +1,62 @@
+{
+  "name": "duplicate-ordinary-message-is-not-desync-evidence",
+  "description": "The same envelope twice on an established session. The second is a duplicate, not a fault: nothing is wrong, so it must not be counted toward an automatic re-key and the session must stay usable.",
+  "reference": "SRV-03",
+  "receiver": {
+    "account_id": "fz1mmmm00000000000000000000000000receiver",
+    "dh_identity_priv": "qjCFzM2JZg1R//d0X4pcQdi4XWijnrUFqPmlmpr44Cg=",
+    "signed_prekey_priv": "+BKvQQofj4RptbeJ0v9FsBfwsslhsj46Fk4UlDQ4sQg=",
+    "sessions": {
+      "fz1zzzz000000000000000000000000000000peer": {
+        "role": "responder",
+        "ad": "b6qpDHNIqDgyFPDWIppc+7ma6IuMlCOCfvmTOa4P9Ug0JQynCqx441P5QASmqoXfXHGYonkN3iff3qeAfea7GQ==",
+        "dhs_priv": "Gp0Vxp2rW954A0U/hP9rQFsoTbDE3F00j+KxwF5UrbM=",
+        "dhr_pub": "ZtGmm1tK0Ov2F34iDRHfiq7kTcKtnW4dJAHTqVWEnH8=",
+        "rk": "MPrH4PuYjrSWEx0enRizxwQC5fTMeZ3fwS8U1t8EiK8=",
+        "cks": "xT7M2Nvh6vNbUzoJakycBdn0CtduLrt/1WmHWHk1/Dc=",
+        "ckr": "wx3PtaEPplQ048HlUNs5iHWGXWClBxcK4r9YgByRe5k=",
+        "ns": 0,
+        "nr": 1,
+        "pn": 0
+      }
+    }
+  },
+  "steps": [
+    {
+      "label": "message arrives",
+      "message_id": "m1",
+      "sender_account_id": "fz1zzzz000000000000000000000000000000peer",
+      "payload": {
+        "header": {
+          "dh_pub": "ZtGmm1tK0Ov2F34iDRHfiq7kTcKtnW4dJAHTqVWEnH8=",
+          "pn": 0,
+          "n": 1
+        },
+        "ciphertext": "F9vs+2QMsIyJudGrTK7DdO8oXcAr7V2sRGxL8NMPKVdR4FFavpmiaK+579lJl39+czuVu+ZKfYCU4EiCQtob"
+      },
+      "expect": {
+        "outcome": "decrypted",
+        "text": "one",
+        "session_effect": "unchanged"
+      }
+    },
+    {
+      "label": "same message redelivered",
+      "message_id": "m1",
+      "sender_account_id": "fz1zzzz000000000000000000000000000000peer",
+      "payload": {
+        "header": {
+          "dh_pub": "ZtGmm1tK0Ov2F34iDRHfiq7kTcKtnW4dJAHTqVWEnH8=",
+          "pn": 0,
+          "n": 1
+        },
+        "ciphertext": "F9vs+2QMsIyJudGrTK7DdO8oXcAr7V2sRGxL8NMPKVdR4FFavpmiaK+579lJl39+czuVu+ZKfYCU4EiCQtob"
+      },
+      "expect": {
+        "outcome": "duplicate",
+        "counts_as_desync_evidence": false,
+        "session_effect": "unchanged"
+      }
+    }
+  ]
+}

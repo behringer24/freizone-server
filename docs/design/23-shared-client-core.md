@@ -154,6 +154,80 @@ point — and the bot, being headless and scriptable, will make a better
 end-to-end harness for federation and group tests than driving a Flutter app
 ever did.
 
+## What stage 0 found
+
+The vectors live in `pkg/conformance` (schema and loader in `vector.go`,
+authored cases in `generator.go`, committed data under `testdata/`). Both
+clients run them: `cmd/devclient/conformance_test.go` here, and
+freizone-app's `test/receive_path_conformance_test.dart` there.
+
+Nine vectors. **The app passes all nine. This client passes four.** That is the
+measurement the item was worth doing for, and it points the migration in a
+direction the LOC counts alone did not: `pkg/client` is not "extract devclient
+and tidy it up". On every rule where the two disagree, the Dart implementation
+is the correct one, so the app is the specification and this client is the
+thing being brought up to it.
+
+Passing, and worth stating because they are the parts that did *not* drift: first
+contact, the simultaneous-establishment tie-break in both directions, and the
+SRV-17 deliberate-re-key override. The hard, recently-designed rules are
+consistent across both implementations.
+
+Failing, each a real defect in this client rather than a stylistic difference:
+
+| Vector | What this client does |
+| --- | --- |
+| `redelivered-initial-must-not-reset-session` | No processed-message-id tracking at all, so a redelivered first envelope is processed again: the responder step re-runs and the rewound session replaces the advanced one |
+| `duplicate-ordinary-message-is-not-desync-evidence` | The ratchet *does* reject the duplicate, but `decryptIncoming` discards that error for a generic "no session decrypts this message" |
+| `authentication-failure-is-desync-evidence` | Same cause: `pkg/ratchet` classifies it and `SuggestsDesync` reports true, but the error is wrapped with `fmt.Errorf` and no `%w`, so the code is lost — and there is no desync accounting to feed it into (SRV-03 is app-only) |
+| `failed-responder-attempt-must-not-burn-prekey` | `respondToNewSession` deletes the one-time prekey *before* `RespondToSession` is called, so any initial that fails to decrypt still costs a prekey |
+| `legacy-rekey-inferred-from-plaintext` | A prekey block without the SRV-17 field is always treated as the racing case; the app additionally infers a re-key from the content being a `v:3` re-key signal, a plaintext version this client does not model at all |
+
+The two failures sharing a cause are the sharpest evidence for this item.
+`pkg/ratchet` already exports `FailureCode` and `SuggestsDesync` precisely so a
+caller can tell a harmless redelivery from a broken session — and one of the two
+callers throws that away. Nothing about the primitives caused it; it is a
+decision made in the orchestration layer, in the copy that nobody was testing.
+
+**Known failures are recorded rather than left red.** `knownDivergences` in the
+test names each one with its cause, so `go test ./...` stays green while the
+defects stay visible. The list is self-cleaning in both directions: a listed step
+that starts conforming fails with "remove it from the list", and a listed key no
+vector produces fails too. Emptying it is therefore a green signal that
+`pkg/client` has taken over, not a judgement call.
+
+Two honest limits of what was built:
+
+- **One claim did not survive contact with the vector.** The redelivery case was
+  expected to break the conversation permanently. It does not: X3DH is
+  deterministic, so the rebuilt session derives the same chain, and with the
+  receiver having sent nothing in between there is no DH ratchet step to lose.
+  The redelivery is a real defect — a message re-decrypted and re-shown, skipped
+  keys discarded — but recoverable in this scenario. Proving worse needs
+  send-side modelling, which the receive-only format cannot express. The vector
+  says so in its own description rather than overclaiming.
+- **Not every rule is observable where the vectors look.** The app satisfies the
+  desync-evidence assertions because `CoreErrorCode.suggestsDesync` carries the
+  ratchet's classification through — but the act of *recording* that evidence
+  lives in `AppSession._giveUpOnEnvelope`, one layer above the extracted
+  `processIncomingMessage` the vectors drive. So the vectors pin the
+  classification, not the accounting built on it. Worth knowing when `pkg/client`
+  draws its own boundary: the pure function that exists today is not yet the
+  whole decision surface.
+
+Getting the app half running needed a host build of the core, which is worth
+recording as a result of its own. `FreizoneCoreBindings.open()` loaded the
+shared library only on Android and fell back to `DynamicLibrary.process()`
+elsewhere, which finds nothing in a test process — so **every one of the 8,700
+lines in the app's `lib/state/` was untestable on a development host**, and
+`processIncomingMessage`, its most protocol-critical function, had no coverage
+at all while 5,000 lines of Dart tests covered everything that needs no core.
+The fix was small: a C toolchain (mingw-w64 on Windows, since the core is cgo
+and the Android NDK's clang only targets Android), a `native/build_desktop.ps1`
+beside the existing Android one, and a test-only `libraryPath` parameter that
+leaves the production loader untouched. The vectors were the occasion, but the
+capability outlasts them — that layer can now be tested at all.
+
 Considered and not done:
 
 - **Two native apps now (Kotlin + Swift), dropping Flutter.** The obstacle is

@@ -1,0 +1,52 @@
+{
+  "name": "deliberate-rekey-wins-against-tie-break",
+  "description": "The prekey block says this is a deliberate re-key (SRV-17), so there is no race and no tie-break to apply: the sender discarded their session and theirs is the only one they can read. It wins even though their account id sorts higher.",
+  "reference": "PROTOCOL.md §5",
+  "receiver": {
+    "account_id": "fz1mmmm00000000000000000000000000receiver",
+    "dh_identity_priv": "nYLp17ZmOryDRF+5sxuf5CKJv4cjy1BuEs6LNqCj/fQ=",
+    "signed_prekey_priv": "D8VQ+Jm33GOW4GADg8c3Qw0fHQ/IODkX25kupyy05Qo=",
+    "one_time_prekeys": {
+      "1": "bloyD7cVJ8xTQ8aqy2lo1lOiB13xZ4snE7LXi6FdDhU="
+    },
+    "sessions": {
+      "fz1zzzz000000000000000000000000000000peer": {
+        "role": "initiator",
+        "ad": "m+K02qa6HSu/N5ZWNmwBhJD0G59H/ExYTmElezj3BSvj8qolp7xk6qAqSE158EdbgdkYaDpJPBuduovzDg3MFw==",
+        "dhs_priv": "EqY7xusCAiYCCJonWNysJeALZUWCr9dTD9sYybiM9ok=",
+        "dhr_pub": "c1ul9rMcI1nOD9o5vtaJRZ82QKlqB1JyAEOZztwZnFE=",
+        "rk": "YoY/4SNuxfc8ghroNYm+xLNOa8JCgkHfxfoxdQbEkC4=",
+        "cks": "qgUftUAvCTnW46SlMYCaonNGKHps0YmhCRxa6syWtao=",
+        "ns": 0,
+        "nr": 0,
+        "pn": 0
+      }
+    }
+  },
+  "steps": [
+    {
+      "label": "peer's own initial arrives",
+      "message_id": "m1",
+      "sender_account_id": "fz1zzzz000000000000000000000000000000peer",
+      "payload": {
+        "prekey": {
+          "sender_dh_identity_pub": "4/KqJae8ZOqgKkhNefBHW4HZGGg6STwbnbqL8w4NzBc=",
+          "sender_ephemeral_pub": "/P7hj97GmwqJhfOO2bFEw8K+ajd8N8WYZPCZCfR7Lj8=",
+          "signed_prekey_id": 1,
+          "one_time_prekey_id": 1,
+          "rekey": true
+        },
+        "header": {
+          "dh_pub": "8IMnhwnFL+eqru/QNNi7TxGKLYZpBNSphuadU9Pr2GY=",
+          "pn": 0,
+          "n": 0
+        },
+        "ciphertext": "i30Yv6QhswXvq1v+QbJ1wQiXrMW7OSz11u+lODgYogZ1N+p0LkkinARZWlg4puPblzbb5FZEh8zPHmK6wphT5tGK"
+      },
+      "expect": {
+        "outcome": "decrypted",
+        "session_effect": "adopted_peer"
+      }
+    }
+  ]
+}
