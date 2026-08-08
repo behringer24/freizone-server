@@ -196,9 +196,13 @@ func (c *Client) streamOnce(ctx context.Context, policy StreamPolicy, events cha
 		connectTimer.Stop()
 		switch {
 		case timedOut.Load():
+			// Probe the layers separately rather than leave the caller guessing
+			// which of them stalled. Uses ctx, not the attempt context, which
+			// has just been cancelled -- and returns quickly enough not to
+			// delay the retry meaningfully.
 			return false, fmt.Errorf(
-				"client: message stream to %s did not open within %s -- name resolution, TLS or the server not answering: %w",
-				id.Server, policy.ConnectTimeout, err)
+				"client: message stream to %s did not open within %s. Probing: %s",
+				id.Server, policy.ConnectTimeout, diagnoseReach(ctx, id.Server))
 		case ctx.Err() != nil:
 			// A deliberate stop. Returned so the loop's own ctx check ends it
 			// quietly; nothing reports this to a user.

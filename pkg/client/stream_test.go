@@ -324,14 +324,19 @@ func TestStreamWithoutAnIdentityReportsIt(t *testing.T) {
 	}
 }
 
-// A connect that outlives the deadline must say so, and name the server. The
-// bare "context canceled" this used to produce is the same text a deliberate
-// stop produces, so a log carrying it told nobody which had happened -- or how
-// long anything had waited.
-func TestConnectTimeoutSaysWhatHappened(t *testing.T) {
+// A timed-out connect must name the deadline it exceeded AND the layer that
+// stalled. Both matter: "context canceled" alone is the same text a deliberate
+// stop produces, and knowing only that it timed out does not say whether the
+// name resolved, the port answered, or TLS failed.
+func TestConnectTimeoutProbesTheLayers(t *testing.T) {
 	block := make(chan struct{})
 	c := servedClient(t, func(w http.ResponseWriter, r *http.Request) {
-		<-block // never answer, so the deadline is what ends the attempt
+		if r.URL.Path == "/v1/server-status" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{}`))
+			return
+		}
+		<-block // the stream endpoint never answers
 	})
 	t.Cleanup(func() { close(block) })
 
@@ -341,14 +346,10 @@ func TestConnectTimeoutSaysWhatHappened(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ev := awaitEvent(t, c.Stream(ctx, policy), StreamFailed)
-	msg := ev.Err.Error()
-	for _, want := range []string{"did not open within", "200ms"} {
+	msg := awaitEvent(t, c.Stream(ctx, policy), StreamFailed).Err.Error()
+	for _, want := range []string{"did not open within", "200ms", "resolves to", "connects", "answered 200"} {
 		if !strings.Contains(msg, want) {
-			t.Errorf("error should contain %q, got: %s", want, msg)
+			t.Errorf("probe should report %q, got: %s", want, msg)
 		}
-	}
-	if strings.HasSuffix(msg, "context canceled") && !strings.Contains(msg, "did not open within") {
-		t.Errorf("the deadline is indistinguishable from a deliberate stop: %s", msg)
 	}
 }
