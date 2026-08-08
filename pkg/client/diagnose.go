@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -94,7 +95,46 @@ func diagnoseReach(ctx context.Context, server string) string {
 	}
 	resp.Body.Close()
 
-	return strings.Join(append(steps,
-		fmt.Sprintf("GET /v1/server-status answered %d, so plain requests work and the problem is specific to the stream",
-			resp.StatusCode)), "; ")
+	// The protocol version is worth naming. Go negotiates HTTP/2 over TLS by
+	// default; the app's Dart client speaks 1.1 only. A short request behaving
+	// while a long-lived streaming one stalls is exactly what a proxy
+	// mishandling h2 streams looks like, and this is the cheap way to find out
+	// whether h2 is even in play rather than assuming it.
+	steps = append(steps, fmt.Sprintf("GET /v1/server-status answered %d over %s",
+		resp.StatusCode, resp.Proto))
+
+	return strings.Join(steps, "; ")
+}
+
+// diagnoseStream reproduces the failing request itself, signed and on a short
+// fuse, and reports what came back.
+//
+// The three layers above can all pass while this still fails -- that is exactly
+// the case reported from the device. Testing the real path is the only thing
+// that separates "the network is fine" from "the network is fine and something
+// about *this* request is not".
+func (c *Client) diagnoseStream(ctx context.Context, id Identity) string {
+	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+
+	req, err := c.streamRequest(ctx, id)
+	if err != nil {
+		return fmt.Sprintf("could not build a stream request: %v", err)
+	}
+
+	started := time.Now()
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Sprintf("the stream request itself got no response headers in %s: %v",
+			time.Since(started).Round(time.Millisecond), err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Sprintf("the stream request answered %d over %s: %s",
+			resp.StatusCode, resp.Proto, strings.TrimSpace(string(body)))
+	}
+	return fmt.Sprintf("the stream request answered 200 over %s in %s, so the endpoint works and the earlier attempt was something else",
+		resp.Proto, time.Since(started).Round(time.Millisecond))
 }
