@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -320,5 +321,34 @@ func TestStreamWithoutAnIdentityReportsIt(t *testing.T) {
 	ev := awaitEvent(t, c.Stream(ctx, fastPolicy), StreamFailed)
 	if !errors.Is(ev.Err, ErrNoIdentity) {
 		t.Errorf("want ErrNoIdentity, got %v", ev.Err)
+	}
+}
+
+// A connect that outlives the deadline must say so, and name the server. The
+// bare "context canceled" this used to produce is the same text a deliberate
+// stop produces, so a log carrying it told nobody which had happened -- or how
+// long anything had waited.
+func TestConnectTimeoutSaysWhatHappened(t *testing.T) {
+	block := make(chan struct{})
+	c := servedClient(t, func(w http.ResponseWriter, r *http.Request) {
+		<-block // never answer, so the deadline is what ends the attempt
+	})
+	t.Cleanup(func() { close(block) })
+
+	policy := fastPolicy
+	policy.ConnectTimeout = 200 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ev := awaitEvent(t, c.Stream(ctx, policy), StreamFailed)
+	msg := ev.Err.Error()
+	for _, want := range []string{"did not open within", "200ms"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error should contain %q, got: %s", want, msg)
+		}
+	}
+	if strings.HasSuffix(msg, "context canceled") && !strings.Contains(msg, "did not open within") {
+		t.Errorf("the deadline is indistinguishable from a deliberate stop: %s", msg)
 	}
 }

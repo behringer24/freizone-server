@@ -10,6 +10,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/behringer24/freizone-server/pkg/httpsig"
@@ -57,8 +58,22 @@ type StreamEvent struct {
 // comments for why each is what it is.
 type StreamPolicy struct {
 	// ConnectTimeout bounds a single connect attempt, so a host that is routed
-	// but dead surfaces as unreachable in seconds instead of after the
-	// OS-level TCP timeout. Default 10s.
+	// but dead surfaces as unreachable instead of hanging on the OS-level TCP
+	// timeout. Default 20s.
+	//
+	// Not the 10s the app's Dart client used, deliberately. There the platform
+	// stack had already resolved the name and holds the system trust store, so
+	// ten seconds bounded little more than the TCP and TLS handshake. This
+	// client does its own DNS and its own TLS, cold, on the first connect after
+	// the process starts -- a tighter bound here does not mean the same thing.
+	//
+	// There is a real cost to setting it too low, beyond retrying early: this
+	// cancellation *replaces* whatever the network stack was about to report.
+	// A name that does not resolve, a refused connection, an untrusted
+	// certificate -- all of them arrive as "context canceled" if this fires
+	// first, and the actual cause is lost. A bound generous enough for the
+	// underlying error to surface on its own is worth more than a fast one that
+	// hides it.
 	ConnectTimeout time.Duration
 
 	// InitialRetryDelay and MaxRetryDelay bound the exponential backoff used
@@ -78,7 +93,7 @@ type StreamPolicy struct {
 
 func (p StreamPolicy) withDefaults() StreamPolicy {
 	if p.ConnectTimeout <= 0 {
-		p.ConnectTimeout = 10 * time.Second
+		p.ConnectTimeout = 20 * time.Second
 	}
 	if p.InitialRetryDelay <= 0 {
 		p.InitialRetryDelay = 3 * time.Second
@@ -163,12 +178,35 @@ func (c *Client) streamOnce(ctx context.Context, policy StreamPolicy, events cha
 	// The deadline covers reaching the stream, not reading from it: a healthy
 	// stream is idle for as long as nobody writes to this account, with only a
 	// heartbeat comment every 25 seconds or so.
-	connectTimer := time.AfterFunc(policy.ConnectTimeout, cancel)
+	//
+	// timedOut records that it was *this* timer that cancelled, because
+	// otherwise every cause arrives as an indistinguishable "context canceled":
+	// a connect that took too long, and a deliberate stop, read identically and
+	// neither says how long anything waited. That is useless in a log, which is
+	// where this error is actually read.
+	var timedOut atomic.Bool
+	connectTimer := time.AfterFunc(policy.ConnectTimeout, func() {
+		timedOut.Store(true)
+		cancel()
+	})
 
+	startedAt := time.Now()
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		connectTimer.Stop()
-		return false, fmt.Errorf("client: opening message stream: %w", err)
+		switch {
+		case timedOut.Load():
+			return false, fmt.Errorf(
+				"client: message stream to %s did not open within %s -- name resolution, TLS or the server not answering: %w",
+				id.Server, policy.ConnectTimeout, err)
+		case ctx.Err() != nil:
+			// A deliberate stop. Returned so the loop's own ctx check ends it
+			// quietly; nothing reports this to a user.
+			return false, ctx.Err()
+		default:
+			return false, fmt.Errorf("client: opening message stream to %s failed after %s: %w",
+				id.Server, time.Since(startedAt).Round(time.Millisecond), err)
+		}
 	}
 	defer resp.Body.Close()
 	connectTimer.Stop()
