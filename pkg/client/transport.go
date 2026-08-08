@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -56,7 +57,33 @@ type request struct {
 
 // httpClient has no timeout on purpose: the message stream is a long-lived
 // response, and every call carries a context that is the real deadline.
-var httpClient = &http.Client{}
+//
+// HTTP/2 is switched off deliberately, which is not a default worth changing
+// lightly. Measured from a real device against a real deployment (nginx 1.19.3
+// terminating TLS): the very first stream request on a freshly negotiated h2
+// connection never received response headers and died on the connect deadline,
+// while the identical request on an h2 connection already opened by an earlier
+// short request answered 200 immediately. Short requests were never affected.
+//
+// The app's Dart client had run against that same proxy for as long as it has
+// existed without ever seeing this, and the reason is simply that dart:io
+// speaks HTTP/1.1 only -- so moving the stream into this client was the first
+// time an h2 stream was attempted there at all.
+//
+// Whatever the exact interaction between Go's h2 transport and that proxy, the
+// gain here is nil: this client makes a handful of requests and one long-lived
+// stream, so multiplexing buys nothing, while the version that is known to work
+// against every server in the field costs nothing.
+var httpClient = &http.Client{Transport: httpTransport()}
+
+func httpTransport() *http.Transport {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	// Both are needed: ForceAttemptHTTP2 stops the automatic upgrade, and a
+	// non-nil empty TLSNextProto stops ALPN from negotiating h2 anyway.
+	tr.ForceAttemptHTTP2 = false
+	tr.TLSNextProto = map[string]func(authority string, c *tls.Conn) http.RoundTripper{}
+	return tr
+}
 
 // do performs one request and decodes a successful JSON body into out, which
 // may be nil for calls whose body is not interesting.

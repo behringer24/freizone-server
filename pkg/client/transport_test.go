@@ -358,3 +358,49 @@ func TestRequestWithoutAnIdentityFails(t *testing.T) {
 		t.Errorf("want ErrNoIdentity before setup, got %v", err)
 	}
 }
+
+// HTTP/2 must stay off. Measured against a real deployment behind nginx: the
+// first stream request on a freshly negotiated h2 connection never received
+// response headers, while the same request on an already-open h2 connection
+// answered at once. The app's Dart client never hit it because dart:io speaks
+// 1.1 only -- so nothing but this test stands between that regression and a
+// future Go release changing its default.
+func TestClientDoesNotNegotiateHTTP2(t *testing.T) {
+	var proto string
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proto = r.Proto
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{}`))
+	}))
+	// EnableHTTP2 makes the test server offer h2 over ALPN, so a client that
+	// wanted it would get it. That is the point: the assertion is about the
+	// client's choice, not about what the server can do.
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	defer srv.Close()
+
+	c := openTestClient(t)
+	if err := c.SetIdentity(Identity{
+		AccountID: "fz1account", Server: srv.URL,
+		RootPub: []byte{1}, RootPriv: []byte{2},
+		DeviceID: "device-1", DevicePub: []byte{3}, DevicePriv: make([]byte, 64),
+	}); err != nil {
+		t.Fatalf("SetIdentity: %v", err)
+	}
+
+	// The test server's certificate is not one this client trusts, so the call
+	// fails -- but the handler only runs if TLS and ALPN got that far, which is
+	// what is being measured. Use the server's own client transport for trust.
+	tr := httpTransport()
+	tr.TLSClientConfig = srv.Client().Transport.(*http.Transport).TLSClientConfig
+	saved := httpClient
+	httpClient = &http.Client{Transport: tr}
+	defer func() { httpClient = saved }()
+
+	if _, err := c.ServerStatus(context.Background(), ""); err != nil {
+		t.Fatalf("ServerStatus: %v", err)
+	}
+	if proto != "HTTP/1.1" {
+		t.Errorf("client negotiated %s; h2 is off for a measured reason -- see httpTransport", proto)
+	}
+}
