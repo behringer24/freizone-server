@@ -655,3 +655,32 @@ a one-time reset. No wire-format change.
   arm64-v8a 5.96 → 15.07 MB and x86_64 6.40 → 15.83 MB, so about +9.1 MB and
   not the +7.04 MB the probe suggested** — a probe linking fewer packages than
   the real thing understates the delta. Release APK lands around 87 MB, ~+12%
+- 2026-08-09 — stream reached the device, and two defects only real hardware
+  could show. The stream never opened: Go negotiates HTTP/2 by default and the
+  app's Dart client never did, so this was the first h2 stream against that
+  nginx, and the first request on a fresh h2 connection got no response headers.
+  h2 is now off, and a test asserts it stays off against a server that offers
+  it. Disabling the transport alone was not enough and briefly made it worse —
+  ALPN still offered h2, so the reply arrived as h2 frames an HTTP/1.1 transport
+  tried to read as a status line; the test that should have caught it had
+  substituted away the very field that was wrong. Connect failures now name the
+  layer that stalled, because the connect deadline was masking the diagnosis by
+  replacing whatever the stack was about to report
+- 2026-08-09 — **SQLite dropped for plain files, reversing the stage 1
+  decision.** `modernc.org/sqlite` cannot run on android/amd64 at all: its libc
+  emulation calls `lstat`, Android's seccomp kills the process, and the app died
+  at startup on every x86_64 device and emulator. The newest upstream still does
+  it and every other pure-Go driver is modernc underneath; the cgo driver works
+  but makes cgo mandatory for every consumer, which a planned Flutter desktop
+  client turns into a cross-compilation matrix. The original reasoning was the
+  weak part — "the server already uses SQLite" carried an answer across from
+  relational, queried, multi-tenant data to one account with a handful of chats
+  and no query at all. The replacement keeps one rule: nothing costs more as
+  history grows. Transcripts are append-only logs, sessions and conversation
+  metadata are one small file each, deletions and state changes are appended
+  records naming their message rather than edits to a line, and the chat-list
+  preview reads a bounded window instead of replaying. **All 27 stage-1 tests
+  passed unchanged** — they assert behaviour, not storage — with 26 more since.
+  Core is 15.09 → 9.10 MB on arm64-v8a, `native/go.mod` is back to one direct
+  and one indirect dependency from twelve, cgo is optional again, and the
+  emulator that SQLite killed runs

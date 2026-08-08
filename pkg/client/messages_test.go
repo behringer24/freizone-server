@@ -1,8 +1,11 @@
 package client
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -358,31 +361,85 @@ func TestTranscriptsAreSeparatePerChat(t *testing.T) {
 	}
 }
 
-// The chat list draws one preview per conversation. Doing that must not depend
-// on transcript length -- that dependency is what the single-JSON-file store
-// made worse with every message ever sent.
-func TestLastMessageDoesNotDependOnTranscriptLength(t *testing.T) {
+// The chat-list preview reads a bounded window, not the whole transcript.
+//
+// Asserted structurally rather than by timing: a stopwatch here measures the
+// machine, and an earlier attempt at one passed happily against a deliberately
+// reintroduced full replay -- it could not tell the two apart at any size the
+// test could afford to build. Bytes read is the actual property.
+func TestTailLinesReadsOnlyTheTail(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "log.jsonl")
+
+	// The window is measured in bytes, so a few big records exceed it as surely
+	// as many small ones -- and every append costs an fsync, which is right for
+	// a message arriving but wrong for a test writing thousands.
+	const records = 400
+	filler := strings.Repeat("x", 2048)
+	for i := 0; i < records; i++ {
+		if err := appendLine(path, logRecord{
+			T: recMessage, ID: fmt.Sprintf("m%06d", i), Text: filler,
+			Timestamp: at(1).UTC().Format(time.RFC3339Nano),
+		}); err != nil {
+			t.Fatalf("appendLine: %v", err)
+		}
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Size() <= maxTailBytes {
+		t.Fatalf("test log is only %d bytes; it has to exceed the %d-byte window to prove anything",
+			info.Size(), maxTailBytes)
+	}
+
+	lines, found, err := tailLines(path)
+	if err != nil {
+		t.Fatalf("tailLines: %v", err)
+	}
+	if !found {
+		t.Fatal("no records returned from a log full of them")
+	}
+
+	read := 0
+	for _, l := range lines {
+		read += len(l) + 1
+	}
+	if read > maxTailBytes {
+		t.Errorf("read %d bytes, more than the %d-byte window", read, maxTailBytes)
+	}
+	if int64(read) >= info.Size() {
+		t.Errorf("read %d of %d bytes -- that is the whole file, not its tail", read, info.Size())
+	}
+
+	// Newest first, and the newest is the last one written.
+	var newest logRecord
+	if err := json.Unmarshal(lines[0], &newest); err != nil {
+		t.Fatalf("decoding newest record: %v", err)
+	}
+	if want := fmt.Sprintf("m%06d", records-1); newest.ID != want {
+		t.Errorf("newest record: want %s, got %s", want, newest.ID)
+	}
+}
+
+// And the preview itself stays correct on a transcript far larger than the
+// window -- the bound is only worth having if the answer is still right.
+func TestLastMessageIsCorrectOnALogBeyondTheWindow(t *testing.T) {
 	c := openTestClient(t)
-	for i := 0; i < 2000; i++ {
+	filler := strings.Repeat("x", 2048)
+	for i := 0; i < 400; i++ {
 		if err := c.AppendMessage("chat", Message{
-			ID: fmt.Sprintf("m%04d", i), Text: "filler", Timestamp: at(1),
+			ID: fmt.Sprintf("m%06d", i), Text: filler, Timestamp: at(1),
 		}); err != nil {
 			t.Fatalf("AppendMessage: %v", err)
 		}
 	}
 
-	start := time.Now()
 	last, err := c.LastMessage("chat")
-	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("LastMessage: %v", err)
 	}
-	if last.ID != "m1999" {
-		t.Fatalf("last message: want m1999, got %s", last.ID)
-	}
-	// Generous on purpose: this is asserting "indexed lookup, not a full scan
-	// plus a decode of everything", not a performance figure.
-	if elapsed > 50*time.Millisecond {
-		t.Errorf("previewing a 2000-message chat took %v -- that looks like a full scan", elapsed)
+	if last == nil || last.ID != "m000399" {
+		t.Fatalf("last message: want m000399, got %v", last)
 	}
 }

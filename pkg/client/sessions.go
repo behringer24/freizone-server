@@ -1,10 +1,10 @@
 package client
 
 import (
-	"database/sql"
-	"encoding/json"
-	"errors"
 	"fmt"
+	"os"
+	"strconv"
+	"strings"
 
 	"github.com/behringer24/freizone-server/pkg/ratchet"
 )
@@ -26,56 +26,74 @@ const (
 	Inbound SessionKind = "inbound"
 )
 
+func (k SessionKind) file() (string, error) {
+	switch k {
+	case Sending:
+		return fileSession, nil
+	case Inbound:
+		return fileInbound, nil
+	default:
+		return "", fmt.Errorf("client: unknown session kind %q", k)
+	}
+}
+
 // Session returns the stored session with peer, or nil if there is none.
 // A missing session is an ordinary state -- first contact -- not an error.
 func (c *Client) Session(peer string, kind SessionKind) (*ratchet.Session, error) {
-	var raw []byte
-	err := c.db.QueryRow(
-		`SELECT session FROM sessions WHERE peer_account_id = ? AND kind = ?`,
-		peer, string(kind),
-	).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	path, err := c.sessionPath(peer, kind)
 	if err != nil {
-		return nil, fmt.Errorf("client: reading %s session with %s: %w", kind, peer, err)
+		return nil, err
 	}
 	var s ratchet.Session
-	if err := json.Unmarshal(raw, &s); err != nil {
-		return nil, fmt.Errorf("client: decoding %s session with %s: %w", kind, peer, err)
+	found, err := readJSON(path, &s)
+	if err != nil || !found {
+		return nil, err
 	}
 	return &s, nil
 }
 
 // SetSession stores a session, replacing any previous one of the same kind.
+//
+// One file per peer and kind, which is the point: a session advances on every
+// message, and writing it must cost that session and nothing else. A single
+// file holding every peer's sessions would rewrite them all for one message --
+// the same defect, one level up.
 func (c *Client) SetSession(peer string, kind SessionKind, s *ratchet.Session) error {
 	if s == nil {
 		return fmt.Errorf("client: refusing to store a nil %s session with %s", kind, peer)
 	}
-	raw, err := json.Marshal(s)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	path, err := c.sessionPath(peer, kind)
 	if err != nil {
-		return fmt.Errorf("client: encoding %s session with %s: %w", kind, peer, err)
+		return err
 	}
-	if _, err := c.db.Exec(`
-		INSERT INTO sessions (peer_account_id, kind, session) VALUES (?, ?, ?)
-		ON CONFLICT (peer_account_id, kind) DO UPDATE SET session = excluded.session`,
-		peer, string(kind), raw,
-	); err != nil {
-		return fmt.Errorf("client: writing %s session with %s: %w", kind, peer, err)
-	}
-	return nil
+	return writeJSON(path, s)
 }
 
 // DeleteSession removes a session. Deleting one that is not there is not an
 // error -- callers reach for this to guarantee absence, not to assert presence.
 func (c *Client) DeleteSession(peer string, kind SessionKind) error {
-	if _, err := c.db.Exec(
-		`DELETE FROM sessions WHERE peer_account_id = ? AND kind = ?`,
-		peer, string(kind),
-	); err != nil {
-		return fmt.Errorf("client: deleting %s session with %s: %w", kind, peer, err)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	path, err := c.sessionPath(peer, kind)
+	if err != nil {
+		return err
 	}
-	return nil
+	return removeFile(path)
+}
+
+func (c *Client) sessionPath(peer string, kind SessionKind) (string, error) {
+	name, err := kind.file()
+	if err != nil {
+		return "", err
+	}
+	return c.store.peerPath(peer, name)
 }
 
 // OneTimePrekey is one uploaded prekey pair, held until a peer claims it. The
@@ -84,6 +102,12 @@ type OneTimePrekey struct {
 	KeyID uint32
 	Pub   []byte
 	Priv  []byte
+}
+
+type prekeyFile struct {
+	KeyID uint32 `json:"key_id"`
+	Pub   []byte `json:"pub"`
+	Priv  []byte `json:"priv"`
 }
 
 // OneTimePrekey looks a prekey up **without consuming it**, returning nil when
@@ -98,58 +122,85 @@ type OneTimePrekey struct {
 // no-one-time-prekey path. cmd/devclient does exactly that today; see
 // pkg/conformance's failed-responder-attempt-must-not-burn-prekey.
 func (c *Client) OneTimePrekey(id uint32) (*OneTimePrekey, error) {
-	otpk := OneTimePrekey{KeyID: id}
-	err := c.db.QueryRow(
-		`SELECT pub, priv FROM one_time_prekeys WHERE key_id = ?`, id,
-	).Scan(&otpk.Pub, &otpk.Priv)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	path, err := c.store.prekeyPath(prekeyName(id))
 	if err != nil {
-		return nil, fmt.Errorf("client: reading one-time prekey %d: %w", id, err)
+		return nil, err
 	}
-	return &otpk, nil
+	var stored prekeyFile
+	found, err := readJSON(path, &stored)
+	if err != nil || !found {
+		return nil, err
+	}
+	return &OneTimePrekey{KeyID: stored.KeyID, Pub: stored.Pub, Priv: stored.Priv}, nil
 }
 
-// PutOneTimePrekeys stores a freshly generated batch, in one transaction so a
-// partial write cannot leave keys uploaded to the server but unknown here.
+// PutOneTimePrekeys stores a freshly generated batch, one file each.
+//
+// Not one file for the pool: consuming a single prekey then rewrites the whole
+// pool, and a top-up writes every key that was already there. One file per key
+// makes both operations cost exactly what they touch.
 func (c *Client) PutOneTimePrekeys(keys []OneTimePrekey) error {
-	if len(keys) == 0 {
-		return nil
-	}
-	tx, err := c.db.Begin()
-	if err != nil {
-		return fmt.Errorf("client: storing one-time prekeys: %w", err)
-	}
-	defer tx.Rollback() //nolint:errcheck // no-op after a successful Commit
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	for _, k := range keys {
-		if _, err := tx.Exec(`
-			INSERT INTO one_time_prekeys (key_id, pub, priv) VALUES (?, ?, ?)
-			ON CONFLICT (key_id) DO UPDATE SET pub = excluded.pub, priv = excluded.priv`,
-			k.KeyID, k.Pub, k.Priv,
-		); err != nil {
-			return fmt.Errorf("client: storing one-time prekey %d: %w", k.KeyID, err)
+		path, err := c.store.prekeyPath(prekeyName(k.KeyID))
+		if err != nil {
+			return err
+		}
+		if err := writeJSON(path, prekeyFile{KeyID: k.KeyID, Pub: k.Pub, Priv: k.Priv}); err != nil {
+			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 // ConsumeOneTimePrekey drops a prekey from the pool. Call it only once a
 // session built from it has decrypted -- see [Client.OneTimePrekey].
 func (c *Client) ConsumeOneTimePrekey(id uint32) error {
-	if _, err := c.db.Exec(`DELETE FROM one_time_prekeys WHERE key_id = ?`, id); err != nil {
-		return fmt.Errorf("client: consuming one-time prekey %d: %w", id, err)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	path, err := c.store.prekeyPath(prekeyName(id))
+	if err != nil {
+		return err
 	}
-	return nil
+	return removeFile(path)
 }
 
 // CountOneTimePrekeys reports how many unclaimed prekeys remain, which is what
 // decides whether the pool needs topping up.
 func (c *Client) CountOneTimePrekeys() (int, error) {
-	var n int
-	if err := c.db.QueryRow(`SELECT COUNT(*) FROM one_time_prekeys`).Scan(&n); err != nil {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	dir, err := c.store.prekeysDir()
+	if err != nil {
+		return 0, err
+	}
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
 		return 0, fmt.Errorf("client: counting one-time prekeys: %w", err)
 	}
-	return n, nil
+
+	count := 0
+	for _, e := range entries {
+		// Ignore anything that is not a prekey: a temporary file left by a
+		// write that died mid-rename would otherwise be counted as a key the
+		// server thinks it can hand out.
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") && !strings.Contains(e.Name(), ".tmp") {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func prekeyName(id uint32) string {
+	return strconv.FormatUint(uint64(id), 10) + ".json"
 }
