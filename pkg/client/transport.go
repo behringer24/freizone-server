@@ -78,10 +78,22 @@ var httpClient = &http.Client{Transport: httpTransport()}
 
 func httpTransport() *http.Transport {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
-	// Both are needed: ForceAttemptHTTP2 stops the automatic upgrade, and a
-	// non-nil empty TLSNextProto stops ALPN from negotiating h2 anyway.
+
+	// Three things, and all three are needed. Disabling the transport's h2
+	// support is not the same as not asking for h2, and getting only the first
+	// two is worse than doing nothing: ALPN still offers h2, the server picks
+	// it, and the reply arrives as HTTP/2 frames that an HTTP/1.1 transport
+	// tries to parse as a status line -- which surfaces as
+	// `malformed HTTP response "\x00\x00\x12..."`, those bytes being an h2
+	// frame header. Setting NextProtos explicitly is what actually stops h2
+	// being negotiated in the first place.
 	tr.ForceAttemptHTTP2 = false
 	tr.TLSNextProto = map[string]func(authority string, c *tls.Conn) http.RoundTripper{}
+	if tr.TLSClientConfig == nil {
+		tr.TLSClientConfig = &tls.Config{}
+	}
+	tr.TLSClientConfig.NextProtos = []string{"http/1.1"}
+
 	return tr
 }
 

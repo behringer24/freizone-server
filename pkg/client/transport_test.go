@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"io"
@@ -388,11 +389,15 @@ func TestClientDoesNotNegotiateHTTP2(t *testing.T) {
 		t.Fatalf("SetIdentity: %v", err)
 	}
 
-	// The test server's certificate is not one this client trusts, so the call
-	// fails -- but the handler only runs if TLS and ALPN got that far, which is
-	// what is being measured. Use the server's own client transport for trust.
+	// Only the trust anchor is swapped in, never TLSClientConfig as a whole.
+	// An earlier version of this test replaced the config with the test server.s
+	// -- which overwrote NextProtos, the very field that decides whether h2 is
+	// offered, so the test passed while the shipped client still negotiated h2
+	// and then failed to parse the frames it got back.
+	pool := x509.NewCertPool()
+	pool.AddCert(srv.Certificate())
 	tr := httpTransport()
-	tr.TLSClientConfig = srv.Client().Transport.(*http.Transport).TLSClientConfig
+	tr.TLSClientConfig.RootCAs = pool
 	saved := httpClient
 	httpClient = &http.Client{Transport: tr}
 	defer func() { httpClient = saved }()
