@@ -1,9 +1,7 @@
 package client
 
 import (
-	"database/sql"
-	"errors"
-	"fmt"
+	"sort"
 	"time"
 )
 
@@ -24,30 +22,52 @@ type PeerSessionHealth struct {
 	LastRekeyAt *time.Time
 }
 
+type healthFile struct {
+	DesyncEvidence int    `json:"desync_evidence"`
+	FirstFailureAt string `json:"first_failure_at,omitempty"`
+	LastRekeyAt    string `json:"last_rekey_at,omitempty"`
+}
+
 // PeerSessionHealth returns what is recorded about peer, or nil when nothing
-// has gone wrong -- the normal case.
+// has gone wrong -- the normal case, and the reason this is its own small file
+// per peer rather than a map everyone shares: most peers never have one.
 func (c *Client) PeerSessionHealth(peer string) (*PeerSessionHealth, error) {
-	var (
-		h            PeerSessionHealth
-		first, rekey sql.NullString
-	)
-	err := c.db.QueryRow(`
-		SELECT desync_evidence, first_failure_at, last_rekey_at
-		  FROM peer_session_health WHERE peer_account_id = ?`, peer,
-	).Scan(&h.DesyncEvidence, &first, &rekey)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.healthLocked(peer)
+}
+
+func (c *Client) healthLocked(peer string) (*PeerSessionHealth, error) {
+	path, err := c.store.peerPath(peer, fileHealth)
 	if err != nil {
-		return nil, fmt.Errorf("client: reading session health for %s: %w", peer, err)
-	}
-	if h.FirstFailureAt, err = parseTime(first); err != nil {
 		return nil, err
 	}
-	if h.LastRekeyAt, err = parseTime(rekey); err != nil {
+	var stored healthFile
+	found, err := readJSON(path, &stored)
+	if err != nil || !found {
 		return nil, err
 	}
-	return &h, nil
+
+	h := &PeerSessionHealth{DesyncEvidence: stored.DesyncEvidence}
+	if h.FirstFailureAt, err = parseTime(stored.FirstFailureAt); err != nil {
+		return nil, err
+	}
+	if h.LastRekeyAt, err = parseTime(stored.LastRekeyAt); err != nil {
+		return nil, err
+	}
+	return h, nil
+}
+
+func (c *Client) writeHealth(peer string, h *PeerSessionHealth) error {
+	path, err := c.store.peerPath(peer, fileHealth)
+	if err != nil {
+		return err
+	}
+	return writeJSON(path, healthFile{
+		DesyncEvidence: h.DesyncEvidence,
+		FirstFailureAt: formatTime(h.FirstFailureAt),
+		LastRekeyAt:    formatTime(h.LastRekeyAt),
+	})
 }
 
 // RecordDesyncEvidence counts one envelope from peer given up on for a reason
@@ -59,38 +79,32 @@ func (c *Client) PeerSessionHealth(peer string) (*PeerSessionHealth, error) {
 // sessions that were never broken.
 //
 // Ignored, returning false, for a peer with no conversation. That bounds this
-// table to conversations that exist -- recovery has nowhere to send without
-// one anyway, and without the guard a stranger sending undecryptable envelopes
-// could grow the database by one row per account id they invent.
+// to conversations that exist -- recovery has nowhere to send without one
+// anyway, and without the guard a stranger sending undecryptable envelopes
+// could grow the store by one directory per account id they invent.
 func (c *Client) RecordDesyncEvidence(peer string, at time.Time) (recorded bool, err error) {
-	tx, err := c.db.Begin()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	convo, err := c.conversationLocked(peer)
+	if err != nil || convo == nil {
+		return false, err
+	}
+
+	h, err := c.healthLocked(peer)
 	if err != nil {
-		return false, fmt.Errorf("client: recording desync evidence for %s: %w", peer, err)
+		return false, err
 	}
-	defer tx.Rollback() //nolint:errcheck // no-op after a successful Commit
-
-	var one int
-	err = tx.QueryRow(`SELECT 1 FROM conversations WHERE peer_account_id = ?`, peer).Scan(&one)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
+	if h == nil {
+		h = &PeerSessionHealth{}
 	}
-	if err != nil {
-		return false, fmt.Errorf("client: checking conversation with %s: %w", peer, err)
+	h.DesyncEvidence++
+	if h.FirstFailureAt == nil {
+		when := at
+		h.FirstFailureAt = &when
 	}
-
-	if _, err := tx.Exec(`
-		INSERT INTO peer_session_health (peer_account_id, desync_evidence, first_failure_at)
-		VALUES (?, 1, ?)
-		ON CONFLICT (peer_account_id) DO UPDATE SET
-			desync_evidence  = desync_evidence + 1,
-			first_failure_at = COALESCE(first_failure_at, excluded.first_failure_at)`,
-		peer, at.UTC().Format(time.RFC3339Nano),
-	); err != nil {
-		return false, fmt.Errorf("client: recording desync evidence for %s: %w", peer, err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return false, fmt.Errorf("client: recording desync evidence for %s: %w", peer, err)
+	if err := c.writeHealth(peer, h); err != nil {
+		return false, err
 	}
 	return true, nil
 }
@@ -100,32 +114,28 @@ func (c *Client) RecordDesyncEvidence(peer string, at time.Time) (recorded bool,
 // the session works. Drops the re-key spacing along with it, deliberately: a
 // healthy session needs no protection against re-keying too often.
 func (c *Client) ClearDesyncEvidence(peer string) error {
-	if _, err := c.db.Exec(`DELETE FROM peer_session_health WHERE peer_account_id = ?`, peer); err != nil {
-		return fmt.Errorf("client: clearing desync evidence for %s: %w", peer, err)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	path, err := c.store.peerPath(peer, fileHealth)
+	if err != nil {
+		return err
 	}
-	return nil
+	return removeFile(path)
 }
 
 // RecordAutoRekey notes that an automatic re-key with peer has just been sent:
 // the evidence that triggered it is spent, but the timestamp stays to space out
 // any further attempt.
 func (c *Client) RecordAutoRekey(peer string, at time.Time) error {
-	if _, err := c.db.Exec(`
-		INSERT INTO peer_session_health (peer_account_id, desync_evidence, first_failure_at, last_rekey_at)
-		VALUES (?, 0, NULL, ?)
-		ON CONFLICT (peer_account_id) DO UPDATE SET
-			desync_evidence  = 0,
-			first_failure_at = NULL,
-			last_rekey_at    = excluded.last_rekey_at`,
-		peer, at.UTC().Format(time.RFC3339Nano),
-	); err != nil {
-		return fmt.Errorf("client: recording auto re-key with %s: %w", peer, err)
-	}
-	return nil
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	when := at
+	return c.writeHealth(peer, &PeerSessionHealth{LastRekeyAt: &when})
 }
 
-// Conversation is the per-peer metadata around a transcript. The transcript
-// itself is not here yet -- see the note in migrations/001_initial.sql.
+// Conversation is the per-peer metadata around a transcript.
 type Conversation struct {
 	PeerAccountID    string
 	PeerServer       string
@@ -135,188 +145,320 @@ type Conversation struct {
 	LastActivityAt *time.Time
 	HasUnread      bool
 
-	// Blocked mirrors the block on this conversation; blocked_peers is the copy
-	// that survives the conversation being deleted.
+	// Blocked mirrors the block on this conversation; the blocked list is the
+	// copy that survives the conversation being deleted.
 	Blocked bool
 
 	// PendingApproval marks a conversation opened by a stranger, awaiting the
 	// user's accept.
 	PendingApproval bool
 
+	// Receipts are cumulative watermarks, not per-message marks: a receipt says
+	// "everything up to this instant". That is what makes one arriving late
+	// harmless -- it moves a monotonic value and touches no message, so newer
+	// lines appended in between simply fall under it, which is correct.
 	PeerDeliveredUpTo        *time.Time
 	PeerReadUpTo             *time.Time
 	SentDeliveredReceiptUpTo *time.Time
 	SentReadReceiptUpTo      *time.Time
 }
 
+type conversationFile struct {
+	PeerAccountID    string `json:"peer_account_id"`
+	PeerServer       string `json:"peer_server,omitempty"`
+	PeerDeviceID     string `json:"peer_device_id,omitempty"`
+	PeerDevicePubKey []byte `json:"peer_device_pub_key,omitempty"`
+
+	LastActivityAt string `json:"last_activity_at,omitempty"`
+	HasUnread      bool   `json:"has_unread,omitempty"`
+
+	Blocked         bool `json:"blocked,omitempty"`
+	PendingApproval bool `json:"pending_approval,omitempty"`
+
+	PeerDeliveredUpTo        string `json:"peer_delivered_up_to,omitempty"`
+	PeerReadUpTo             string `json:"peer_read_up_to,omitempty"`
+	SentDeliveredReceiptUpTo string `json:"sent_delivered_receipt_up_to,omitempty"`
+	SentReadReceiptUpTo      string `json:"sent_read_receipt_up_to,omitempty"`
+}
+
 // Conversation returns the conversation with peer, or nil if there is none.
 func (c *Client) Conversation(peer string) (*Conversation, error) {
-	rows, err := c.db.Query(conversationSelect+` WHERE peer_account_id = ?`, peer)
-	if err != nil {
-		return nil, fmt.Errorf("client: reading conversation with %s: %w", peer, err)
-	}
-	defer rows.Close()
-	convos, err := scanConversations(rows)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.conversationLocked(peer)
+}
+
+func (c *Client) conversationLocked(peer string) (*Conversation, error) {
+	path, err := c.store.chatPath(peer, fileMeta)
 	if err != nil {
 		return nil, err
 	}
-	if len(convos) == 0 {
-		return nil, nil
+	var stored conversationFile
+	found, err := readJSON(path, &stored)
+	if err != nil || !found {
+		return nil, err
 	}
-	return &convos[0], nil
+	return stored.resolve()
+}
+
+func (f conversationFile) resolve() (*Conversation, error) {
+	convo := &Conversation{
+		PeerAccountID:    f.PeerAccountID,
+		PeerServer:       f.PeerServer,
+		PeerDeviceID:     f.PeerDeviceID,
+		PeerDevicePubKey: f.PeerDevicePubKey,
+		HasUnread:        f.HasUnread,
+		Blocked:          f.Blocked,
+		PendingApproval:  f.PendingApproval,
+	}
+	var err error
+	for _, field := range []struct {
+		src string
+		dst **time.Time
+	}{
+		{f.LastActivityAt, &convo.LastActivityAt},
+		{f.PeerDeliveredUpTo, &convo.PeerDeliveredUpTo},
+		{f.PeerReadUpTo, &convo.PeerReadUpTo},
+		{f.SentDeliveredReceiptUpTo, &convo.SentDeliveredReceiptUpTo},
+		{f.SentReadReceiptUpTo, &convo.SentReadReceiptUpTo},
+	} {
+		if *field.dst, err = parseTime(field.src); err != nil {
+			return nil, err
+		}
+	}
+	return convo, nil
 }
 
 // Conversations returns every conversation, most recently active first, so the
-// chat list can be drawn without loading a single transcript. That ordering in
-// the query rather than in the caller is the whole reason this is a database
-// and not one JSON file rewritten per message.
+// chat list can be drawn without touching a single transcript.
+//
+// One small file read per chat rather than one query. That is a handful of
+// reads for a handful of chats and, unlike the old single-file store, it does
+// not grow with the number of messages behind them -- which is the cost that
+// actually mattered.
 func (c *Client) Conversations() ([]Conversation, error) {
-	rows, err := c.db.Query(conversationSelect + ` ORDER BY last_activity_at DESC NULLS LAST, peer_account_id`)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	dir, err := c.store.chatsDir()
 	if err != nil {
-		return nil, fmt.Errorf("client: listing conversations: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
-	return scanConversations(rows)
+	ids, err := listDirs(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	convos := make([]Conversation, 0, len(ids))
+	for _, id := range ids {
+		convo, err := c.conversationLocked(id)
+		if err != nil {
+			return nil, err
+		}
+		if convo != nil {
+			convos = append(convos, *convo)
+		}
+	}
+
+	sort.SliceStable(convos, func(i, j int) bool {
+		a, b := convos[i].LastActivityAt, convos[j].LastActivityAt
+		switch {
+		case a == nil && b == nil:
+			return convos[i].PeerAccountID < convos[j].PeerAccountID
+		case a == nil:
+			return false // never active sorts last
+		case b == nil:
+			return true
+		case a.Equal(*b):
+			return convos[i].PeerAccountID < convos[j].PeerAccountID
+		default:
+			return a.After(*b)
+		}
+	})
+	return convos, nil
 }
 
 // PutConversation inserts or replaces a conversation.
 func (c *Client) PutConversation(convo Conversation) error {
-	if _, err := c.db.Exec(`
-		INSERT INTO conversations (
-			peer_account_id, peer_server, peer_device_id, peer_device_pub_key,
-			last_activity_at, has_unread, blocked, pending_approval,
-			peer_delivered_up_to, peer_read_up_to,
-			sent_delivered_receipt_up_to, sent_read_receipt_up_to
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT (peer_account_id) DO UPDATE SET
-			peer_server                  = excluded.peer_server,
-			peer_device_id               = excluded.peer_device_id,
-			peer_device_pub_key          = excluded.peer_device_pub_key,
-			last_activity_at             = excluded.last_activity_at,
-			has_unread                   = excluded.has_unread,
-			blocked                      = excluded.blocked,
-			pending_approval             = excluded.pending_approval,
-			peer_delivered_up_to         = excluded.peer_delivered_up_to,
-			peer_read_up_to              = excluded.peer_read_up_to,
-			sent_delivered_receipt_up_to = excluded.sent_delivered_receipt_up_to,
-			sent_read_receipt_up_to      = excluded.sent_read_receipt_up_to`,
-		convo.PeerAccountID, nullString(convo.PeerServer), nullString(convo.PeerDeviceID),
-		convo.PeerDevicePubKey, formatTime(convo.LastActivityAt), convo.HasUnread,
-		convo.Blocked, convo.PendingApproval,
-		formatTime(convo.PeerDeliveredUpTo), formatTime(convo.PeerReadUpTo),
-		formatTime(convo.SentDeliveredReceiptUpTo), formatTime(convo.SentReadReceiptUpTo),
-	); err != nil {
-		return fmt.Errorf("client: writing conversation with %s: %w", convo.PeerAccountID, err)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	path, err := c.store.chatPath(convo.PeerAccountID, fileMeta)
+	if err != nil {
+		return err
 	}
-	return nil
+	return writeJSON(path, conversationFile{
+		PeerAccountID:            convo.PeerAccountID,
+		PeerServer:               convo.PeerServer,
+		PeerDeviceID:             convo.PeerDeviceID,
+		PeerDevicePubKey:         convo.PeerDevicePubKey,
+		LastActivityAt:           formatTime(convo.LastActivityAt),
+		HasUnread:                convo.HasUnread,
+		Blocked:                  convo.Blocked,
+		PendingApproval:          convo.PendingApproval,
+		PeerDeliveredUpTo:        formatTime(convo.PeerDeliveredUpTo),
+		PeerReadUpTo:             formatTime(convo.PeerReadUpTo),
+		SentDeliveredReceiptUpTo: formatTime(convo.SentDeliveredReceiptUpTo),
+		SentReadReceiptUpTo:      formatTime(convo.SentReadReceiptUpTo),
+	})
 }
 
-// DeleteConversation removes a conversation. The ratchet session, the known-peer
-// mark and any block deliberately survive: clearing a chat must not silently
-// unblock someone or turn a known contact back into a stranger.
+// DeleteConversation removes a conversation's metadata. The ratchet session,
+// the known-peer mark and any block deliberately survive: clearing a chat must
+// not silently unblock someone or turn a known contact back into a stranger.
 func (c *Client) DeleteConversation(peer string) error {
-	if _, err := c.db.Exec(`DELETE FROM conversations WHERE peer_account_id = ?`, peer); err != nil {
-		return fmt.Errorf("client: deleting conversation with %s: %w", peer, err)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	path, err := c.store.chatPath(peer, fileMeta)
+	if err != nil {
+		return err
 	}
-	return nil
+	return removeFile(path)
 }
 
-const conversationSelect = `
-	SELECT peer_account_id, peer_server, peer_device_id, peer_device_pub_key,
-	       last_activity_at, has_unread, blocked, pending_approval,
-	       peer_delivered_up_to, peer_read_up_to,
-	       sent_delivered_receipt_up_to, sent_read_receipt_up_to
-	  FROM conversations`
+// --- known and blocked peers ------------------------------------------------
 
-func scanConversations(rows *sql.Rows) ([]Conversation, error) {
-	var out []Conversation
-	for rows.Next() {
-		var (
-			convo                         Conversation
-			server, deviceID              sql.NullString
-			lastActivity, delivered, read sql.NullString
-			sentDelivered, sentRead       sql.NullString
-		)
-		if err := rows.Scan(
-			&convo.PeerAccountID, &server, &deviceID, &convo.PeerDevicePubKey,
-			&lastActivity, &convo.HasUnread, &convo.Blocked, &convo.PendingApproval,
-			&delivered, &read, &sentDelivered, &sentRead,
-		); err != nil {
-			return nil, fmt.Errorf("client: scanning conversation: %w", err)
-		}
-		convo.PeerServer, convo.PeerDeviceID = server.String, deviceID.String
+// Both lists are small, change rarely, and never grow with history, so a whole
+// file is the right shape. They live outside chats/ on purpose: each has to
+// outlive the conversation being deleted.
 
-		var err error
-		for _, f := range []struct {
-			src sql.NullString
-			dst **time.Time
-		}{
-			{lastActivity, &convo.LastActivityAt},
-			{delivered, &convo.PeerDeliveredUpTo},
-			{read, &convo.PeerReadUpTo},
-			{sentDelivered, &convo.SentDeliveredReceiptUpTo},
-			{sentRead, &convo.SentReadReceiptUpTo},
-		} {
-			if *f.dst, err = parseTime(f.src); err != nil {
-				return nil, err
-			}
-		}
-		out = append(out, convo)
+type blockedEntry struct {
+	PeerAccountID string `json:"peer_account_id"`
+	PeerServer    string `json:"peer_server,omitempty"`
+}
+
+func (c *Client) readSet(path string) (map[string]bool, error) {
+	var ids []string
+	if _, err := readJSON(path, &ids); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	set := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		set[id] = true
+	}
+	return set, nil
+}
+
+func (c *Client) writeSet(path string, set map[string]bool) error {
+	ids := make([]string, 0, len(set))
+	for id := range set {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids) // stable on disk, so a diff of the file means a real change
+	return writeJSON(path, ids)
 }
 
 // MarkPeerKnown records that this peer is not a stranger -- accepted from a
 // message request, or reached out to first. Outlives the conversation.
 func (c *Client) MarkPeerKnown(peer string) error {
-	if _, err := c.db.Exec(
-		`INSERT INTO known_peers (peer_account_id) VALUES (?) ON CONFLICT DO NOTHING`, peer,
-	); err != nil {
-		return fmt.Errorf("client: marking %s known: %w", peer, err)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	path, err := c.store.knownPath()
+	if err != nil {
+		return err
 	}
-	return nil
+	set, err := c.readSet(path)
+	if err != nil {
+		return err
+	}
+	if set[peer] {
+		return nil
+	}
+	set[peer] = true
+	return c.writeSet(path, set)
 }
 
 // IsPeerKnown reports whether peer has ever been accepted or reached out to.
 func (c *Client) IsPeerKnown(peer string) (bool, error) {
-	return c.exists(`SELECT 1 FROM known_peers WHERE peer_account_id = ?`, peer)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	path, err := c.store.knownPath()
+	if err != nil {
+		return false, err
+	}
+	set, err := c.readSet(path)
+	if err != nil {
+		return false, err
+	}
+	return set[peer], nil
 }
 
 // BlockPeer blocks peer locally, snapshotting their server for the blocked list
 // in case the conversation is later deleted. Purely local: the server is never
 // told, and the peer cannot tell they were blocked.
 func (c *Client) BlockPeer(peer, server string) error {
-	if _, err := c.db.Exec(`
-		INSERT INTO blocked_peers (peer_account_id, peer_server) VALUES (?, ?)
-		ON CONFLICT (peer_account_id) DO UPDATE SET peer_server = excluded.peer_server`,
-		peer, nullString(server),
-	); err != nil {
-		return fmt.Errorf("client: blocking %s: %w", peer, err)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	path, err := c.store.blockedPath()
+	if err != nil {
+		return err
 	}
-	return nil
+	entries, err := c.readBlocked(path)
+	if err != nil {
+		return err
+	}
+	entries[peer] = blockedEntry{PeerAccountID: peer, PeerServer: server}
+	return c.writeBlocked(path, entries)
 }
 
 // UnblockPeer lifts a local block.
 func (c *Client) UnblockPeer(peer string) error {
-	if _, err := c.db.Exec(`DELETE FROM blocked_peers WHERE peer_account_id = ?`, peer); err != nil {
-		return fmt.Errorf("client: unblocking %s: %w", peer, err)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	path, err := c.store.blockedPath()
+	if err != nil {
+		return err
 	}
-	return nil
+	entries, err := c.readBlocked(path)
+	if err != nil {
+		return err
+	}
+	if _, ok := entries[peer]; !ok {
+		return nil
+	}
+	delete(entries, peer)
+	return c.writeBlocked(path, entries)
 }
 
 // IsPeerBlocked reports whether peer is locally blocked.
 func (c *Client) IsPeerBlocked(peer string) (bool, error) {
-	return c.exists(`SELECT 1 FROM blocked_peers WHERE peer_account_id = ?`, peer)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	path, err := c.store.blockedPath()
+	if err != nil {
+		return false, err
+	}
+	entries, err := c.readBlocked(path)
+	if err != nil {
+		return false, err
+	}
+	_, blocked := entries[peer]
+	return blocked, nil
 }
 
-func (c *Client) exists(query string, args ...any) (bool, error) {
-	var one int
-	err := c.db.QueryRow(query, args...).Scan(&one)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
+func (c *Client) readBlocked(path string) (map[string]blockedEntry, error) {
+	var list []blockedEntry
+	if _, err := readJSON(path, &list); err != nil {
+		return nil, err
 	}
-	if err != nil {
-		return false, fmt.Errorf("client: %w", err)
+	entries := make(map[string]blockedEntry, len(list))
+	for _, e := range list {
+		entries[e.PeerAccountID] = e
 	}
-	return true, nil
+	return entries, nil
+}
+
+func (c *Client) writeBlocked(path string, entries map[string]blockedEntry) error {
+	list := make([]blockedEntry, 0, len(entries))
+	for _, e := range entries {
+		list = append(list, e)
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].PeerAccountID < list[j].PeerAccountID })
+	return writeJSON(path, list)
 }

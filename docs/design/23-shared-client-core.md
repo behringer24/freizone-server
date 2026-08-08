@@ -103,13 +103,59 @@ one-time reset is acceptable. That removes the most expensive and riskiest part
 of the migration — no format compatibility, no migration path, no golden-file
 gate — and it is the only reason the persistence layer can be chosen on merit.
 
-**SQLite via `modernc.org/sqlite` (pure Go).** Partial reads, indexes and
-transactions are the point: a chat list must not load the entire history to show
-a last-message preview. Pure Go rather than `mattn/go-sqlite3` because the
-c-shared build already cross-compiles to `android/arm64` and `android/amd64` and
-will have to reach `ios/arm64` — a second C dependency inside the NDK build, and
-then inside Xcode, is precisely the friction that makes the iOS step expensive.
-The server already runs on SQLite, so the pattern is familiar in-house.
+**Plain files — and it was SQLite first.** That reversal is worth recording in
+full, because the reasoning that led to SQLite was wrong in a way that is easy
+to repeat.
+
+The original argument was: partial reads, indexes and transactions, plus "the
+server already runs on SQLite, so the pattern is familiar in-house". The last
+clause is where it went astray. The server has relational, queried,
+multi-tenant data. A client has one account, a handful of chats, and an
+append-only transcript each — no query has ever been needed. Carrying the
+server's answer across to a different problem is what bought a SQL engine to
+store a list.
+
+Two measurements ended it. `modernc.org/sqlite`, the pure-Go driver, **cannot
+run on android/amd64 at all**: its libc emulation calls the `lstat` syscall,
+Android's seccomp filter kills the process, and the app died at startup on every
+x86_64 device and emulator. The newest upstream release still does it, and every
+other pure-Go driver — `zombiezen.com/go/sqlite`, `github.com/glebarez/go-sqlite`
+— is modernc underneath. The cgo driver works and is 2.2 MB smaller, but makes
+cgo mandatory for every consumer of this package, which a planned Flutter
+desktop client turns from an inconvenience into a cross-compilation matrix.
+
+Worth noting what the market comparison does *not* say. Signal, WhatsApp,
+Telegram and Element all use SQLite, and they are right to: they are native apps
+whose operating system hands it to them for nothing. The 7–9 MB only existed
+because this storage lives in a Go core that has to bring its own.
+
+The store that replaced it keeps one rule, which is the actual defect being
+fixed: **nothing costs more as history grows**. The old Dart store rewrote one
+JSON file in full per message, and per-chat files rewritten in full would have
+been the same defect with more filenames.
+
+| what | shape | what one message costs |
+| --- | --- | --- |
+| transcript | append-only log per chat | one appended line |
+| ratchet session | one small file per peer and kind | that file |
+| conversation metadata | one small file per chat | that file |
+| handled message ids | in memory, appended to a log | one appended line |
+| identity, prekeys, blocks | small files | nothing — they change rarely |
+
+Deletions and send-state changes are appended as their own records naming the
+message they refer to, never edited into the line holding it: editing a line in
+a text file means rewriting everything after it. That shape also makes a record
+arriving long after its message harmless, since it carries an id rather than a
+position — and compaction happens on a threshold, never on a write path.
+
+The read side needed the same discipline. A chat list draws one preview per
+conversation, and replaying a whole transcript for each would have moved the
+same O(n) from the write path to the read path; the preview reads a bounded
+window from the end of the log instead.
+
+Crash safety is the pattern the app already relies on: write to a temporary
+name, fsync, rename. Its single JSON file has never corrupted anyone's
+sessions — the trouble was always the rewriting.
 
 **The accepted cost is binary size,** which sits in tension with the project's
 preference for compact builds. Measured rather than estimated, on

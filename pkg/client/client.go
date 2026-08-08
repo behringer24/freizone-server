@@ -19,25 +19,27 @@
 //
 // One *Client per account, no package-level state. The app runs a single
 // account per process; a bot bridge may run many, concurrently, and neither
-// should have to know about the other. Each account is a separate database
-// file, which is what keeps "many identities" from meaning "every query
-// carries a discriminator".
+// should have to know about the other. Each account is a separate directory,
+// which is what keeps "many identities" from meaning "every read carries a
+// discriminator".
+//
+// Storage is plain files -- see store.go for what that costs and buys, and
+// layout.go for the shape and the rule it keeps.
 package client
 
 import (
-	"database/sql"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 )
 
-// ErrNoIdentity reports a database that has been created and migrated but not
-// yet given an identity. A normal state, not a fault: setup opens the store
-// first and generates keys second.
-var ErrNoIdentity = errors.New("client: no identity in this database")
+// ErrNoIdentity reports an account directory that exists but has not been given
+// an identity. A normal state, not a fault: setup opens the store first and
+// generates keys second.
+var ErrNoIdentity = errors.New("client: no identity in this account")
 
-// Identity is an account's own key material and per-account settings -- the
-// single-row part of the state.
+// Identity is an account's own key material and per-account settings.
 type Identity struct {
 	AccountID string
 	Server    string
@@ -74,131 +76,157 @@ type Identity struct {
 	PushMechanism    string
 }
 
-// Client is one account's state. Safe for concurrent use: every operation is a
-// single statement or a transaction, and the underlying pool is held to one
-// connection so writes serialise in-process rather than contending on SQLite's
-// write lock.
+// Client is one account's state.
+//
+// Safe for concurrent use. A single mutex serialises everything, which is the
+// right trade here: the work behind it is a few small file operations, and one
+// account is driven by one app or one bot identity rather than by contending
+// writers. Several accounts run several Clients over several directories and
+// never meet.
 type Client struct {
-	db   *sql.DB
-	path string
+	mu    sync.Mutex
+	store *store
+	path  string
+
+	// processedIDs and processedOrder mirror the handled-message log in memory:
+	// bounded to MaxProcessedMessageIDs, checked on every incoming envelope, and
+	// far too hot to read from disk each time. The log on disk is append-only,
+	// so persisting one more id costs one line no matter how long the history.
+	processedIDs   map[string]bool
+	processedOrder []string
+	processedLines int
+
+	// failures is the decrypt-failure count per message. Held in memory and
+	// written only when it actually changes -- which is rare, and specifically
+	// not on the success path, where the common case is "this id was never in
+	// here" and must cost no write at all.
+	failures     map[string]int
+	failureOrder []string
 }
 
-// Open opens the account database at path, creating and migrating it if it
-// does not exist. A fresh database has no identity yet -- [Client.Identity]
-// reports [ErrNoIdentity] until [Client.SetIdentity] is called.
+// Open opens the account directory at path, creating it if it does not exist.
+// A fresh account has no identity yet -- [Client.Identity] reports
+// [ErrNoIdentity] until [Client.SetIdentity] is called.
 //
 // Opening also settles anything the previous process left mid-send: a message
 // still marked pending belonged to a send that cannot still be running, so it
 // becomes a failure to retry rather than a spinner nobody will ever resolve.
 func Open(path string) (*Client, error) {
-	db, err := openDB(path)
+	st, err := openStore(path)
 	if err != nil {
 		return nil, err
 	}
-	if err := migrate(db); err != nil {
-		db.Close()
+	c := &Client{store: st, path: path}
+
+	if err := c.loadProcessed(); err != nil {
 		return nil, err
 	}
-	if err := failInFlightSends(db); err != nil {
-		db.Close()
+	if err := c.loadFailures(); err != nil {
 		return nil, err
 	}
-	return &Client{db: db, path: path}, nil
-}
-
-// Close releases the database. Further use of the Client is an error.
-func (c *Client) Close() error {
-	if err := c.db.Close(); err != nil {
-		return fmt.Errorf("client: closing database: %w", err)
+	if err := c.failInFlightSends(); err != nil {
+		return nil, err
 	}
-	return nil
+	return c, nil
 }
 
-// Path is the database file this Client was opened from.
+// Close releases the account. Nothing is buffered, so this exists for symmetry
+// and for a caller that wants an explicit end -- every write has already been
+// synced by the time the call that made it returned.
+func (c *Client) Close() error { return nil }
+
+// Path is the account directory this Client was opened from.
 func (c *Client) Path() string { return c.path }
+
+// identityFile is the stored form. Kept separate from [Identity] so the wire
+// names are fixed independently of the Go field names.
+type identityFile struct {
+	AccountID string `json:"account_id"`
+	Server    string `json:"server"`
+
+	RootPub  []byte `json:"root_pub"`
+	RootPriv []byte `json:"root_priv"`
+
+	DeviceID   string `json:"device_id"`
+	DevicePub  []byte `json:"device_pub"`
+	DevicePriv []byte `json:"device_priv"`
+
+	DHIdentityPub  []byte `json:"dh_identity_pub,omitempty"`
+	DHIdentityPriv []byte `json:"dh_identity_priv,omitempty"`
+
+	SignedPrekeyID   uint32 `json:"signed_prekey_id,omitempty"`
+	SignedPrekeyPub  []byte `json:"signed_prekey_pub,omitempty"`
+	SignedPrekeyPriv []byte `json:"signed_prekey_priv,omitempty"`
+
+	NextSignedPrekeyID  uint32 `json:"next_signed_prekey_id,omitempty"`
+	NextOneTimePrekeyID uint32 `json:"next_otpk_key_id,omitempty"`
+
+	RecoveryBackupDone bool   `json:"recovery_backup_done,omitempty"`
+	PushRegisteredAt   string `json:"push_registered_at,omitempty"`
+	PushMechanism      string `json:"push_mechanism,omitempty"`
+}
 
 // SetIdentity writes the account's key material, replacing whatever was there.
 // Used both by first-time setup and by a restore from a recovery phrase, which
 // keeps the root key and mints a fresh device key.
 func (c *Client) SetIdentity(id Identity) error {
-	_, err := c.db.Exec(`
-		INSERT INTO identity (
-			id, account_id, server, root_pub, root_priv,
-			device_id, device_pub, device_priv,
-			dh_identity_pub, dh_identity_priv,
-			signed_prekey_id, signed_prekey_pub, signed_prekey_priv,
-			next_signed_prekey_id, next_otpk_key_id,
-			recovery_backup_done, push_registered_at, push_mechanism
-		) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT (id) DO UPDATE SET
-			account_id            = excluded.account_id,
-			server                = excluded.server,
-			root_pub              = excluded.root_pub,
-			root_priv             = excluded.root_priv,
-			device_id             = excluded.device_id,
-			device_pub            = excluded.device_pub,
-			device_priv           = excluded.device_priv,
-			dh_identity_pub       = excluded.dh_identity_pub,
-			dh_identity_priv      = excluded.dh_identity_priv,
-			signed_prekey_id      = excluded.signed_prekey_id,
-			signed_prekey_pub     = excluded.signed_prekey_pub,
-			signed_prekey_priv    = excluded.signed_prekey_priv,
-			next_signed_prekey_id = excluded.next_signed_prekey_id,
-			next_otpk_key_id      = excluded.next_otpk_key_id,
-			recovery_backup_done  = excluded.recovery_backup_done,
-			push_registered_at    = excluded.push_registered_at,
-			push_mechanism        = excluded.push_mechanism`,
-		id.AccountID, id.Server, id.RootPub, id.RootPriv,
-		id.DeviceID, id.DevicePub, id.DevicePriv,
-		id.DHIdentityPub, id.DHIdentityPriv,
-		id.SignedPrekeyID, id.SignedPrekeyPub, id.SignedPrekeyPriv,
-		id.NextSignedPrekeyID, id.NextOneTimePrekeyID,
-		id.RecoveryBackupDone, formatTime(id.PushRegisteredAt), nullString(id.PushMechanism),
-	)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	path, err := c.store.identityPath()
 	if err != nil {
-		return fmt.Errorf("client: writing identity: %w", err)
+		return err
 	}
-	return nil
+	stored := identityFile{
+		AccountID: id.AccountID, Server: id.Server,
+		RootPub: id.RootPub, RootPriv: id.RootPriv,
+		DeviceID: id.DeviceID, DevicePub: id.DevicePub, DevicePriv: id.DevicePriv,
+		DHIdentityPub: id.DHIdentityPub, DHIdentityPriv: id.DHIdentityPriv,
+		SignedPrekeyID: id.SignedPrekeyID, SignedPrekeyPub: id.SignedPrekeyPub,
+		SignedPrekeyPriv:   id.SignedPrekeyPriv,
+		NextSignedPrekeyID: id.NextSignedPrekeyID, NextOneTimePrekeyID: id.NextOneTimePrekeyID,
+		RecoveryBackupDone: id.RecoveryBackupDone, PushMechanism: id.PushMechanism,
+	}
+	if id.PushRegisteredAt != nil {
+		stored.PushRegisteredAt = id.PushRegisteredAt.UTC().Format(time.RFC3339Nano)
+	}
+	return writeJSON(path, stored)
 }
 
 // Identity reads the account's key material, or [ErrNoIdentity] if setup has
 // not run yet.
 func (c *Client) Identity() (Identity, error) {
-	var (
-		id           Identity
-		pushAt       sql.NullString
-		pushMech     sql.NullString
-		dhPub, dhPri []byte
-		spkPub, spkP []byte
-	)
-	err := c.db.QueryRow(`
-		SELECT account_id, server, root_pub, root_priv,
-		       device_id, device_pub, device_priv,
-		       dh_identity_pub, dh_identity_priv,
-		       signed_prekey_id, signed_prekey_pub, signed_prekey_priv,
-		       next_signed_prekey_id, next_otpk_key_id,
-		       recovery_backup_done, push_registered_at, push_mechanism
-		  FROM identity WHERE id = 1`,
-	).Scan(
-		&id.AccountID, &id.Server, &id.RootPub, &id.RootPriv,
-		&id.DeviceID, &id.DevicePub, &id.DevicePriv,
-		&dhPub, &dhPri,
-		&id.SignedPrekeyID, &spkPub, &spkP,
-		&id.NextSignedPrekeyID, &id.NextOneTimePrekeyID,
-		&id.RecoveryBackupDone, &pushAt, &pushMech,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.identityLocked()
+}
+
+func (c *Client) identityLocked() (Identity, error) {
+	path, err := c.store.identityPath()
+	if err != nil {
+		return Identity{}, err
+	}
+	var stored identityFile
+	found, err := readJSON(path, &stored)
+	if err != nil {
+		return Identity{}, err
+	}
+	if !found {
 		return Identity{}, ErrNoIdentity
 	}
-	if err != nil {
-		return Identity{}, fmt.Errorf("client: reading identity: %w", err)
-	}
 
-	id.DHIdentityPub, id.DHIdentityPriv = dhPub, dhPri
-	id.SignedPrekeyPub, id.SignedPrekeyPriv = spkPub, spkP
-	id.PushMechanism = pushMech.String
-	if pushAt.Valid {
-		t, err := time.Parse(time.RFC3339Nano, pushAt.String)
+	id := Identity{
+		AccountID: stored.AccountID, Server: stored.Server,
+		RootPub: stored.RootPub, RootPriv: stored.RootPriv,
+		DeviceID: stored.DeviceID, DevicePub: stored.DevicePub, DevicePriv: stored.DevicePriv,
+		DHIdentityPub: stored.DHIdentityPub, DHIdentityPriv: stored.DHIdentityPriv,
+		SignedPrekeyID: stored.SignedPrekeyID, SignedPrekeyPub: stored.SignedPrekeyPub,
+		SignedPrekeyPriv:   stored.SignedPrekeyPriv,
+		NextSignedPrekeyID: stored.NextSignedPrekeyID, NextOneTimePrekeyID: stored.NextOneTimePrekeyID,
+		RecoveryBackupDone: stored.RecoveryBackupDone, PushMechanism: stored.PushMechanism,
+	}
+	if stored.PushRegisteredAt != "" {
+		t, err := time.Parse(time.RFC3339Nano, stored.PushRegisteredAt)
 		if err != nil {
 			return Identity{}, fmt.Errorf("client: parsing push_registered_at: %w", err)
 		}
@@ -212,29 +240,20 @@ func (c *Client) Identity() (Identity, error) {
 // formatTime renders an optional instant for storage. UTC and RFC3339Nano
 // throughout, so string ordering matches chronological ordering and a value
 // written here reads back identically.
-func formatTime(t *time.Time) any {
+func formatTime(t *time.Time) string {
 	if t == nil {
-		return nil
+		return ""
 	}
 	return t.UTC().Format(time.RFC3339Nano)
 }
 
-func parseTime(s sql.NullString) (*time.Time, error) {
-	if !s.Valid {
+func parseTime(s string) (*time.Time, error) {
+	if s == "" {
 		return nil, nil
 	}
-	t, err := time.Parse(time.RFC3339Nano, s.String)
+	t, err := time.Parse(time.RFC3339Nano, s)
 	if err != nil {
-		return nil, fmt.Errorf("client: parsing timestamp %q: %w", s.String, err)
+		return nil, fmt.Errorf("client: parsing timestamp %q: %w", s, err)
 	}
 	return &t, nil
-}
-
-// nullString stores "" as SQL NULL, so "unset" has one representation rather
-// than two.
-func nullString(s string) any {
-	if s == "" {
-		return nil
-	}
-	return s
 }
