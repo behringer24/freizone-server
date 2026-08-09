@@ -5,6 +5,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/behringer24/freizone-server/pkg/address"
 	"github.com/behringer24/freizone-server/pkg/group"
 )
 
@@ -751,4 +752,15 @@ func (c *Client) recordMemberReceipt(groupID, accountID string, content Content)
 	}
 	chat.MemberReceipts[accountID] = receipt
 	return c.PutGroupChat(*chat)
+}
+
+// IsGroupID reports whether a chat id names a group rather than a peer.
+//
+// Account and group ids share every line of their encoding and differ only in
+// a version marker, which is what makes one call able to take a "chat id" and
+// dispatch on it -- and what makes confusing the two impossible rather than
+// merely unlikely.
+func IsGroupID(id string) bool {
+	version, err := address.VersionOf(id)
+	return err == nil && version == address.VersionGroup
 }

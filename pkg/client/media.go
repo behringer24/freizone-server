@@ -144,3 +144,28 @@ func (c *Client) DeleteChatMedia(chatID string) error {
 	}
 	return nil
 }
+
+// AttachmentPath and AttachmentThumbPath say where an attachment's bytes
+// belong, whether or not anything is there yet.
+//
+// Exported because the bytes are better fetched than carried: a caller with a
+// file reader -- an image widget, a share sheet -- wants a path, and moving
+// megabytes through whatever boundary sits between it and this package would
+// cost more than the download did. An empty string means the ids were unusable.
+func (c *Client) AttachmentPath(chatID, messageID string) string {
+	path, err := c.media.mediaPath(chatID, messageID, "")
+	if err != nil {
+		return ""
+	}
+	return path
+}
+
+// AttachmentThumbPath is [Client.AttachmentPath] for the inline preview, which
+// is present from the moment the message arrived.
+func (c *Client) AttachmentThumbPath(chatID, messageID string) string {
+	path, err := c.media.mediaPath(chatID, messageID, ".thumb")
+	if err != nil {
+		return ""
+	}
+	return path
+}

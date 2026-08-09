@@ -814,3 +814,13 @@ a one-time reset. No wire-format change.
   attachments and groups; the Dart side still holds the UI's state and would be
   the last thing to move. Worth doing as one cut rather than three, and it needs
   the data reset the design doc has planned since the start
+- 2026-08-09 — stage 6, first slice: the FFI surface. Two small additions here
+  (`IsGroupID`, `AttachmentPath`/`AttachmentThumbPath`) plus the whole surface
+  in freizone-app's `native/`. Two decisions shape it. **Attachment bytes travel
+  as paths, never through the boundary** — the shell has a file reader and an
+  image decoder that want a file anyway, so a multi-megabyte round trip through
+  a JSON envelope would cost more than the download did; and the attachment key
+  never crosses at all, which a test pins by searching the encoded response for
+  it. **One send call serves peers and groups**, because a chat id says which it
+  is: account and group ids differ by a version marker, so dispatching is exact
+  rather than a guess and the shell never has to track the distinction
