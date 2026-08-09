@@ -503,6 +503,74 @@ and must not jump the chat to the top of the list. Those rules are the quiet
 kind: nothing fails when they are wrong, a message simply never appears, or
 interrupts someone it should not have.
 
+## What stage 4 settled
+
+The core can now hold a conversation on its own: resolve an address, publish
+and claim prekeys, establish a session, send, retry, confirm, and re-key.
+`send.go`, `prekeys_api.go` and `peers_resolve.go`, and a stub server the tests
+run two real clients through.
+
+**Sending is not receiving with the arrows reversed, and that asymmetry drives
+the file.** Receiving is forgiving: an envelope that will not open can be
+retried, and the ratchet refuses to move until one does. Sending is not —
+encrypting *advances* the ratchet, and an advance committed for a message the
+peer never received burns a message number they will never see used. They
+observe a gap, which their ratchet bridges only so far before it counts as a
+desync. So: no advance is kept unless the envelope carrying it left the
+building.
+
+That rule also makes retrying safe in the case that looks worst. A POST can
+fail *after* the server stored the message — a response lost on the way back is
+indistinguishable from a send that never landed. Because the failure rolled the
+ratchet back, the retry re-encrypts under the same message number, and if the
+first copy did arrive the peer's ratchet rejects the second as the duplicate it
+is. The de-duplication that makes a retry safe is therefore the rollback, not
+the wire id, which is fresh on every attempt.
+
+**The test caught a real defect in that rule, and it was mine.** `Session`
+unmarshals a fresh value on every call, so reading it once and handing the same
+value to both the rollback copy and the encryption meant `Encrypt` advanced the
+very object kept to undo it — the rollback dutifully restored the advance it
+existed to prevent. Nothing failed; the send worked, the retry worked, and the
+peer accumulated a gap per failed attempt. It is exactly the class of bug that
+argued for moving this into one implementation, and it was found because the
+test drives a real send through a real receive rather than asserting on a
+request body.
+
+Three more decisions worth recording:
+
+- **Topping up is not rotating.** The upload endpoint always replaces the
+  signed prekey on file, so a top-up has to send one — but it re-signs the
+  *same* key material. `cmd/devclient` mints a new one on every upload, which
+  would replace the key peers are mid-establishment against several times a
+  day, for nothing. Two calls, `RotatePrekeys` and `TopUpOneTimePrekeys`, so
+  the difference cannot be made by accident.
+- **A weakened session is reported, not refused.** A bundle can arrive without
+  a one-time prekey because the peer's pool ran dry, or because the server
+  refused our claim's credentials and answered anyway. The session still works
+  and its first message has no forward secrecy. Refusing would cost a working
+  conversation for one message's property; saying nothing would let it degrade
+  silently forever. So `SendResult.WithoutOneTimePrekey`.
+- **The stale-device rule heals at the point it hurts.** Nothing propagates a
+  device being replaced or an account re-created across servers, and the cached
+  device id never expires on its own. The send that trips over the dead id is
+  the one that forgets it — id and session together, because a session bound to
+  a device that no longer exists would otherwise encrypt to a stranger's
+  ratchet after the next re-resolve.
+
+Recovery is now closed end to end. Stage 3 could only *report* that the
+evidence justified a re-key, because acting on it means sending; `ResetSession`
+and `RecoverDesyncedSessions` do the acting, and a test watches the peer adopt
+it and the conversation work again in both directions. The eligibility rules —
+not blocked, not an unaccepted request, not across a border with federation off
+— stay separate from `ShouldAutoRekey`, because only one of those questions is
+about the ratchet.
+
+Deliberately still out: attachments. The blob upload lives elsewhere and this
+package does not hold the bytes, so `RetryMessage` refuses a message with one
+rather than quietly re-sending the caption alone as something the user never
+composed.
+
 Considered and not done:
 
 - **Two native apps now (Kotlin + Swift), dropping Flutter.** The obstacle is

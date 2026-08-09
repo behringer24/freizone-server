@@ -720,3 +720,21 @@ a one-time reset. No wire-format change.
   undigested until stage 5 owns group state; that is the one seam left in the
   receive path. Not yet wired into the app: the UI still reads Dart state, so
   the Dart removal is its own slice
+- 2026-08-09 — stage 4: the send path lands in `pkg/client` (`send.go`,
+  `prekeys_api.go`, `peers_resolve.go`). The core can now hold a conversation
+  by itself — resolve an address, publish and claim prekeys, establish, send,
+  retry, confirm, re-key — and the tests run two real clients through a stub
+  server, so every round trip is an actual envelope opened by the actual
+  receive path rather than an asserted request body. That is what caught the
+  one real defect in the headline rule, which was mine: `Session` returns a
+  fresh value per call, so handing the same one to the rollback copy and to the
+  encryption meant the rollback restored the advance it existed to undo.
+  Nothing failed — the send worked, the retry worked, and the peer accumulated
+  a gap per failed attempt. Three decisions recorded: topping up re-asserts the
+  signed prekey rather than rotating it (devclient rotates on every upload); a
+  session established without a one-time prekey is reported rather than
+  refused; and the stale-device rule forgets the id and the session together.
+  Recovery is closed end to end — stage 3 could only report that a re-key was
+  due, since acting means sending. Attachments deliberately still out: the
+  blobs live elsewhere, so a retry refuses rather than re-send a caption alone.
+  Still not wired into the app
