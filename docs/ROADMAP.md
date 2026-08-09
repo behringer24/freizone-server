@@ -824,3 +824,11 @@ a one-time reset. No wire-format change.
   it. **One send call serves peers and groups**, because a chat id says which it
   is: account and group ids differ by a version marker, so dispatching is exact
   rather than a guess and the shell never has to track the distinction
+- 2026-08-09 — the remaining cut is specified in the design doc rather than
+  started: it is one indivisible piece (receive + read + send together, because
+  a bridge that rebuilds `AppState` from the core overwrites whatever the Dart
+  send path wrote), and half-applying it is the one state worse than either end.
+  The measurements are recorded so they need not be retaken — 83 `session.state`
+  call sites, which is why the screens do not change and `AppState` stays as the
+  view model, and 60 + 76 lines for `sendMessage`/`_deliver`. Step 5 is where
+  the data reset takes effect; the Pixel backup exists for exactly that moment
