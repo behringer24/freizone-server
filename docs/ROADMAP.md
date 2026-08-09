@@ -703,3 +703,20 @@ a one-time reset. No wire-format change.
   second is the one that matters — a heartbeating idle stream must survive
   several timeout periods, which the fix without that reset would fail while
   looking entirely reasonable
+- 2026-08-09 — stage 3: the receive pipeline lands in `pkg/client`
+  (`receive.go`, `content.go`, `recovery.go`). **It passes all nine conformance
+  vectors** — against `cmd/devclient`'s four — so none of the four decisions
+  that client gets wrong were inherited by extracting it. Passing on the first
+  run being the least trustworthy green, each of those four was re-broken
+  deliberately to confirm the vectors bite here rather than merely load. No
+  `knownDivergences` list beside this runner: a failure has nowhere to go but a
+  fix, since this implementation has no history to stay compatible with. The
+  plaintext content model (v1 text, v2 receipt, v3 re-key, v4/v5 group) is
+  modelled once instead of one-and-a-half times across Dart and devclient, and
+  the automatic-recovery policy moved across as a pure function. The larger,
+  unvectored half — notification rules, blocked peers, receipt watermarks, the
+  re-key transcript marker — has its own tests, and two of the quietest were
+  negative-controlled too. Group envelopes are decrypted and handed back
+  undigested until stage 5 owns group state; that is the one seam left in the
+  receive path. Not yet wired into the app: the UI still reads Dart state, so
+  the Dart removal is its own slice
