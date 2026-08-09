@@ -799,3 +799,48 @@ Considered and not done:
 - **Renaming `cmd/devclient` as part of the extraction.** Correct eventually,
   and part of the bot work; doing it in the same change as the extraction makes
   the diff unreadable.
+
+## The cut, specified
+
+The remaining step is one piece and cannot be taken in halves. Written down
+rather than started, because a half-applied cut is the one state worse than
+either end of it — and because the measurements below took a while to get and
+should not have to be taken twice.
+
+**The shape.** `session.state` appears at 83 call sites across `lib/screens` and
+`lib/widgets`: the UI reads `AppState` directly. So the cut is *not* rewriting
+the screens. It is keeping `AppState` as a view model and filling it from
+`CoreAccount` — `Conversation`, `GroupConversation` and `StoredMessage` stay as
+the shapes widgets draw, and `StoredMessage` maps almost field-for-field onto
+`CoreMessage`. Zero screen changes.
+
+**Why it is indivisible.** Once the bridge rebuilds `AppState` from the core,
+anything the Dart send path writes into `AppState` is overwritten on the next
+refresh — a sent message would appear and then vanish. So receive, read and send
+move together or not at all. The same reasoning already cost one commit: the
+poll was moved to report outcomes instead of envelopes while the UI still read
+Dart state, which would have left messages arriving where nothing draws from.
+The Flutter suite caught it; a test that happened to exist, not a rule.
+
+**Order, and the traps in each step.**
+
+1. `lib/state/core_bridge.dart` — map `ChatSummary` + `CoreMessage` into
+   `AppState`. Rebuild whole rather than incrementally to begin with: 828
+   messages across 11 accounts is the real scale, and a diffing bridge is an
+   optimisation to reach for once something is measured, not before.
+2. `lib/net/core_stream.dart` — `onMessage` delivers the poll's outcome
+   (`chat_id`, `notify`, `invitation`), not a `MessageResponse`. The core's
+   `handleIncoming` comes back with this, along with the `openChatID` field that
+   is already on the handle and unused.
+3. `app_session._handleIncoming` — stops decrypting. Refresh through the bridge,
+   then notify. Everything it used to decide is already decided in the core.
+4. `app_session.sendMessage` / `_deliver` (60 and 76 lines) — `CoreAccount.send`,
+   then refresh. The group fan-out, attachments, receipts and the federation
+   guard all move in the same step, because each of them writes to `AppState`.
+5. Only then: stop calling `LocalStateStore.saveProfile`. That is the moment the
+   old profile stops being written and the reset takes effect — and the point
+   the backup taken on 2026-08-09 exists for.
+
+**What stays behind on purpose.** The Dart state machine is left in place, dead,
+until it has been seen working without it. Deleting it in the same change would
+remove the thing to fall back to.
