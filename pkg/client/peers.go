@@ -137,10 +137,8 @@ func (c *Client) RecordAutoRekey(peer string, at time.Time) error {
 
 // Conversation is the per-peer metadata around a transcript.
 type Conversation struct {
-	PeerAccountID    string
-	PeerServer       string
-	PeerDeviceID     string
-	PeerDevicePubKey []byte
+	PeerAccountID string
+	PeerServer    string
 
 	LastActivityAt *time.Time
 	HasUnread      bool
@@ -164,10 +162,8 @@ type Conversation struct {
 }
 
 type conversationFile struct {
-	PeerAccountID    string `json:"peer_account_id"`
-	PeerServer       string `json:"peer_server,omitempty"`
-	PeerDeviceID     string `json:"peer_device_id,omitempty"`
-	PeerDevicePubKey []byte `json:"peer_device_pub_key,omitempty"`
+	PeerAccountID string `json:"peer_account_id"`
+	PeerServer    string `json:"peer_server,omitempty"`
 
 	LastActivityAt string `json:"last_activity_at,omitempty"`
 	HasUnread      bool   `json:"has_unread,omitempty"`
@@ -203,13 +199,11 @@ func (c *Client) conversationLocked(peer string) (*Conversation, error) {
 
 func (f conversationFile) resolve() (*Conversation, error) {
 	convo := &Conversation{
-		PeerAccountID:    f.PeerAccountID,
-		PeerServer:       f.PeerServer,
-		PeerDeviceID:     f.PeerDeviceID,
-		PeerDevicePubKey: f.PeerDevicePubKey,
-		HasUnread:        f.HasUnread,
-		Blocked:          f.Blocked,
-		PendingApproval:  f.PendingApproval,
+		PeerAccountID:   f.PeerAccountID,
+		PeerServer:      f.PeerServer,
+		HasUnread:       f.HasUnread,
+		Blocked:         f.Blocked,
+		PendingApproval: f.PendingApproval,
 	}
 	var err error
 	for _, field := range []struct {
@@ -290,8 +284,6 @@ func (c *Client) PutConversation(convo Conversation) error {
 	return writeJSON(path, conversationFile{
 		PeerAccountID:            convo.PeerAccountID,
 		PeerServer:               convo.PeerServer,
-		PeerDeviceID:             convo.PeerDeviceID,
-		PeerDevicePubKey:         convo.PeerDevicePubKey,
 		LastActivityAt:           formatTime(convo.LastActivityAt),
 		HasUnread:                convo.HasUnread,
 		Blocked:                  convo.Blocked,

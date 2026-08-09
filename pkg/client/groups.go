@@ -79,12 +79,123 @@ type GroupOutcome struct {
 	DeliveredUpTo *time.Time
 }
 
-// groupPeers is what each member last told us about their own view.
+// groupPeers is what each member last told us about their own view, and what
+// we still owe them.
 type groupPeers struct {
 	// StateHashes maps an account id to the state hash it last stated. The
 	// send path reads it to decide whether that member needs the whole fact
 	// set before their next copy.
 	StateHashes map[string]string `json:"state_hashes,omitempty"`
+
+	// Owed names members who are due the whole fact set: an unreachable
+	// recipient of a broadcast, or somebody whose request could not be
+	// answered. Persisted, because the point of a debt is that it outlives the
+	// attempt that created it.
+	Owed map[string]bool `json:"owed,omitempty"`
+
+	// Answered maps an account id to the last foreign state hash we sent a
+	// snapshot in reply to, so two peers that stay divergent for a reason a
+	// snapshot cannot fix do not trade snapshots forever.
+	//
+	// Persisted rather than kept for the run, which the Dart original does not
+	// do: a restart would otherwise re-open exactly that loop. Safe, because a
+	// peer who genuinely still needs the facts asks outright, and a sync
+	// request bypasses this check.
+	Answered map[string]string `json:"answered,omitempty"`
+
+	// LastSyncRequest is when this group was last asked about, for the
+	// cooldown. Per group rather than per member: the point is to get the facts
+	// once, and a group whose every member writes would otherwise produce one
+	// request per message.
+	LastSyncRequest string `json:"last_sync_request,omitempty"`
+}
+
+// oweGroupSnapshot records that a member is due the whole fact set.
+func (c *Client) oweGroupSnapshot(groupID, accountID string) error {
+	return c.updateGroupPeers(groupID, func(p *groupPeers) bool {
+		if p.Owed[accountID] {
+			return false
+		}
+		if p.Owed == nil {
+			p.Owed = map[string]bool{}
+		}
+		p.Owed[accountID] = true
+		return true
+	})
+}
+
+func (c *Client) clearGroupSnapshotDebt(groupID, accountID string) error {
+	return c.updateGroupPeers(groupID, func(p *groupPeers) bool {
+		if !p.Owed[accountID] {
+			return false
+		}
+		delete(p.Owed, accountID)
+		return true
+	})
+}
+
+// markGroupHashAnswered reports whether this peer's hash has already been
+// answered with a snapshot, recording it if not.
+func (c *Client) markGroupHashAnswered(groupID, accountID, stateHash string) (already bool, err error) {
+	err = c.updateGroupPeers(groupID, func(p *groupPeers) bool {
+		if p.Answered[accountID] == stateHash {
+			already = true
+			return false
+		}
+		if p.Answered == nil {
+			p.Answered = map[string]string{}
+		}
+		p.Answered[accountID] = stateHash
+		return true
+	})
+	return already, err
+}
+
+// markGroupSyncRequested reports whether this group was asked about too
+// recently to ask again, recording the attempt if not.
+func (c *Client) markGroupSyncRequested(groupID string, now time.Time) (tooSoon bool, err error) {
+	err = c.updateGroupPeers(groupID, func(p *groupPeers) bool {
+		if last, perr := parseTime(p.LastSyncRequest); perr == nil && last != nil {
+			if now.Sub(*last) < GroupSyncRequestCooldown {
+				tooSoon = true
+				return false
+			}
+		}
+		p.LastSyncRequest = formatTime(&now)
+		return true
+	})
+	return tooSoon, err
+}
+
+// groupPeersFor is groupPeers read under the lock.
+func (c *Client) groupPeersFor(groupID string) (groupPeers, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.groupPeersLocked(groupID)
+}
+
+// updateGroupPeers applies mutate and writes only if it changed something.
+// Not writing on the no-change path matters: most of these run on every
+// envelope, and a group's peer file would otherwise be rewritten per message.
+func (c *Client) updateGroupPeers(groupID string, mutate func(*groupPeers) bool) error {
+	if groupID == "" {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	peers, err := c.groupPeersLocked(groupID)
+	if err != nil {
+		return err
+	}
+	if !mutate(&peers) {
+		return nil
+	}
+	path, err := c.store.groupPath(groupID, filePeers)
+	if err != nil {
+		return err
+	}
+	return writeJSON(path, peers)
 }
 
 // GroupState returns the fact set held for a group, or nil for one this
@@ -354,29 +465,19 @@ func (c *Client) holdPrematureLocked(groupID string, batch []*group.Event, resul
 // before their next copy. An empty hash is not recorded: it means the sender did
 // not say, which is not the same as having nothing.
 func (c *Client) RecordGroupPeerStateHash(groupID, accountID, stateHash string) error {
-	if groupID == "" || accountID == "" || stateHash == "" {
+	if accountID == "" || stateHash == "" {
 		return nil
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	peers, err := c.groupPeersLocked(groupID)
-	if err != nil {
-		return err
-	}
-	if peers.StateHashes == nil {
-		peers.StateHashes = map[string]string{}
-	}
-	if peers.StateHashes[accountID] == stateHash {
-		return nil // nothing changed, so nothing is written
-	}
-	peers.StateHashes[accountID] = stateHash
-
-	path, err := c.store.groupPath(groupID, filePeers)
-	if err != nil {
-		return err
-	}
-	return writeJSON(path, peers)
+	return c.updateGroupPeers(groupID, func(p *groupPeers) bool {
+		if p.StateHashes[accountID] == stateHash {
+			return false // nothing changed, so nothing is written
+		}
+		if p.StateHashes == nil {
+			p.StateHashes = map[string]string{}
+		}
+		p.StateHashes[accountID] = stateHash
+		return true
+	})
 }
 
 // GroupPeerStateHashes is every member's last stated view of a group.
@@ -415,12 +516,31 @@ type GroupChat struct {
 	GroupID        string
 	LastActivityAt *time.Time
 	HasUnread      bool
+
+	// MemberReceipts is how far each member has got with *our* messages in
+	// this group -- filed per member and never passed on. Who has read what
+	// stays between reader and author, which is why a group receipt is sent to
+	// the author alone rather than into the group.
+	MemberReceipts map[string]MemberReceipt
+}
+
+// MemberReceipt is one member.s pair of watermarks. Cumulative, so one
+// arriving late is harmless: it moves a monotonic value and touches no message.
+type MemberReceipt struct {
+	DeliveredUpTo *time.Time
+	ReadUpTo      *time.Time
+}
+
+type memberReceiptFile struct {
+	DeliveredUpTo string `json:"delivered_up_to,omitempty"`
+	ReadUpTo      string `json:"read_up_to,omitempty"`
 }
 
 type groupChatFile struct {
-	GroupID        string `json:"group_id"`
-	LastActivityAt string `json:"last_activity_at,omitempty"`
-	HasUnread      bool   `json:"has_unread,omitempty"`
+	GroupID        string                       `json:"group_id"`
+	LastActivityAt string                       `json:"last_activity_at,omitempty"`
+	HasUnread      bool                         `json:"has_unread,omitempty"`
+	MemberReceipts map[string]memberReceiptFile `json:"member_receipts,omitempty"`
 }
 
 // GroupChat returns a group's chat state, or nil when there is none.
@@ -444,6 +564,19 @@ func (c *Client) groupChatLocked(groupID string) (*GroupChat, error) {
 	if chat.LastActivityAt, err = parseTime(stored.LastActivityAt); err != nil {
 		return nil, err
 	}
+	for account, r := range stored.MemberReceipts {
+		var receipt MemberReceipt
+		if receipt.DeliveredUpTo, err = parseTime(r.DeliveredUpTo); err != nil {
+			return nil, err
+		}
+		if receipt.ReadUpTo, err = parseTime(r.ReadUpTo); err != nil {
+			return nil, err
+		}
+		if chat.MemberReceipts == nil {
+			chat.MemberReceipts = map[string]MemberReceipt{}
+		}
+		chat.MemberReceipts[account] = receipt
+	}
 	if chat.GroupID == "" {
 		chat.GroupID = groupID
 	}
@@ -459,10 +592,21 @@ func (c *Client) PutGroupChat(chat GroupChat) error {
 	if err != nil {
 		return err
 	}
+	var receipts map[string]memberReceiptFile
+	for account, r := range chat.MemberReceipts {
+		if receipts == nil {
+			receipts = map[string]memberReceiptFile{}
+		}
+		receipts[account] = memberReceiptFile{
+			DeliveredUpTo: formatTime(r.DeliveredUpTo),
+			ReadUpTo:      formatTime(r.ReadUpTo),
+		}
+	}
 	return writeJSON(path, groupChatFile{
 		GroupID:        chat.GroupID,
 		LastActivityAt: formatTime(chat.LastActivityAt),
 		HasUnread:      chat.HasUnread,
+		MemberReceipts: receipts,
 	})
 }
 
@@ -573,4 +717,38 @@ func memberOf(r *group.Resolved, accountID string) *group.Member {
 		}
 	}
 	return nil
+}
+
+// recordMemberReceipt moves one member's watermark for this group.
+//
+// Monotonic, like the one-to-one watermarks: an out-of-order or duplicated
+// older receipt never regresses a status that has already moved on. A group
+// this device has no chat for gets nothing minted -- there is nothing to
+// confirm against.
+func (c *Client) recordMemberReceipt(groupID, accountID string, content Content) error {
+	chat, err := c.GroupChat(groupID)
+	if err != nil || chat == nil {
+		return err
+	}
+	upTo := content.ReceiptUpTo
+	receipt := chat.MemberReceipts[accountID]
+	switch content.ReceiptStatus {
+	case ReceiptDelivered:
+		if receipt.DeliveredUpTo != nil && !upTo.After(*receipt.DeliveredUpTo) {
+			return nil
+		}
+		receipt.DeliveredUpTo = &upTo
+	case ReceiptRead:
+		if receipt.ReadUpTo != nil && !upTo.After(*receipt.ReadUpTo) {
+			return nil
+		}
+		receipt.ReadUpTo = &upTo
+	default:
+		return nil
+	}
+	if chat.MemberReceipts == nil {
+		chat.MemberReceipts = map[string]MemberReceipt{}
+	}
+	chat.MemberReceipts[accountID] = receipt
+	return c.PutGroupChat(*chat)
 }

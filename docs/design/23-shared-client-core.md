@@ -700,6 +700,76 @@ against a peer's stated view, sync requests, and per-member receipts.
 `GroupOutcome` already reports what that half needs (`WantsSnapshot`, the
 peer's state hash, the delivery watermark); nothing acts on it yet.
 
+## What stage 5b settled
+
+The sending half, and with it the core is complete: `pkg/client` can found a
+group, invite into it, accept, change roles, remove, leave, dissolve, say
+something everyone can read, attach a picture to it, and repair a member whose
+view has drifted.
+
+**There is no group key and no group session.** A group message is encrypted
+once per member, into that member's own one-to-one ratchet. That costs a copy
+per member and buys the property that matters: joining grants no access to what
+was said before, and removal ends access immediately, with nothing to re-key.
+The group is a fact set, not a channel.
+
+Two rules about failure, and they point in opposite directions:
+
+- **A ratchet advance is never rolled back here**, unlike the one-to-one path.
+  There, rolling back is safe because there is one recipient to stay consistent
+  with. In a fan-out, a partial success means some peers have moved on and some
+  have not, so the advance stands and the delivery record carries who is behind.
+- **An establishment *is* rolled back.** The tests found this, and it was a
+  real defect: a first copy that fails to post leaves a session the peer never
+  saw established, so every later message to them is encrypted into something
+  they cannot open — silently, permanently, and invisibly to the sender. The
+  distinction is exact: undo the establishment, keep the advance.
+
+**A rejected action is never broadcast**, and finding that out is subtler than
+it looks. `State.Apply` only checks that an event is well formed and signed;
+whether the signer was *allowed* is the fold's decision, and the fold simply
+ignores what it will not honour — no error anywhere. So an action whose fold
+does not change did not change anything for a reason, and broadcasting it would
+buy a divergent view of the group and nothing else. Compared on the fold rather
+than the state hash, which covers the fact set and therefore moves whenever an
+event is added at all. Only for the types that must take effect: setting a name
+to what it already is, or granting a role somebody holds, is idempotent rather
+than refused.
+
+The self-healing machinery, in three parts that each cover a case the others
+cannot:
+
+- **Snapshot debt.** A member who could not be reached is owed the whole fact
+  set, persisted, and paid on the next attempt. Without it an invitation is
+  simply lost when somebody's server is down for a minute. Uncapped, unlike a
+  failed message: a member who never gets the facts can never take part.
+- **Reconciliation** against the hash every group envelope carries. Answered at
+  most once per foreign hash, so two peers who stay divergent for a reason a
+  snapshot cannot fix do not trade snapshots forever — and persisted, which the
+  Dart original does not do, because a restart otherwise re-opens exactly that
+  loop.
+- **Asking outright**, for the one case no hash can signal: a member holding no
+  facts at all. Their own hash only travels on messages they cannot send
+  without a member list, so nothing tells anyone they are missing. Rate limited
+  per group, since a group whose every member writes would otherwise produce a
+  request per message.
+
+Batch delivery is used where a server advertises it and falls back to one post
+per message otherwise — the documented behaviour, and why groups work against
+servers already deployed. A batch refused outright falls back the same way, so
+a server that stops accepting them mid-life does not break a group.
+
+Group receipts are filed per member and never passed on: who has read what
+stays between reader and author. That is also why the receipt carries the group
+id, and why the delivery watermark has its own field in `GroupOutcome` —
+reported through the one-to-one one it would confirm that member's unrelated
+direct messages.
+
+One refactor came with this. The cached peer device moved off `Conversation`
+into `peers/<id>/device.json`: a group member is somebody we address without
+necessarily having a chat with them, and minting a conversation to hold a
+device id would put every group member in the chat list.
+
 Considered and not done:
 
 - **Two native apps now (Kotlin + Swift), dropping Flutter.** The obstacle is

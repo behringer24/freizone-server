@@ -23,8 +23,8 @@ func TestMessageTravelsFromOneClientToTheOther(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartConversation: %v", err)
 	}
-	if convo.PeerDeviceID != srv.deviceIDs["bob"] {
-		t.Errorf("resolved device: want %q, got %q", srv.deviceIDs["bob"], convo.PeerDeviceID)
+	if dev, _ := alice.peerDevice(bobID); dev == nil || dev.DeviceID != srv.deviceIDs["bob"] {
+		t.Errorf("resolved device: want %q, got %+v", srv.deviceIDs["bob"], dev)
 	}
 	if convo.PendingApproval {
 		t.Error("a conversation the user opened is not a request awaiting their own approval")
@@ -372,11 +372,11 @@ func TestASendToAReplacedDeviceForgetsTheCachedOne(t *testing.T) {
 		t.Fatal("the send must fail")
 	}
 
-	convo, err := alice.Conversation(bobID)
+	dev, err := alice.peerDevice(bobID)
 	if err != nil {
-		t.Fatalf("Conversation: %v", err)
+		t.Fatalf("peerDevice: %v", err)
 	}
-	if convo.PeerDeviceID != "" {
+	if dev != nil {
 		t.Error("a device the server no longer knows must not stay cached, or every retry fails against the same dead id")
 	}
 	// The session goes with it. Keeping one bound to a device that no longer

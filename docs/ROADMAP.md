@@ -787,3 +787,30 @@ a one-time reset. No wire-format change.
 - **Next**: stage 5b, the sending half of groups — fan-out, snapshot debt,
   reconciliation against a peer's stated view, sync requests, per-member
   receipts. `GroupOutcome` already reports what it needs; nothing acts on it yet
+- 2026-08-09 — stage 5b: the sending half of groups (`groupsend.go`,
+  `groupactions.go`), and with it **the core is complete** — found, invite,
+  accept, roles, remove, leave, dissolve, send, attach, repair. Tests drive
+  three real clients through the stub server, so every group envelope is
+  encrypted per member and folded by the code that has to fold it. Two rules
+  about failure pointing opposite ways: a ratchet advance is never rolled back
+  in a fan-out (a partial success means some peers moved on and some did not,
+  so the delivery record carries who is behind), but an *establishment* is — the
+  tests found that as a real defect, since a first copy that fails to post
+  leaves a session the peer never saw established and every later message to
+  them is then unopenable, silently and permanently. A rejected action is never
+  broadcast, which needed care: `State.Apply` only checks form and signature,
+  while *authority* is the fold's decision and the fold just ignores what it
+  will not honour, so the check is "did the fold change" rather than any error.
+  Self-healing in three parts, each covering what the others cannot: persisted
+  snapshot debt, reconciliation against the hash every envelope carries
+  (answered at most once per foreign hash, and persisted — a restart otherwise
+  re-opens the loop), and asking outright for the one case no hash can signal,
+  a member holding no facts at all. Batch delivery where advertised, one post
+  per message otherwise, and the same fallback when a batch is refused. Group
+  receipts are filed per member and never passed on. The cached peer device
+  moved off `Conversation` into `peers/<id>/device.json` — a group member is
+  addressed without necessarily having a chat with them
+- **Next**: the app swap. `pkg/client` now owns state, network, receive, send,
+  attachments and groups; the Dart side still holds the UI's state and would be
+  the last thing to move. Worth doing as one cut rather than three, and it needs
+  the data reset the design doc has planned since the start

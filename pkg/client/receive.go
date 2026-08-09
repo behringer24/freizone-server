@@ -358,10 +358,14 @@ func (c *Client) receive(msg IncomingMessage, opts ReceiveOptions, now time.Time
 
 	case ContentReceipt:
 		if dec.content.ReceiptGroupID != "" {
-			// A group receipt is filed per member against the group's own
-			// transcript, which this package does not own yet -- handed up
-			// with everything else about groups.
-			return res, nil
+			// One member telling *us*, the author, how far they have got with
+			// our messages in that group. Filed against them and never passed
+			// on: who has read what stays between reader and author.
+			res.Group = &GroupOutcome{GroupID: dec.content.ReceiptGroupID}
+			if opts.ReceiptsDisabled {
+				return res, nil
+			}
+			return res, c.recordMemberReceipt(dec.content.ReceiptGroupID, peer, dec.content)
 		}
 		if !opts.ReceiptsDisabled {
 			if err := c.recordReceipt(peer, dec.content); err != nil {
