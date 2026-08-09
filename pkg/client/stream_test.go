@@ -353,3 +353,97 @@ func TestConnectTimeoutProbesTheLayers(t *testing.T) {
 		}
 	}
 }
+
+// A connection that dies without saying so has to be noticed. Nothing else
+// notices it: the connect deadline is long over, and a read that will never
+// return does not fail on its own.
+func TestSilentStreamIsTreatedAsDisconnected(t *testing.T) {
+	var connects atomic.Int32
+	hold := make(chan struct{})
+	c := servedClient(t, func(w http.ResponseWriter, r *http.Request) {
+		connects.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		// Headers and then nothing at all -- a socket that is open and dead.
+		<-hold
+	})
+	t.Cleanup(func() { close(hold) })
+
+	policy := fastPolicy
+	policy.IdleTimeout = 300 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := c.Stream(ctx, policy)
+
+	awaitEvent(t, events, StreamConnected)
+	ev := awaitEvent(t, events, StreamDisconnected)
+	if ev.Err == nil || !strings.Contains(ev.Err.Error(), "went silent") {
+		t.Errorf("the disconnect should name the silence, got %v", ev.Err)
+	}
+	// Disconnected, not failed: the link may be fine and only this connection
+	// dead, so it reconnects quickly rather than backing off.
+	awaitEvent(t, events, StreamConnected)
+	if got := connects.Load(); got < 2 {
+		t.Errorf("want a reconnect, got %d connects", got)
+	}
+}
+
+// And the half that keeps the timeout honest: a heartbeat is silence's
+// opposite. An account nobody writes to must stay connected indefinitely, so
+// the timer has to be reset by the server's keepalive as much as by a message.
+// Without this test the safe-looking fix above would quietly tear down every
+// idle stream on a schedule.
+func TestHeartbeatsKeepASilentAccountConnected(t *testing.T) {
+	var disconnects atomic.Int32
+	done := make(chan struct{})
+	c := servedClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-done:
+				return
+			case <-ticker.C:
+				// The server's own keepalive shape: a comment, not an event.
+				fmt.Fprint(w, ": heartbeat\n\n")
+				w.(http.Flusher).Flush()
+			}
+		}
+	})
+	t.Cleanup(func() { close(done) })
+
+	policy := fastPolicy
+	policy.IdleTimeout = 300 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := c.Stream(ctx, policy)
+
+	awaitEvent(t, events, StreamConnected)
+
+	// Well past several idle timeouts, with only heartbeats arriving.
+	deadline := time.After(1500 * time.Millisecond)
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				t.Fatal("stream ended unexpectedly")
+			}
+			if ev.Kind == StreamDisconnected || ev.Kind == StreamFailed {
+				disconnects.Add(1)
+			}
+		case <-deadline:
+			if n := disconnects.Load(); n != 0 {
+				t.Errorf("a heartbeating stream was torn down %d times -- the idle timer is not being reset by keepalives", n)
+			}
+			return
+		}
+	}
+}
