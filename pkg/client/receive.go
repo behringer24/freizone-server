@@ -80,8 +80,8 @@ type ReceiveResult struct {
 	Duplicate bool
 
 	// StoredMessageID is the transcript line this produced, empty for the
-	// control envelopes (receipt, re-key, group traffic) that are never stored
-	// and for a blocked peer's message, which is decrypted and then dropped.
+	// control envelopes -- receipt, re-key, group membership -- that are never
+	// stored, and for a blocked peer.s message, which is decrypted and dropped.
 	StoredMessageID string
 
 	ShouldNotify bool
@@ -99,6 +99,11 @@ type ReceiveResult struct {
 	// InboundSessionKept: this side won the tie-break and keeps the peer's
 	// session for reading only, so their in-flight messages are not stranded.
 	InboundSessionKept bool
+
+	// Group is set for every group envelope: what folding it changed, or -- for
+	// a group message -- which group it belongs to and how far the sender has
+	// got. Nil for one-to-one traffic.
+	Group *GroupOutcome
 
 	// Blocked: the sender is blocked. The envelope was still decrypted (the
 	// ratchet must stay in step, and the server queue must still drain) and
@@ -150,12 +155,10 @@ func (e *DecryptError) Unwrap() error { return e.Err }
 // nothing to send from. That also keeps this callable while offline, which is
 // exactly when a queue is longest.
 //
-// Group envelopes are decrypted, recorded as processed, and handed back
-// undigested in [ReceiveResult.Content] for the caller to act on: this package
-// does not own group state yet (SRV-23 stage 5). That hand-up is not optional
-// for the caller -- the ratchet has already advanced past the envelope and the
-// id is already marked, so whatever it carried is gone for good if it is
-// dropped.
+// Group envelopes are folded in here too, not handed up. The ratchet has
+// advanced and the id is marked by the time the payload is even read, so an
+// envelope nobody folds takes its facts with it -- which is why this has to
+// work with nothing else attached, including on a background wake.
 func (c *Client) HandleIncoming(msg IncomingMessage, opts ReceiveOptions) (ReceiveResult, error) {
 	peer := msg.SenderAccountID
 	unlock := c.lockPeer(peer)
@@ -303,8 +306,54 @@ func (c *Client) receive(msg IncomingMessage, opts ReceiveOptions, now time.Time
 		// else that was processed.
 		return res, nil
 
-	case ContentGroupText, ContentGroupControl:
-		// Stage 5 owns these; handed up decrypted (see HandleIncoming).
+	case ContentGroupControl:
+		// Acted on here rather than handed up, and that is not a preference:
+		// the ratchet has advanced and the id is marked, so an envelope
+		// nobody folds takes its facts with it.
+		//
+		// A blocked sender is no exception. Membership is not a message --
+		// refusing their facts would leave this device with a view of the
+		// group that disagrees with everyone else's, which is a worse outcome
+		// than hearing a fact from somebody whose chat you have muted.
+		outcome, err := c.ApplyGroupControl(dec.content, peer, now)
+		if err != nil {
+			return res, err
+		}
+		res.Group = &outcome
+		// The one group event worth interrupting somebody for, and only when
+		// they are not already looking at it.
+		res.ShouldNotify = outcome.Invited && opts.OpenChatID != outcome.GroupID
+		return res, nil
+
+	case ContentGroupText:
+		if err := c.RecordGroupPeerStateHash(dec.content.GroupID, peer, dec.content.StateHash); err != nil {
+			return res, err
+		}
+		res.Group = &GroupOutcome{
+			GroupID:       dec.content.GroupID,
+			PeerStateHash: dec.content.StateHash,
+		}
+		if blocked {
+			// Decrypted so the ratchet and the queue stay clean, then dropped
+			// -- but unlike a blocked peer's one-to-one message, not without a
+			// trace. See Client.recordBlockedGroupMessage.
+			return res, c.recordBlockedGroupMessage(dec.content.GroupID, peer, now)
+		}
+		stored, err := c.storeGroupMessage(dec.content, peer, now, opts.OpenChatID)
+		if err != nil {
+			return res, err
+		}
+		res.StoredMessageID = stored.ID
+		res.ShouldNotify = opts.OpenChatID != dec.content.GroupID
+		// Its own field rather than DeliveredUpTo: a receipt travels over a
+		// *conversation*, so reporting a group anchor through the one-to-one
+		// field would confirm that member's unrelated direct messages.
+		if stored.SenderSentAt != nil {
+			res.Group.DeliveredUpTo = stored.SenderSentAt
+		} else {
+			at := now
+			res.Group.DeliveredUpTo = &at
+		}
 		return res, nil
 
 	case ContentReceipt:

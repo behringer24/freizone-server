@@ -541,10 +541,12 @@ func TestMissingSessionCountsAsEvidence(t *testing.T) {
 	}
 }
 
-// Group envelopes are decrypted and handed up rather than filed away: this
-// package does not own group state yet, and the ratchet has already moved past
-// the envelope, so dropping one loses whatever it carried for good.
-func TestGroupEnvelopeIsHandedUpDecrypted(t *testing.T) {
+// A group message goes into the group's own transcript, never into a
+// one-to-one chat with whoever happened to send it. That is the whole reason
+// group content has its own version rather than being an ordinary message with
+// a group id attached: an older build meeting one shows a placeholder instead
+// of filing it under the sender.
+func TestGroupMessageGoesIntoTheGroupTranscript(t *testing.T) {
 	c, p := newFixture(t, "me", "them", nil)
 
 	res := mustHandle(t, c, p.msg("g1", p.send(mustJSON(t, map[string]any{
@@ -554,17 +556,39 @@ func TestGroupEnvelopeIsHandedUpDecrypted(t *testing.T) {
 	if res.Content.Kind != ContentGroupText {
 		t.Fatalf("content kind: want %q, got %q", ContentGroupText, res.Content.Kind)
 	}
-	if res.Content.GroupID != "grp-1" || res.Content.Text != "in the group" || res.Content.StateHash != "h1" {
-		t.Errorf("the group envelope must reach the caller intact, got %+v", res.Content)
+	if res.Group == nil || res.Group.GroupID != "grp-1" || res.Group.PeerStateHash != "h1" {
+		t.Fatalf("the result must name the group and the sender's view, got %+v", res.Group)
 	}
-	if res.StoredMessageID != "" {
-		t.Error("it must not land in a one-to-one transcript with whoever happened to send it")
+	if res.StoredMessageID != "gid-1" {
+		t.Errorf("stored message id: want %q, got %q", "gid-1", res.StoredMessageID)
 	}
 	if msgs, _ := c.Messages("them"); len(msgs) != 0 {
 		t.Errorf("one-to-one transcript: want empty, got %d lines", len(msgs))
 	}
+
+	msgs, err := c.Messages("grp-1")
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+	if len(msgs) != 1 || msgs[0].Text != "in the group" {
+		t.Fatalf("group transcript: %+v", msgs)
+	}
+	// In a group the chat does not answer who wrote a line, so the line has to.
+	if msgs[0].SenderAccountID != "them" {
+		t.Errorf("sender: want %q, got %q", "them", msgs[0].SenderAccountID)
+	}
 	if seen, _ := c.WasMessageProcessed("g1"); !seen {
 		t.Error("it was decrypted, so it must be marked processed like anything else")
+	}
+
+	// The sender's view is remembered even for a plain message: the send path
+	// reads it to decide whether they are behind on facts.
+	hashes, err := c.GroupPeerStateHashes("grp-1")
+	if err != nil {
+		t.Fatalf("GroupPeerStateHashes: %v", err)
+	}
+	if hashes["them"] != "h1" {
+		t.Errorf("peer state hash: want %q, got %q", "h1", hashes["them"])
 	}
 }
 

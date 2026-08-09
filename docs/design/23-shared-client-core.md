@@ -635,6 +635,71 @@ group facts cannot express "this member ceased to exist". Fixing it for
 one-to-one needs a decision about what the user is shown, which is not this
 item's to make.
 
+## What stage 5a settled
+
+The receiving half of groups, which is also **the last seam stage 3 left open**.
+A group envelope is no longer handed up: it is folded here.
+
+That is not tidiness. By the time a payload is read, the ratchet has advanced
+and the id is marked — both irreversible — so an envelope nobody folds takes
+its facts with it for good. The consequence is that this has to work with
+nothing else attached, including on a background wake with no screen and
+nothing to send from, which is exactly why it cannot live a layer up.
+
+Facts, not messages. Nothing here is stored in a transcript except the
+narration of what changed, and nothing notifies — with one exception, an
+invitation addressed to this account. That is a decision waiting on the user
+and their only sign that anything happened at all, since nothing is ever sent
+into a group before they accept.
+
+Four rules worth stating, three of which have a way of being quietly wrong:
+
+- **A re-invitation is an invitation.** The facts stay on this device when a
+  moderator removes us, so the group is *not* new the second time round —
+  checking "is this group new to us" alone silently swallows every
+  re-invitation. The condition is about the membership, not the group.
+- **An event that overtook its genesis is held, not dropped.** Delivery is
+  unordered, so a membership change easily arrives before the snapshot
+  carrying the genesis it rests on. Held to a bound, because an unbounded
+  buffer is mostly somewhere for a hostile peer to put things — and only for
+  the one rejection a later fact can change. Everything else is dropped:
+  retrying a bad signature forever is precisely what an attacker would want.
+  That distinction was a literal string both clients matched against, and is
+  now `group.RejectNoGenesis`.
+- **A blocked member's group message leaves a trace.** A one-to-one chat can
+  stay silent — its blocked state is the standing explanation. A group
+  transcript is shared, and the other members go on replying to messages this
+  account never saw, which reads as delivery loss. One collapsed line per run,
+  so a chatty blocked member costs a line rather than a column: *how much* they
+  wrote stays as unknowable as what they wrote. It moves neither unread nor
+  last activity, or blocking would still buy them a badge.
+- **A snapshot's group id comes from its genesis**, never from what the sender
+  wrote on the outside. A snapshot carries the key the id is derived from, so
+  the claim is checkable and therefore not worth trusting.
+
+Membership changes are narrated from the before/after fold rather than from
+whoever made the change, so every device writes the same transcript
+independently. An invitation and its acceptance read as two lines, which is
+what makes an outstanding invitation visible.
+
+**One test in this slice proved nothing until the negative control said so.**
+The held-events case delivered a premature event, then a snapshot — but the
+snapshot contained the same fact, so the event would have been admitted whether
+or not anything was ever held. Removing the holding left it green. The fix was
+to capture the snapshot *before* the event exists, so admitting it is only
+possible if it was kept.
+
+`GroupChat` is deliberately not `Conversation`. The two share only the fields
+around a transcript: a group has no peer server, no approval to give and no
+single correspondent to hold watermarks for, and a one-to-one chat has no
+membership. Name and topic are not stored at all — they are facts, and live in
+the fold.
+
+Still to come in 5b: the sending half — fan-out, snapshot debt, reconciliation
+against a peer's stated view, sync requests, and per-member receipts.
+`GroupOutcome` already reports what that half needs (`WantsSnapshot`, the
+peer's state hash, the delivery watermark); nothing acts on it yet.
+
 Considered and not done:
 
 - **Two native apps now (Kotlin + Swift), dropping Flutter.** The obstacle is
