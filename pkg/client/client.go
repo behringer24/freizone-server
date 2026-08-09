@@ -102,6 +102,10 @@ type Client struct {
 	// here" and must cost no write at all.
 	failures     map[string]int
 	failureOrder []string
+
+	// peerLocks serialise the read-modify-write cycles around one peer's
+	// session -- see Client.lockPeer. Guarded by mu, held without it.
+	peerLocks map[string]*sync.Mutex
 }
 
 // Open opens the account directory at path, creating it if it does not exist.
@@ -116,7 +120,7 @@ func Open(path string) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &Client{store: st, path: path}
+	c := &Client{store: st, path: path, peerLocks: make(map[string]*sync.Mutex)}
 
 	if err := c.loadProcessed(); err != nil {
 		return nil, err

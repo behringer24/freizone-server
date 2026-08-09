@@ -441,6 +441,68 @@ beside the existing Android one, and a test-only `libraryPath` parameter that
 leaves the production loader untouched. The vectors were the occasion, but the
 capability outlasts them — that layer can now be tested at all.
 
+## What stage 3 settled
+
+`pkg/client` now decrypts. **It passes all nine vectors** — the number that
+matters is the comparison: the app nine, this repo's older client four, and the
+new implementation nine on its first run. That is not a claim that it is
+finished; it is a claim that the four decisions `cmd/devclient` gets wrong are
+not inherited, which was the whole risk of "extract the Go one".
+
+Passing on the first run is also the least trustworthy kind of green, so each of
+those four was re-broken deliberately to check the vectors bite here rather than
+merely load: burning the one-time prekey at lookup time fails
+`failed-responder-attempt-must-not-burn-prekey`, dropping the processed-id check
+fails `redelivered-initial-must-not-reset-session`, and wrapping the ratchet
+error with `%v` instead of `%w` fails `authentication-failure-is-desync-evidence`
+on both the code and the evidence assertion at once.
+
+Deliberately **no `knownDivergences` list beside this runner**, unlike
+`cmd/devclient`'s. That list exists there to keep a defect visible without
+keeping the suite red; here a failure has nowhere to go but a fix, because this
+implementation has no history to stay compatible with.
+
+Four decisions the port had to make rather than copy:
+
+- **Failures carry their consequence, not just their cause.** A failed decrypt
+  returns a `*DecryptError` holding whether it counts as desync evidence,
+  whether this envelope has now been given up on, and whether the evidence
+  justifies re-keying — wrapping the ratchet error so `FailureCode` and
+  `SuggestsDesync` still work through it. The Dart original spreads those three
+  answers across the caller; putting them on the error is what lets the shell
+  stay a shell.
+- **The evidence is counted per envelope, not per attempt.** One broken message
+  retried three times is one broken message. Counting attempts would reach any
+  threshold on a single envelope, which is the difference between recovering a
+  session and re-keying on every reconnect.
+- **`ErrNoSessionMaterial` is desync evidence even though nothing failed.** An
+  envelope with no session and no prekey block produces no cryptographic error
+  at all — this side's session is simply gone while the peer keeps sending into
+  the one they still hold. It is the one desync shape that announces itself
+  only by absence, and the case automatic recovery exists for.
+- **Group envelopes are decrypted and handed back undigested.** Stage 5 owns
+  group state. Until then the ratchet has already advanced and the id is
+  already marked, so the caller *must* act on what comes back: dropping it
+  loses the facts for good. That is a temporary seam, and it is the only one —
+  the one-to-one path is complete here, transcript and all.
+
+The recovery policy moved across as a pure function (`shouldAutoRekey`): the
+tie-break on account id, the five-minute grace for the higher id, the
+fifteen-minute spacing between attempts. Thresholds and tie-breaks are the part
+that is wrong in ways nothing notices, so it stays testable without a session, a
+server or a clock to wait for.
+
+What the vectors do **not** cover is the larger half of this stage, and it has
+its own tests: the notification rules (a stranger's first message interrupts
+once, their follow-ups do not, an open chat is silent), a blocked peer's message
+being decrypted and then dropped without a trace while still counting as
+processed, receipts as monotonic watermarks in the sender's clock domain that
+never create a conversation, and the transcript marker for an accepted re-key —
+which must not touch last-activity, because recovering a session is maintenance
+and must not jump the chat to the top of the list. Those rules are the quiet
+kind: nothing fails when they are wrong, a message simply never appears, or
+interrupts someone it should not have.
+
 Considered and not done:
 
 - **Two native apps now (Kotlin + Swift), dropping Flutter.** The obstacle is
