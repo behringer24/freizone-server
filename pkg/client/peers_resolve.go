@@ -137,32 +137,74 @@ func (c *Client) ResolvePeer(ctx context.Context, addressOrPrefix, server string
 // §9) -- so the send path heals it instead: the send that trips over a dead id
 // is the one that forgets it. See [Client.ForgetPeerDevice].
 func (c *Client) Endpoint(ctx context.Context, peer string) (PeerEndpoint, error) {
+	var server string
 	convo, err := c.Conversation(peer)
 	if err != nil {
 		return PeerEndpoint{}, err
 	}
-	if convo == nil {
-		return PeerEndpoint{}, fmt.Errorf("client: no conversation with %s to resolve", peer)
+	if convo != nil {
+		server = convo.PeerServer
 	}
-	if convo.PeerDeviceID != "" && len(convo.PeerDevicePubKey) > 0 {
-		return PeerEndpoint{
-			AccountID: peer,
-			Server:    convo.PeerServer,
-			DeviceID:  convo.PeerDeviceID,
-			DevicePub: convo.PeerDevicePubKey,
-		}, nil
-	}
+	return c.endpointOn(ctx, peer, server)
+}
 
-	endpoint, err := c.ResolvePeer(ctx, peer, convo.PeerServer)
+// endpointOn is [Client.Endpoint] with the home server supplied rather than
+// looked up -- what a group member is addressed by, since the fact set records
+// where each of them lives and there may be no conversation at all.
+func (c *Client) endpointOn(ctx context.Context, peer, server string) (PeerEndpoint, error) {
+	cached, err := c.peerDevice(peer)
 	if err != nil {
 		return PeerEndpoint{}, err
 	}
-	convo.PeerDeviceID = endpoint.DeviceID
-	convo.PeerDevicePubKey = endpoint.DevicePub
-	if err := c.PutConversation(*convo); err != nil {
+	if cached != nil && cached.DeviceID != "" && len(cached.DevicePub) > 0 {
+		if server == "" {
+			server = cached.Server
+		}
+		return PeerEndpoint{AccountID: peer, Server: server, DeviceID: cached.DeviceID, DevicePub: cached.DevicePub}, nil
+	}
+
+	endpoint, err := c.ResolvePeer(ctx, peer, server)
+	if err != nil {
 		return PeerEndpoint{}, err
 	}
-	return endpoint, nil
+	return endpoint, c.putPeerDevice(endpoint)
+}
+
+// peerDeviceFile is the cached answer to "which device of theirs do we talk
+// to", and the key their certificates are checked against.
+type peerDeviceFile struct {
+	Server    string `json:"server,omitempty"`
+	DeviceID  string `json:"device_id"`
+	DevicePub []byte `json:"device_pub_key"`
+}
+
+func (c *Client) peerDevice(peer string) (*peerDeviceFile, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	path, err := c.store.peerPath(peer, fileDevice)
+	if err != nil {
+		return nil, err
+	}
+	var stored peerDeviceFile
+	found, err := readJSON(path, &stored)
+	if err != nil || !found {
+		return nil, err
+	}
+	return &stored, nil
+}
+
+func (c *Client) putPeerDevice(endpoint PeerEndpoint) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	path, err := c.store.peerPath(endpoint.AccountID, fileDevice)
+	if err != nil {
+		return err
+	}
+	return writeJSON(path, peerDeviceFile{
+		Server: endpoint.Server, DeviceID: endpoint.DeviceID, DevicePub: endpoint.DevicePub,
+	})
 }
 
 // StartConversation resolves an address the user has entered and creates the
@@ -196,10 +238,11 @@ func (c *Client) StartConversation(ctx context.Context, addressOrPrefix, server 
 		convo = *existing
 	}
 	convo.PeerServer = endpoint.Server
-	convo.PeerDeviceID = endpoint.DeviceID
-	convo.PeerDevicePubKey = endpoint.DevicePub
 	convo.PendingApproval = false
 
+	if err := c.putPeerDevice(endpoint); err != nil {
+		return Conversation{}, err
+	}
 	if err := c.MarkPeerKnown(endpoint.AccountID); err != nil {
 		return Conversation{}, err
 	}
@@ -217,13 +260,13 @@ func (c *Client) StartConversation(ctx context.Context, addressOrPrefix, server 
 // next send re-resolves and then encrypts to a stranger's ratchet. The pair is
 // discarded together or not at all.
 func (c *Client) ForgetPeerDevice(peer string) error {
-	convo, err := c.Conversation(peer)
-	if err != nil || convo == nil {
-		return err
+	c.mu.Lock()
+	path, err := c.store.peerPath(peer, fileDevice)
+	if err == nil {
+		err = removeFile(path)
 	}
-	convo.PeerDeviceID = ""
-	convo.PeerDevicePubKey = nil
-	if err := c.PutConversation(*convo); err != nil {
+	c.mu.Unlock()
+	if err != nil {
 		return err
 	}
 	if err := c.DeleteSession(peer, Sending); err != nil {

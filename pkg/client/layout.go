@@ -68,6 +68,12 @@ const (
 	fileChat  = "chat.json"
 
 	fileSession = "session.json"
+
+	// fileDevice caches which device of a peer we talk to. Per peer rather than
+	// on the conversation, because a group member is somebody we address without
+	// necessarily having a one-to-one chat with them -- and minting one just to
+	// hold a device id would put every group member in the chat list.
+	fileDevice  = "device.json"
 	fileInbound = "inbound.json"
 	fileHealth  = "health.json"
 	fileMeta    = "meta.json"

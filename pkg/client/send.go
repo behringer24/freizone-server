@@ -733,6 +733,25 @@ func encodeText(line Message, ownServer string, sentAt time.Time) ([]byte, error
 	return out, nil
 }
 
+// attachmentWires is the wire form of a message.s attachments.
+//
+// A placeholder that never finished uploading is left out: sending it would
+// describe a picture the recipient can never fetch, which reads as loss rather
+// than as the failure it is.
+func attachmentWires(atts []Attachment) []attachmentWire {
+	wires := make([]attachmentWire, 0, len(atts))
+	for _, a := range atts {
+		if a.BlobID == "" {
+			continue
+		}
+		wires = append(wires, attachmentWire{
+			Kind: a.Kind, Algorithm: a.Algorithm, BlobID: a.BlobID, Key: a.Key,
+			MimeType: a.MimeType, ByteSize: a.ByteSize, Width: a.Width, Height: a.Height, Thumb: a.Thumb,
+		})
+	}
+	return wires
+}
+
 // signDeviceCertificate proves to a server with no row for this device that
 // the account's root key vouches for it.
 //
