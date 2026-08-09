@@ -76,6 +76,27 @@ type StreamPolicy struct {
 	// hides it.
 	ConnectTimeout time.Duration
 
+	// IdleTimeout is how long an established stream may stay completely silent
+	// before it is treated as dead and reconnected. Default 60s.
+	//
+	// This is what catches a connection that dies without saying so -- a
+	// half-open socket, a network handover, a proxy dropping the connection
+	// mid-flight. Nothing else does: the connect deadline is over by then, and
+	// a read that will never return does not fail on its own. The symptom of
+	// not having it is the worst kind, "messages sometimes just don't arrive",
+	// with nothing in any log to attach it to.
+	//
+	// A silence timeout is only safe because the server sends a heartbeat
+	// comment every 25 seconds (sseHeartbeatInterval), so a healthy stream is
+	// never quiet for longer than that however idle the account is. The default
+	// is a little over twice that: long enough to survive one missed heartbeat
+	// and a slow link, short enough that a dead connection is noticed in about
+	// a minute rather than never.
+	//
+	// Set it above the server's heartbeat interval or a healthy stream will be
+	// torn down on a schedule.
+	IdleTimeout time.Duration
+
 	// InitialRetryDelay and MaxRetryDelay bound the exponential backoff used
 	// when an attempt never comes up, so an offline home server is probed ever
 	// less aggressively rather than hammered -- yet still recovers within
@@ -94,6 +115,9 @@ type StreamPolicy struct {
 func (p StreamPolicy) withDefaults() StreamPolicy {
 	if p.ConnectTimeout <= 0 {
 		p.ConnectTimeout = 20 * time.Second
+	}
+	if p.IdleTimeout <= 0 {
+		p.IdleTimeout = 60 * time.Second
 	}
 	if p.InitialRetryDelay <= 0 {
 		p.InitialRetryDelay = 3 * time.Second
@@ -225,14 +249,35 @@ func (c *Client) streamOnce(ctx context.Context, policy StreamPolicy, events cha
 
 	send(ctx, events, StreamEvent{Kind: StreamConnected})
 
+	// From here on, silence is the failure to watch for. The timer cancels the
+	// attempt if nothing arrives for IdleTimeout, and every line resets it --
+	// including the server's heartbeat comment, which is what makes a quiet but
+	// healthy stream indistinguishable from a live one and a dead one
+	// distinguishable from both.
+	var idleTimedOut atomic.Bool
+	idleTimer := time.AfterFunc(policy.IdleTimeout, func() {
+		idleTimedOut.Store(true)
+		cancel()
+	})
+	defer idleTimer.Stop()
+
 	reader := bufio.NewReader(resp.Body)
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			// Reaching here having already announced the connection is the
-			// ordinary end of a stream, not a fault.
+			// ordinary end of a stream, not a fault -- so this returns
+			// established, and the caller reconnects quickly rather than
+			// backing off. A silent death is the same situation: the link may
+			// be perfectly fine, this particular connection just is not.
+			if idleTimedOut.Load() {
+				return true, fmt.Errorf(
+					"client: message stream from %s went silent for %s, longer than a heartbeat can explain",
+					id.Server, policy.IdleTimeout)
+			}
 			return true, err
 		}
+		idleTimer.Reset(policy.IdleTimeout)
 		data, ok := strings.CutPrefix(strings.TrimRight(line, "\r\n"), "data: ")
 		if !ok {
 			// An `event: message` line, a `: heartbeat` comment, or the blank

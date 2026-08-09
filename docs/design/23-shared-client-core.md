@@ -298,10 +298,24 @@ HTTP client in a `finally` because otherwise every backoff retry against a
 dead-but-routed host leaves another dial in SYN-SENT, clearing only on the
 OS-level TCP timeout minutes later. The Go equivalent is a cancellable context
 per attempt, cancelled on every exit path, with the connect deadline driven by a
-timer that cancels it. Note what the deadline covers: *reaching* the stream, not
-reading from it. A healthy stream is idle for as long as nobody writes to the
-account, with only a heartbeat comment every 25 seconds — a read deadline would
-kill exactly the connections that are working.
+timer that cancels it. That deadline covers *reaching* the stream, not reading
+from it.
+
+**A silence timeout, though, is a different thing, and not having one was a
+gap.** A connection can die without saying so — a half-open socket, a network
+handover, a proxy dropping it mid-flight — and then nothing notices: the connect
+deadline is long over, and a read that will never return does not fail on its
+own. The symptom is the worst kind, "messages sometimes just don't arrive", with
+nothing in any log to attach it to. `sse_client.dart` had the same gap and it
+was inherited faithfully; it is closed here because the reconnect now lives
+somewhere it can be tested.
+
+The server makes it safe: it sends a heartbeat comment every 25 seconds, so a
+healthy stream is never quiet for longer than that however idle the account is.
+An idle timeout of a little over twice that detects a dead connection in about a
+minute and cannot fire on a working one. Every line resets it, heartbeats
+included — which is the half worth testing, since the fix without that reset
+looks perfectly reasonable and tears down every idle stream on a schedule.
 
 On the FFI side of that channel, four choices are worth recording. The bridge
 lives in a **cgo-free** file next to `logic.go` for the reason that file already

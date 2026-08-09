@@ -684,3 +684,22 @@ a one-time reset. No wire-format change.
   Core is 15.09 → 9.10 MB on arm64-v8a, `native/go.mod` is back to one direct
   and one indirect dependency from twelve, cgo is optional again, and the
   emulator that SQLite killed runs
+- 2026-08-09 — stage 2 confirmed on real hardware: background resume reconnects
+  in under a second, live messages arrive, and the airplane-mode cycle
+  recovers. Verified from the device's own data and logs rather than only by
+  eye — core state directories present for every account, contact names
+  untouched, and the layered probe doing its job on the unreachable local test
+  accounts (`resolves to …; but tcp/18080 did not connect: i/o timeout`).
+- 2026-08-09 — closed a gap the device test exposed by *not* logging anything:
+  the stream had no idle timeout, so a connection that dies without saying so
+  — half-open socket, network handover, a proxy dropping it mid-flight — was
+  never noticed. The connect deadline is long over by then and a read that will
+  never return does not fail on its own; the symptom is "messages sometimes
+  just don't arrive" with nothing in any log. `sse_client.dart` had the same
+  gap, inherited faithfully, and it is closed now that the reconnect lives
+  somewhere testable. Safe because the server heartbeats every 25s, so a
+  healthy stream is never quiet longer than that: the default silence timeout
+  is 60s and every line resets it, keepalives included. Two tests, and the
+  second is the one that matters — a heartbeating idle stream must survive
+  several timeout periods, which the fix without that reset would fail while
+  looking entirely reasonable
