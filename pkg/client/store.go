@@ -89,11 +89,21 @@ func openStore(root string) (*store, error) {
 // can be told to write anywhere.
 func (s *store) path(elems ...string) (string, error) {
 	for _, e := range elems {
-		if e == "" || e == "." || e == ".." || strings.ContainsAny(e, `/\`) {
-			return "", fmt.Errorf("client: refusing unsafe path element %q", e)
+		if err := safeElement(e); err != nil {
+			return "", err
 		}
 	}
 	return filepath.Join(append([]string{s.root}, elems...)...), nil
+}
+
+// safeElement is that check on its own, for the stores that do not live under
+// this root -- media, which the caller may point anywhere (see media.go). The
+// rule has to be the same in both places, so it is written once.
+func safeElement(e string) error {
+	if e == "" || e == "." || e == ".." || strings.ContainsAny(e, `/\`) {
+		return fmt.Errorf("client: refusing unsafe path element %q", e)
+	}
+	return nil
 }
 
 // --- small whole-value files ------------------------------------------------

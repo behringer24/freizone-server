@@ -571,6 +571,70 @@ package does not hold the bytes, so `RetryMessage` refuses a message with one
 rather than quietly re-sending the caption alone as something the user never
 composed.
 
+## What stage 4b settled
+
+Attachments, and one gap they turned up.
+
+The plan never scheduled them, which was an oversight rather than a decision.
+They come before groups because a group picture is uploaded *once* with every
+member's device named on it — build the group fan-out on a send path without
+blobs and the fan-out has to reach outside itself mid-loop, which is a far
+worse seam than stage 3's hand-up of a single envelope.
+
+**A blob's key is generated per attachment and deliberately not derived from
+the ratchet.** The bytes outlive the message on the server, so deriving the key
+from the session would tie every picture to the session that announced it —
+and resetting a secure session, or recovering from a desync, would make every
+picture already received undownloadable. A recovery mechanism that destroys
+history is not one.
+
+Two things are separated that the app blurs:
+
+- **The inline preview is not the blob.** A kilobyte rides inside the message
+  and is written to disk the moment it arrives, including on a background wake
+  with no screen — so a picture shows *something* immediately rather than an
+  empty bubble, which reads as a message with nothing in it. The blob is
+  fetched by whoever is looking, never by the wake, which has to notify rather
+  than download.
+- **The sender's own copy is written before the upload starts.** That is what
+  makes an unsent picture durable across a restart, and it is what lets
+  `RetryMessage` finish an upload that failed. The distinction that matters on
+  retry: an attachment that already has a blob id is *named* again rather than
+  re-uploaded — the blob is still there, and a second copy would be one nobody
+  references. Only a placeholder with no blob id goes back to disk for its
+  bytes, and only when those are gone too does it refuse.
+
+**`Options.MediaPath` exists because pictures are the one thing here that is
+large and platform-opinionated.** Everything else this package writes is small
+and structural and belongs wherever the account does. Blobs plausibly belong in
+storage a phone may reclaim, on a different disk on a server, or nowhere at all
+for a bot. Defaulting them under the account is convenient; making that the
+only option would bake one consumer's assumptions into a library three of them
+link against.
+
+### The gap: blocking was never a rule, it was a screen
+
+Asked whether blocked contacts were thought through, the answer turned out to
+be *on the receiving side, completely; on the sending side, not at all*. The
+Dart original says so in as many words — "sending is disabled in the UI while
+blocked". So the rule lived in a widget, and `pkg/client` inherited nothing.
+
+That is precisely the class of defect this whole item exists to remove. A
+background retry, a queued receipt, a re-key signal, or a bot with no interface
+would each have gone on talking to somebody the user had cut off. The guard now
+sits in `deliver`, so every path is covered rather than every path a person
+initiates — and removing it makes two envelopes reach a blocked contact in the
+test, both of them machinery: a receipt and a re-key.
+
+Also filed rather than fixed: there is still no local state for **a peer whose
+account no longer exists**. The distinction between a dead device and a dead
+account is sharp and documented (`IsStaleDevice`), and the send path heals a
+dead device on its own — but an account an admin removed just fails every
+retry forever. Dart handles it only in the group path, and only there because
+group facts cannot express "this member ceased to exist". Fixing it for
+one-to-one needs a decision about what the user is shown, which is not this
+item's to make.
+
 Considered and not done:
 
 - **Two native apps now (Kotlin + Swift), dropping Flutter.** The obstacle is

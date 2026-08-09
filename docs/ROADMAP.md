@@ -738,3 +738,31 @@ a one-time reset. No wire-format change.
   due, since acting means sending. Attachments deliberately still out: the
   blobs live elsewhere, so a retry refuses rather than re-send a caption alone.
   Still not wired into the app
+- 2026-08-09 — stage 4b: attachments (`blobs.go`, `media.go`). Never scheduled
+  in the original plan, and done before groups because a group picture is
+  uploaded once with every member's device named on it — building the fan-out
+  on a blob-less send path would force it to reach outside itself mid-loop. The
+  key is per attachment and deliberately not derived from the ratchet: the
+  bytes outlive the message, so binding them to a session would make resetting
+  one destroy every picture already received. Inline preview and blob are
+  separated — the preview is written on arrival even on a background wake,
+  the blob only when somebody looks — and the sender's own copy is written
+  before the upload, which is what lets a retry finish an interrupted one. A
+  retry names an existing blob again rather than uploading a second copy.
+  `Options.MediaPath` makes the media directory movable, since pictures are the
+  one thing here that is large and platform-opinionated.
+- 2026-08-09 — the question that came with stage 4b turned up a real gap:
+  **blocking was never a rule, it was a screen.** The receive side was complete
+  and ported; the send side did not exist, because the Dart original says
+  outright that "sending is disabled in the UI while blocked". A background
+  retry, a queued receipt, a re-key signal or a bot with no interface would each
+  have gone on talking to a blocked contact. The guard now sits in `deliver`, so
+  it covers every path rather than every path a person starts — removing it
+  makes two envelopes reach a blocked contact in the test, both machinery
+- **Open**: a peer whose *account* no longer exists has no local state. The
+  dead-device/dead-account distinction is sharp (`IsStaleDevice`) and a dead
+  device heals itself on the next send, but an account an admin removed just
+  fails every retry forever. Dart handles it only in the group path, and only
+  because group facts cannot express "this member ceased to exist". Doing it for
+  one-to-one needs a decision about what the user is shown — Andreas' call, not
+  SRV-23's

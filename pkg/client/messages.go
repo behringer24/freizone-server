@@ -170,6 +170,13 @@ const (
 	recState    = "state"
 	recDelivery = "delivery"
 	recPin      = "pin"
+
+	// recAttach replaces a message.s attachments. Its own record rather than a
+	// rewrite of the message, because it lands while the message is already on
+	// screen: a picture is written locally and shown as pending before its blob
+	// exists, and this is what fills in the blob id and key once the upload
+	// finishes.
+	recAttach = "attach"
 )
 
 // compactRatio decides when a log is rewritten: when its record count exceeds
@@ -225,6 +232,11 @@ func (c *Client) readTranscript(chatID string) (*transcript, error) {
 		case recState:
 			if msg, ok := t.messages[rec.ID]; ok {
 				msg.SendState = rec.SendState
+			}
+
+		case recAttach:
+			if msg, ok := t.messages[rec.ID]; ok {
+				msg.Attachments = rec.Attachments
 			}
 
 		case recDelivery:
@@ -329,7 +341,20 @@ func (c *Client) SetMessageSendState(chatID, messageID string, state SendState) 
 	return c.appendRecord(chatID, logRecord{T: recState, ID: messageID, SendState: state})
 }
 
-// SetGroupDeliveryState moves one recipient's copy of a group message, so a
+// SetMessageAttachments replaces what a message says about its attachments.
+//
+// Exists because a picture is shown before it is uploaded: the transcript line
+// appears with a local preview the moment the user picks the file, and only
+// once the blob is stored does it gain the id and key a recipient needs. Doing
+// it the other way round -- upload first, then show -- means a composer that
+// sits frozen for the length of an upload.
+func (c *Client) SetMessageAttachments(chatID, messageID string, attachments []Attachment) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.appendRecord(chatID, logRecord{T: recAttach, ID: messageID, Attachments: attachments})
+}
+
+// SetGroupDeliveryState moves one recipient.s copy of a group message, so a
 // retry can address only the copies that failed.
 func (c *Client) SetGroupDeliveryState(chatID, messageID, accountID string, state SendState) error {
 	c.mu.Lock()

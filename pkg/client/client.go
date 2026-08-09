@@ -30,6 +30,7 @@ package client
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -106,6 +107,21 @@ type Client struct {
 	// peerLocks serialise the read-modify-write cycles around one peer's
 	// session -- see Client.lockPeer. Guarded by mu, held without it.
 	peerLocks map[string]*sync.Mutex
+
+	// media is where attachment bytes live, which is deliberately not the
+	// account directory by default's own choice -- see media.go.
+	media mediaStore
+}
+
+// Options configure an account beyond where it lives. The zero value is what
+// [Open] uses.
+type Options struct {
+	// MediaPath is where attachment bytes are stored, defaulting to a "media"
+	// directory inside the account. Separable because pictures are the one
+	// thing here that is large, disposable and platform-opinionated: a phone
+	// may want them in storage the system can reclaim, a server on another
+	// disk, a bot nowhere in particular. See media.go.
+	MediaPath string
 }
 
 // Open opens the account directory at path, creating it if it does not exist.
@@ -115,12 +131,24 @@ type Client struct {
 // Opening also settles anything the previous process left mid-send: a message
 // still marked pending belonged to a send that cannot still be running, so it
 // becomes a failure to retry rather than a spinner nobody will ever resolve.
-func Open(path string) (*Client, error) {
+func Open(path string) (*Client, error) { return OpenWith(path, Options{}) }
+
+// OpenWith is [Open] with the settings that are not the account's location.
+func OpenWith(path string, opts Options) (*Client, error) {
 	st, err := openStore(path)
 	if err != nil {
 		return nil, err
 	}
-	c := &Client{store: st, path: path, peerLocks: make(map[string]*sync.Mutex)}
+	mediaPath := opts.MediaPath
+	if mediaPath == "" {
+		mediaPath = filepath.Join(path, dirMedia)
+	}
+	c := &Client{
+		store:     st,
+		path:      path,
+		peerLocks: make(map[string]*sync.Mutex),
+		media:     mediaStore{root: mediaPath},
+	}
 
 	if err := c.loadProcessed(); err != nil {
 		return nil, err

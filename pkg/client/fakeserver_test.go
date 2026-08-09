@@ -3,8 +3,12 @@ package client
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -56,8 +60,19 @@ type fakeServer struct {
 	bundleClaims int
 
 	// unauthenticatedClaim makes the bundle endpoint answer without a one-time
-	// prekey, as it does when it refuses a claim's credentials.
+	// prekey, as it does when it refuses a claim.s credentials.
 	unauthenticatedClaim bool
+
+	// blobs holds uploaded ciphertext by id, with the device set each was
+	// granted to. Kept so a test can check that what reached the server is not
+	// what the user chose -- the one property nobody can see from outside.
+	blobs          map[string][]byte
+	blobRecipients map[string][]string
+	blobSeq        int
+
+	// blobStatus, when set, is the status every blob upload is answered with,
+	// so a test can make the picture fail while the message would not.
+	blobStatus int
 }
 
 type fakeAccount struct {
@@ -90,6 +105,8 @@ func newFakeServer(t *testing.T) *fakeServer {
 		devices:           map[string]*fakeDevice{},
 		deviceIDs:         map[string]string{},
 		queues:            map[string][]queuedEnvelope{},
+		blobs:             map[string][]byte{},
+		blobRecipients:    map[string][]string{},
 		federationEnabled: true,
 	}
 	srv := httptest.NewServer(http.HandlerFunc(s.serve))
@@ -315,6 +332,59 @@ func (s *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		})
 		s.writeJSON(w, map[string]any{"ok": true})
 
+	case r.Method == http.MethodPost && (path == "/v1/blobs" || path == "/v1/federation/blobs"):
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			s.writeError(w, http.StatusBadRequest, "bad_request")
+			return
+		}
+		// The digest header is what the signature covers, so a stub that
+		// ignored it would let a client sign one thing and upload another
+		// without any test noticing.
+		if s.blobStatus != 0 {
+			s.writeError(w, s.blobStatus, "upload_failed")
+			return
+		}
+		sum := sha256.Sum256(body)
+		if want := "sha256=" + hex.EncodeToString(sum[:]); r.Header.Get(httpsig.HeaderBodyDigest) != want {
+			s.writeError(w, http.StatusBadRequest, "digest_mismatch")
+			return
+		}
+		recipients := r.URL.Query()["recipient_device_id"]
+		if len(recipients) == 0 {
+			s.writeError(w, http.StatusBadRequest, "no_recipients")
+			return
+		}
+		s.blobSeq++
+		blobID := fmt.Sprintf("blob-%d", s.blobSeq)
+		s.blobs[blobID] = append([]byte(nil), body...)
+		s.blobRecipients[blobID] = recipients
+		status := http.StatusCreated
+		if len(recipients) > 1 {
+			status = http.StatusOK
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		if err := json.NewEncoder(w).Encode(map[string]any{"blob_id": blobID, "size": len(body)}); err != nil {
+			s.t.Errorf("encoding blob response: %v", err)
+		}
+
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "/v1/blobs/"):
+		blobID := strings.TrimPrefix(path, "/v1/blobs/")
+		data, ok := s.blobs[blobID]
+		if !ok {
+			s.writeError(w, http.StatusNotFound, "unknown_blob")
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		if _, err := w.Write(data); err != nil {
+			s.t.Errorf("writing blob: %v", err)
+		}
+
+	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/v1/blobs/"):
+		delete(s.blobs, strings.TrimPrefix(path, "/v1/blobs/"))
+		s.writeJSON(w, map[string]any{"status": "deleted"})
+
 	case r.Method == http.MethodGet && path == "/v1/messages":
 		deviceID := r.Header.Get(httpsig.HeaderKeyID)
 		queue := s.queues[deviceID]
@@ -385,6 +455,24 @@ func (s *fakeServer) publishedSignedPrekey(label string) signedPrekeyWire {
 // name one directly.
 func (s *fakeServer) device(label string) *fakeDevice {
 	return s.devices[s.deviceIDs[label]]
+}
+
+func (s *fakeServer) blobBytes(blobID string) []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.blobs[blobID]
+}
+
+func (s *fakeServer) blobRecipientsFor(blobID string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.blobRecipients[blobID]
+}
+
+func (s *fakeServer) blobCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.blobs)
 }
 
 func (s *fakeServer) set(mutate func(*fakeServer)) {
