@@ -3,6 +3,8 @@ package client
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/behringer24/freizone-server/pkg/group"
 )
 
 // Plaintext content -- what is inside the ciphertext of a wire.Envelope, and
@@ -106,10 +108,15 @@ type Content struct {
 	// RekeyReason is set for ContentRekey.
 	RekeyReason RekeyReason
 
-	// Group fields. StateHash is the sender's view of the group's fact set,
+	// Group fields. StateHash is the sender.s view of the group.s fact set,
 	// which is what tells the receiver whether they are behind.
 	GroupID   string
 	StateHash string
+
+	// ControlKind and Events are the payload of a group control envelope: what
+	// the sender is doing, and the facts they are passing on.
+	ControlKind GroupControlKind
+	Events      []*group.Event
 
 	// Raw is the undecoded plaintext, kept so a caller that owns a part of the
 	// protocol this package does not yet handle -- group control, today -- can
@@ -160,8 +167,9 @@ type contentWire struct {
 
 	Reason string `json:"reason"`
 
-	GroupID   string `json:"group_id"`
-	StateHash string `json:"state_hash"`
+	GroupID   string         `json:"group_id"`
+	StateHash string         `json:"state_hash"`
+	Events    []*group.Event `json:"events"`
 }
 
 // DecodeContent interprets decrypted plaintext.
@@ -211,6 +219,17 @@ func DecodeContent(plaintext []byte) Content {
 		c.Kind = ContentGroupControl
 		c.GroupID = w.GroupID
 		c.StateHash = w.StateHash
+		c.Events = w.Events
+		switch GroupControlKind(w.Kind) {
+		case GroupSnapshot, GroupEvents, GroupSyncRequest:
+			c.ControlKind = GroupControlKind(w.Kind)
+		default:
+			// A kind this build does not know still carries facts, and facts
+			// are the point. Treated as plain events rather than dropped:
+			// folding is order-independent and idempotent, so the worst case
+			// is applying something twice.
+			c.ControlKind = GroupEvents
+		}
 		return c
 
 	case w.V == versionGroupText && w.GroupID != "":

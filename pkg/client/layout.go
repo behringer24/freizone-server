@@ -52,10 +52,20 @@ const (
 	dirPrekeys = "prekeys"
 	dirPeers   = "peers"
 	dirChats   = "chats"
+	dirGroups  = "groups"
 
 	// dirMedia is the default home for attachment bytes, and the only
 	// directory here a caller may move elsewhere -- see Options.MediaPath.
 	dirMedia = "media"
+
+	// A group directory holds its facts, the events waiting on facts that have
+	// not arrived, what each member last said their own view was, and the chat
+	// state a list needs. The transcript is not here: a group chat is a chat,
+	// and lives under dirChats keyed by group id like any other.
+	fileFacts = "facts.json"
+	fileHeld  = "held.json"
+	filePeers = "peers.json"
+	fileChat  = "chat.json"
 
 	fileSession = "session.json"
 	fileInbound = "inbound.json"
@@ -82,5 +92,10 @@ func (s *store) chatPath(chatID, name string) (string, error) {
 	return s.path(dirChats, chatID, name)
 }
 
-func (s *store) chatsDir() (string, error)   { return s.path(dirChats) }
+func (s *store) chatsDir() (string, error)  { return s.path(dirChats) }
+func (s *store) groupsDir() (string, error) { return s.path(dirGroups) }
+
+func (s *store) groupPath(groupID, name string) (string, error) {
+	return s.path(dirGroups, groupID, name)
+}
 func (s *store) prekeysDir() (string, error) { return s.path(dirPrekeys) }

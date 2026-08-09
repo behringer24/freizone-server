@@ -766,3 +766,24 @@ a one-time reset. No wire-format change.
   because group facts cannot express "this member ceased to exist". Doing it for
   one-to-one needs a decision about what the user is shown — Andreas' call, not
   SRV-23's
+- 2026-08-09 — stage 5a: the receiving half of groups (`groups.go`,
+  `groupnarration.go`), which closes the last seam stage 3 left open — a group
+  envelope is folded here rather than handed up. It has to be: the ratchet has
+  advanced and the id is marked before the payload is even read, so an envelope
+  nobody folds loses its facts for good, and a background wake with nothing
+  attached still has to finish the job. Four rules, three of them quietly
+  wrong-able: a re-invitation is an invitation (the facts survive a removal, so
+  "is this group new" swallows every one); an event that overtook its genesis is
+  held to a bound, and only for the one rejection a later fact can change —
+  now `group.RejectNoGenesis` rather than a literal string both clients matched;
+  a blocked member's group message leaves one collapsed line, because a shared
+  transcript with invisible holes reads as delivery loss; and a snapshot's id
+  comes from its genesis, not from the sender's claim. Membership changes are
+  narrated from the before/after fold, so every device writes the same
+  transcript independently. One test proved nothing until its negative control
+  said so — it delivered a premature event and then a snapshot containing the
+  same fact, so holding was never exercised; fixed by capturing the snapshot
+  before the event exists
+- **Next**: stage 5b, the sending half of groups — fan-out, snapshot debt,
+  reconciliation against a peer's stated view, sync requests, per-member
+  receipts. `GroupOutcome` already reports what it needs; nothing acts on it yet
