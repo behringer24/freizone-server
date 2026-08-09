@@ -649,6 +649,18 @@ func (c *Client) storeIncomingText(res ReceiveResult, msg IncomingMessage, conte
 	}
 	res.StoredMessageID = id
 
+	// Only the inline preview is written now, never the blob. It is a kilobyte,
+	// so it costs nothing even on a background wake with no screen to draw on,
+	// and it means a picture shows *something* the moment it arrives instead of
+	// an empty bubble that reads as a message with nothing in it. The blob is
+	// fetched later, by whoever is looking (see Client.EnsureAttachment): a
+	// wake must not delay a notification for a download.
+	for _, att := range content.Attachments {
+		if err := c.WriteAttachmentThumb(peer, id, att.Thumb); err != nil {
+			return res, err
+		}
+	}
+
 	convo.LastActivityAt = &now
 	if peer != opts.OpenChatID {
 		convo.HasUnread = true

@@ -36,9 +36,19 @@ import (
 var ErrFederationDisabled = errors.New("client: this server has federation switched off, so contacts on other servers cannot be reached")
 
 // ErrAttachmentNotResendable reports a retry of a message whose attachment
-// this package cannot reproduce. Re-sending the caption alone would quietly
-// deliver something other than what was composed, so it refuses instead.
+// never reached the server and is no longer on this device either. Re-sending
+// the caption alone would quietly deliver something other than what was
+// composed, so it refuses instead.
 var ErrAttachmentNotResendable = errors.New("client: the attachment for this message is no longer available to re-send")
+
+// ErrPeerBlocked reports an attempt to send to a peer the user has blocked.
+//
+// Refused in the core rather than left to whatever is driving it. The app
+// happens to disable its composer, but the rule is not a property of a screen:
+// a background retry, a queued receipt, a bot with no interface at all would
+// each otherwise go on talking to somebody the user has cut off. The peer is
+// never told either way -- blocking is silent in both directions.
+var ErrPeerBlocked = errors.New("client: this contact is blocked, so nothing is sent to them")
 
 // SendOptions carries the parts of a message that are not its text. The zero
 // value is an ordinary message sent now.
@@ -47,6 +57,15 @@ type SendOptions struct {
 	ReplyPreviewText string
 	ReplyPreviewMine *bool
 
+	// Media is a file to attach, uploaded as part of the send. The transcript
+	// line appears before the upload starts, carrying the inline preview, so a
+	// picture is visible immediately rather than after however long the upload
+	// takes.
+	Media *OutgoingMedia
+
+	// Attachments describes blobs that are already uploaded. Used by a caller
+	// that manages its own upload -- a group fan-out, which uploads once for
+	// every member -- and mutually exclusive with Media.
 	Attachments []Attachment
 
 	// Now overrides the clock, for tests. Zero means time.Now().
@@ -89,6 +108,16 @@ func (c *Client) SendText(ctx context.Context, peerAccountID, text string, opts 
 	if err != nil {
 		return SendResult{}, err
 	}
+	// Checked before anything is written, so a blocked peer leaves no trace of
+	// a message that was never going to go anywhere.
+	if blocked, err := c.IsPeerBlocked(peerAccountID); err != nil {
+		return SendResult{}, err
+	} else if blocked {
+		return SendResult{}, ErrPeerBlocked
+	}
+	if opts.Media != nil && len(opts.Attachments) > 0 {
+		return SendResult{}, fmt.Errorf("client: a message carries either Media to upload or Attachments already uploaded, not both")
+	}
 	messageID, err := newMessageID()
 	if err != nil {
 		return SendResult{}, err
@@ -105,11 +134,41 @@ func (c *Client) SendText(ctx context.Context, peerAccountID, text string, opts 
 		SendState:        SendPending,
 		Attachments:      opts.Attachments,
 	}
+	if opts.Media != nil {
+		// The sender's own copy is written first, before anything can fail.
+		// That is what makes an unsent picture durable: a retry -- this run or
+		// a later one -- has the bytes to upload again, and the bubble has
+		// something to draw in the meantime.
+		if err := c.WriteAttachmentFile(peerAccountID, messageID, opts.Media.Bytes); err != nil {
+			return SendResult{}, err
+		}
+		if err := c.WriteAttachmentThumb(peerAccountID, messageID, opts.Media.Thumb); err != nil {
+			return SendResult{}, err
+		}
+		// A placeholder: everything a bubble needs to draw, and nothing a
+		// recipient could fetch with. The upload below fills in the rest.
+		line.Attachments = []Attachment{placeholderFor(*opts.Media)}
+	}
 	if err := c.AppendMessage(peerAccountID, line); err != nil {
 		return SendResult{}, err
 	}
 
 	res := SendResult{Message: line}
+	if opts.Media != nil {
+		uploaded, err := c.uploadFor(ctx, peerAccountID, *opts.Media)
+		if err != nil {
+			if markErr := c.SetMessageSendState(peerAccountID, messageID, SendFailed); markErr != nil {
+				return res, errors.Join(err, markErr)
+			}
+			return res, err
+		}
+		if err := c.SetMessageAttachments(peerAccountID, messageID, []Attachment{uploaded}); err != nil {
+			return res, err
+		}
+		line.Attachments = []Attachment{uploaded}
+		res.Message = line
+	}
+
 	plaintext, err := encodeText(line, id.Server, now)
 	if err != nil {
 		return res, err
@@ -161,17 +220,46 @@ func (c *Client) RetryMessage(ctx context.Context, peerAccountID, messageID stri
 	if line.SendState != SendFailed {
 		return SendResult{}, fmt.Errorf("client: message %s is %s, not a failed send", messageID, line.SendState)
 	}
-	if len(line.Attachments) > 0 {
-		// The blob is uploaded separately and this package does not hold the
-		// bytes, so the caption is all there is to re-send -- which would
-		// deliver something other than what was composed.
-		return SendResult{}, ErrAttachmentNotResendable
-	}
 
 	id, err := c.Identity()
 	if err != nil {
 		return SendResult{}, err
 	}
+	if blocked, err := c.IsPeerBlocked(peerAccountID); err != nil {
+		return SendResult{}, err
+	} else if blocked {
+		return SendResult{}, ErrPeerBlocked
+	}
+
+	// An attachment that never made it to the server has to go up before the
+	// message can name it. One that did is simply named again: the blob is
+	// still there under the same id, and re-uploading would leave a second
+	// copy nobody references.
+	if len(line.Attachments) == 1 && line.Attachments[0].BlobID == "" {
+		bytes, err := c.AttachmentFile(peerAccountID, messageID)
+		if err != nil {
+			return SendResult{}, err
+		}
+		if bytes == nil {
+			// Composed on a device that no longer has the file, or cleared
+			// since. Sending the caption alone would deliver something the
+			// user never wrote.
+			return SendResult{}, ErrAttachmentNotResendable
+		}
+		placeholder := line.Attachments[0]
+		uploaded, err := c.uploadFor(ctx, peerAccountID, OutgoingMedia{
+			Bytes: bytes, MimeType: placeholder.MimeType, Kind: placeholder.Kind,
+			Width: placeholder.Width, Height: placeholder.Height, Thumb: placeholder.Thumb,
+		})
+		if err != nil {
+			return SendResult{}, err
+		}
+		if err := c.SetMessageAttachments(peerAccountID, messageID, []Attachment{uploaded}); err != nil {
+			return SendResult{}, err
+		}
+		line.Attachments = []Attachment{uploaded}
+	}
+
 	if err := c.SetMessageSendState(peerAccountID, messageID, SendPending); err != nil {
 		return SendResult{}, err
 	}
@@ -362,6 +450,15 @@ func (c *Client) RecoverDesyncedSessions(ctx context.Context) ([]string, error) 
 // it: the retry re-encrypts under the same number, and the peer's ratchet
 // rejects the second copy as the duplicate it is.
 func (c *Client) deliver(ctx context.Context, peerAccountID string, plaintext []byte, afterOwnReset bool) (established, weak bool, err error) {
+	// The backstop for every path into here, not just the composed message:
+	// a queued receipt, a retry, a re-key signal. Blocking has to hold for all
+	// of them or it holds for none.
+	if blocked, err := c.IsPeerBlocked(peerAccountID); err != nil {
+		return false, false, err
+	} else if blocked {
+		return false, false, ErrPeerBlocked
+	}
+
 	peer, err := c.Endpoint(ctx, peerAccountID)
 	if err != nil {
 		return false, false, err
@@ -448,6 +545,33 @@ func (c *Client) deliver(ctx context.Context, peerAccountID string, plaintext []
 		return established, weak, err
 	}
 	return established, weak, nil
+}
+
+// uploadFor resolves the peer's device and uploads media for it, which is the
+// only recipient a one-to-one attachment ever has.
+func (c *Client) uploadFor(ctx context.Context, peerAccountID string, media OutgoingMedia) (Attachment, error) {
+	peer, err := c.Endpoint(ctx, peerAccountID)
+	if err != nil {
+		return Attachment{}, err
+	}
+	return c.UploadAttachment(ctx, []PeerEndpoint{peer}, media)
+}
+
+// placeholderFor is what a bubble can draw before the upload finishes: shape,
+// type and preview, but no blob id and no key, because neither exists yet.
+func placeholderFor(media OutgoingMedia) Attachment {
+	kind := media.Kind
+	if kind == "" {
+		kind = "image"
+	}
+	return Attachment{
+		Kind:     kind,
+		MimeType: media.MimeType,
+		ByteSize: len(media.Bytes),
+		Width:    media.Width,
+		Height:   media.Height,
+		Thumb:    media.Thumb,
+	}
 }
 
 // sessionForSending returns the session to encrypt with, and the prekey block

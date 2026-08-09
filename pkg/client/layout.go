@@ -53,6 +53,10 @@ const (
 	dirPeers   = "peers"
 	dirChats   = "chats"
 
+	// dirMedia is the default home for attachment bytes, and the only
+	// directory here a caller may move elsewhere -- see Options.MediaPath.
+	dirMedia = "media"
+
 	fileSession = "session.json"
 	fileInbound = "inbound.json"
 	fileHealth  = "health.json"
