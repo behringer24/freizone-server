@@ -146,6 +146,41 @@ func TestAddAndClaimOneTimePrekeys(t *testing.T) {
 	}
 }
 
+// DeleteOneTimePrekeys clears the whole pool at once -- the operation
+// pkg/client.PurgeAndReplaceOneTimePrekeys relies on to get rid of an entry
+// its own store has no private half for, which topping up alone can never
+// do (the oldest unclaimed key is always handed out first).
+func TestDeleteOneTimePrekeysClearsThePool(t *testing.T) {
+	db := newTestDB(t)
+	mustCreateAccount(t, db, "acct1")
+	if err := CreateDevice(db, testDevice("acct1", "device1")); err != nil {
+		t.Fatalf("CreateDevice() error = %v", err)
+	}
+
+	keys := []OneTimePrekeyInput{
+		{KeyID: 1, PubKey: []byte("otpk1")},
+		{KeyID: 2, PubKey: []byte("otpk2")},
+	}
+	if err := AddOneTimePrekeys(db, "device1", keys, time.Now()); err != nil {
+		t.Fatalf("AddOneTimePrekeys() error = %v", err)
+	}
+
+	if err := DeleteOneTimePrekeys(db, "device1"); err != nil {
+		t.Fatalf("DeleteOneTimePrekeys() error = %v", err)
+	}
+	if count, err := CountOneTimePrekeys(db, "device1"); err != nil || count != 0 {
+		t.Fatalf("CountOneTimePrekeys() = (%d, %v), want (0, nil) after delete", count, err)
+	}
+
+	// Safe on an already-empty pool, and safe for a device with none at all.
+	if err := DeleteOneTimePrekeys(db, "device1"); err != nil {
+		t.Errorf("DeleteOneTimePrekeys() on an empty pool: %v", err)
+	}
+	if err := DeleteOneTimePrekeys(db, "no-such-device"); err != nil {
+		t.Errorf("DeleteOneTimePrekeys() on an unknown device: %v", err)
+	}
+}
+
 func TestCountOneTimePrekeys(t *testing.T) {
 	db := newTestDB(t)
 	mustCreateAccount(t, db, "acct1")

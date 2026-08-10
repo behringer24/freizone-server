@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -561,6 +562,53 @@ func TestOrdinaryReestablishmentIsAdoptedOverAConfirmedSession(t *testing.T) {
 	}
 	if res.StoredMessageID == "" {
 		t.Error("the message riding the re-established session must still be stored")
+	}
+}
+
+// A fresh prekey block that this side cannot use at all (most often: its own
+// published pool named a one-time prekey it never actually minted a private
+// half for -- see SRV-23's Dart/core prekey-minting overlap) must not vanish
+// into an unrelated "message authentication failed" when the fallback to the
+// existing session also fails to read it. Found live: exactly this masking
+// is what made a real, repeated pool-poisoning bug look like ordinary bit
+// rot for an entire investigation, twice.
+func TestAFailedPrekeyBlockStillReportsWhyWhenTheFallbackAlsoFails(t *testing.T) {
+	c, p := newFixture(t, "me", "them", nil)
+	if err := c.MarkPeerKnown("them"); err != nil {
+		t.Fatalf("MarkPeerKnown: %v", err)
+	}
+	// A real existing session, so there is something for the fallback to try
+	// (and fail) once the fresh prekey block below is refused.
+	mustHandle(t, c, p.msg("m1", p.send(textPayload(t, "id-1", "hello", ""))), ReceiveOptions{})
+	p.settled()
+
+	id, err := c.Identity()
+	if err != nil {
+		t.Fatalf("Identity: %v", err)
+	}
+	// A prekey block naming a one-time prekey id this side's store has never
+	// heard of -- exactly what a stale/poisoned pool entry looks like from
+	// the receiving side.
+	otpkID := uint32(999)
+	otpkPriv := generateKey(t)
+	lost := &peer{t: t, accountID: "them", dhPriv: generateKey(t), withBlock: true}
+	lost.session, lost.initial, err = ratchet.InitiateSession(lost.dhPriv, ratchet.RemoteBundle{
+		DHIdentityPubKey: pubKey(t, id.DHIdentityPub),
+		SignedPrekeyID:   id.SignedPrekeyID,
+		SignedPrekeyPub:  pubKey(t, id.SignedPrekeyPub),
+		OneTimePrekeyID:  &otpkID,
+		OneTimePrekeyPub: otpkPriv.PublicKey(),
+	})
+	if err != nil {
+		t.Fatalf("InitiateSession: %v", err)
+	}
+
+	_, err = c.HandleIncoming(lost.msg("m2", lost.send(textPayload(t, "id-2", "hi again", ""))), ReceiveOptions{})
+	if err == nil {
+		t.Fatal("want an error: neither the fresh prekey block nor the existing session can read this")
+	}
+	if !strings.Contains(err.Error(), "one-time prekey") {
+		t.Errorf("want the discarded prekey-block failure surfaced (a missing one-time prekey), got: %v", err)
 	}
 }
 

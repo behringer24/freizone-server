@@ -469,6 +469,11 @@ func (c *Client) decrypt(msg IncomingMessage) (decryptResult, sessionEffect, err
 	// opened it".
 	var plaintext []byte
 	var decrypted bool
+	// Set only on the one path that discards its own error deliberately (see
+	// the "initial != nil" case below) so the fallback that follows can still
+	// report why the prekey block it tried first did not apply, instead of
+	// only the unrelated failure of the session it fell back to.
+	var initialAttemptErr error
 	switch {
 	case session == nil:
 		// First contact: a prekey block is the only way to start a session.
@@ -500,8 +505,14 @@ func (c *Client) decrypt(msg IncomingMessage) (decryptResult, sessionEffect, err
 		}
 		if ferr != nil {
 			// Not a re-key that applies to us -- a redelivered or stale prekey
-			// block. Nothing has been touched; fall through to the session we
-			// already hold.
+			// block, *or* this account's own published pool has a hole (a
+			// claimed one-time prekey this side never minted -- see SRV-23's
+			// Dart/core prekey-minting overlap). Nothing has been touched;
+			// fall through to the session we already hold. Kept rather than
+			// discarded: if that fallback also fails, this is likely the more
+			// informative of the two -- a generic "authentication failed"
+			// from the old session says nothing about a poisoned prekey pool.
+			initialAttemptErr = fmt.Errorf("client: a fresh prekey block from %s did not apply: %w", peer, ferr)
 			break
 		}
 		decrypted = true
@@ -578,10 +589,15 @@ func (c *Client) decrypt(msg IncomingMessage) (decryptResult, sessionEffect, err
 				return decryptResult{}, effect, err
 			}
 			if inbound == nil {
-				return decryptResult{}, effect, derr
+				return decryptResult{}, effect, joinInitialAttempt(initialAttemptErr, derr)
 			}
 			if plaintext, err = inbound.Decrypt(header, ciphertext); err != nil {
-				return decryptResult{}, effect, derr // the original failure, not this one
+				// The original failure, not this one -- except "original" is
+				// initialAttemptErr when there is one: a fresh prekey block
+				// this side could not use at all is a more informative reason
+				// than the generic authentication failure of whichever session
+				// this side fell back to trying instead.
+				return decryptResult{}, effect, joinInitialAttempt(initialAttemptErr, derr)
 			}
 			session = inbound
 			effect.keepOwnSending = true
@@ -599,6 +615,21 @@ func (c *Client) decrypt(msg IncomingMessage) (decryptResult, sessionEffect, err
 		return decryptResult{}, effect, err
 	}
 	return decryptResult{content: DecodeContent(plaintext)}, effect, nil
+}
+
+// joinInitialAttempt folds a discarded prekey-block failure back in when the
+// session decrypt it fell back to also failed, preferring it: a fresh
+// prekey block this side could not use at all -- most often this account's
+// own published pool naming a one-time prekey it never actually minted a
+// private half for (see SRV-23) -- says why in a way "message
+// authentication failed" against an unrelated session never does. initial
+// may be nil (nothing was discarded; the ordinary case), in which case this
+// is just sessionErr.
+func joinInitialAttempt(initial, sessionErr error) error {
+	if initial == nil {
+		return sessionErr
+	}
+	return errors.Join(initial, sessionErr)
 }
 
 // markRekeyInTranscript writes the "session was re-established" line, if there

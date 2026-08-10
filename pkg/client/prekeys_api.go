@@ -58,6 +58,12 @@ type uploadPrekeysBody struct {
 	DHIdentityCert *dhIdentityCertWire `json:"dh_identity_cert,omitempty"`
 	SignedPrekey   signedPrekeyWire    `json:"signed_prekey"`
 	OneTimePrekeys []oneTimePrekeyWire `json:"one_time_prekeys,omitempty"`
+
+	// ReplaceOneTimePrekeys asks the server to discard every unclaimed
+	// one-time prekey it currently holds for this device before adding
+	// OneTimePrekeys, instead of appending to them -- see
+	// [Client.PurgeAndReplaceOneTimePrekeys].
+	ReplaceOneTimePrekeys bool `json:"replace_one_time_prekeys,omitempty"`
 }
 
 type prekeyBundleWire struct {
@@ -217,6 +223,67 @@ func (c *Client) TopUpOneTimePrekeys(ctx context.Context) error {
 		},
 		SignedPrekey:   spk,
 		OneTimePrekeys: fresh,
+	})
+}
+
+// PurgeAndReplaceOneTimePrekeys discards this device's entire published
+// one-time-prekey pool and republishes a fresh batch, replacing rather than
+// adding to it.
+//
+// For the one situation [Client.TopUpOneTimePrekeys] cannot fix on its own:
+// the published pool already contains an id this device's store has no
+// private half for (SRV-23's Dart-side and core-side minting once running
+// side by side left exactly this on every account that talked to anyone
+// before the cut finished). Topping up only ever adds more on top -- the
+// server hands out the *oldest* unclaimed key first (see
+// store.ClaimOneTimePrekey), so a poisoned entry would still be claimed
+// before any fresh addition ever is, no matter how many more get added.
+// Only an actual replace fixes it.
+//
+// Safe to call at any time, whether or not the pool is actually poisoned:
+// every id being discarded is, by definition, unclaimed (a claim deletes
+// atomically the moment it happens), so nothing has ever been built against
+// any of them.
+func (c *Client) PurgeAndReplaceOneTimePrekeys(ctx context.Context) error {
+	id, err := c.Identity()
+	if err != nil {
+		return err
+	}
+	if len(id.SignedPrekeyPub) == 0 {
+		// Nothing published yet -- rotating is the right call, not this.
+		return nil
+	}
+	now := time.Now().UTC()
+
+	fresh, err := c.mintOneTimePrekeys(&id, OneTimePrekeyBatch)
+	if err != nil {
+		return err
+	}
+	// Written before the upload, not after -- same reasoning as
+	// RotatePrekeys: a key the server ends up with that this device has
+	// forgotten is unusable for good.
+	if err := c.SetIdentity(id); err != nil {
+		return err
+	}
+
+	dhCert, err := devicecert.SignDHIdentityCertificate(
+		id.AccountID, id.DeviceID, id.DHIdentityPub, now, ed25519.PrivateKey(id.DevicePriv))
+	if err != nil {
+		return fmt.Errorf("client: re-signing dh identity certificate: %w", err)
+	}
+	spk, err := c.signedPrekeyWireFor(id, now)
+	if err != nil {
+		return err
+	}
+	return c.uploadPrekeys(ctx, id, uploadPrekeysBody{
+		DHIdentityCert: &dhIdentityCertWire{
+			DHPubKey:  base64.StdEncoding.EncodeToString(dhCert.DHPubKey),
+			IssuedAt:  dhCert.IssuedAt.Format(time.RFC3339),
+			Signature: base64.StdEncoding.EncodeToString(dhCert.Signature),
+		},
+		SignedPrekey:          spk,
+		OneTimePrekeys:        fresh,
+		ReplaceOneTimePrekeys: true,
 	})
 }
 
