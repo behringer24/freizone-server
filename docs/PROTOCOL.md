@@ -951,15 +951,35 @@ The receiver then:
 3. If deliberate: adopt the new session unconditionally. The ordering rule below
    must *not* apply — the session it would tell us to keep is one the peer can
    no longer read.
-4. Otherwise it is simultaneous establishment, and the tie-break is the
-   ordering rule re-keying already uses, derived from data both sides hold:
+4. Otherwise, before reaching for the ordering rule: has *this side* actually
+   decrypted anything on the session it is currently holding for this peer? If
+   so, adopt the new one unconditionally too, regardless of `account_id`
+   ordering. A `rekey: false` block only means "not deliberate *from the
+   sender's own point of view*" — a sender that lost its session state (a
+   reset that predates this field, a reinstall, a device migrated onto storage
+   that never carried sessions across, e.g. SRV-23's shared-core cut) has no
+   idea anything is wrong and says exactly the same `false` a genuine racer
+   would. A session with confirmed inbound traffic settles which case this is:
+   a real simultaneous establishment is two sides starting from *nothing*, so
+   neither has decrypted anything on either of the sessions currently
+   competing — that is what step 5 below is actually for. A session that has
+   already had something decrypted on it is not that; it is a working,
+   mutually-established conversation, and the peer just proved — by sending an
+   envelope this side cannot read — that its copy of it is gone. Keeping this
+   side's stale session because its `account_id` happens to sort lower strands
+   every future message in both directions: the peer cannot read this side's
+   old session, this side cannot read the peer's new one, and neither the
+   desync accounting nor a manual reset by either party changes that, because
+   the peer's next attempt hits the exact same wrongly-decided tie-break again.
+5. Otherwise it is a genuine simultaneous establishment, and the tie-break is
+   the ordering rule re-keying already uses, derived from data both sides hold:
    **the lower `account_id`'s session wins** and is the one both sides send on.
    If the **peer's** id is lower, adopt theirs. If **ours** is lower, keep ours
    for sending but retain the responder session for **reading only** — the peer
    is still sending on theirs until our next message reaches them, and without
    this those in-flight messages are stranded undecryptable forever.
 
-The read-only retention in step 4 is easy to leave out and expensive to omit:
+The read-only retention in step 5 is easy to leave out and expensive to omit:
 the pair converges either way, but without it every message the loser sent
 before converging is lost. A client MAY discard a read-only session once the
 peer has demonstrably moved (a message arriving on the winning session).

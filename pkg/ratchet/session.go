@@ -150,6 +150,23 @@ func (s *Session) decrypt(header Header, ciphertext []byte) ([]byte, error) {
 		return nil, err
 	}
 
+	// skipMessageKeys only guards this for header.N > s.Nr (line ~133): a
+	// message that is next-in-line skips nothing and reaches here directly.
+	// CKr is still nil here for exactly one real session shape -- an
+	// initiator who bootstrapped via X3DH and has never yet received
+	// anything, so its stored DHr is still the responder's *signed prekey*,
+	// never advanced by a dhRatchetStep -- and a header whose DHPub still
+	// matches that. A genuine peer never sends one: its own first reply
+	// carries a freshly generated ratchet key precisely so this never
+	// matches (see PROTOCOL.md §5's bootstrap rule). Without this check,
+	// kdfCK(nil) HMACs with an empty key and openMessage fails the GCM tag
+	// exactly like a corrupted or misdirected message -- indistinguishable
+	// from an authentication failure to everything downstream, including
+	// the desync accounting that decides whether to auto-rekey.
+	if s.CKr == nil {
+		return nil, ErrNoReceivingChain
+	}
+
 	ck, mk := kdfCK(s.CKr)
 	s.CKr = ck
 	s.Nr++
