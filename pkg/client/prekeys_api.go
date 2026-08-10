@@ -196,6 +196,34 @@ func (c *Client) TopUpOneTimePrekeys(ctx context.Context) error {
 		return err
 	}
 
+	// The one thing topping up can never fix, checked here because the count it
+	// needs has just been fetched anyway: the server holding *more* unclaimed
+	// keys than this device has private halves for. That means ids were
+	// published this device cannot open, so every first contact against it
+	// fails at RespondToSession ("references one-time prekey N but no matching
+	// private key was provided") -- and adding more on top changes nothing,
+	// since the oldest unclaimed key is always handed out first.
+	//
+	// One-directional on purpose, and that is what makes it safe to act on:
+	// holding more than the server does is the ordinary state (the server
+	// deletes a key the moment it is claimed, this side only once it has
+	// actually been used, so a claim in flight leaves us one ahead). The
+	// reverse cannot happen honestly.
+	//
+	// Checked on every connect rather than left to [Client.RecoverDesyncedSessions],
+	// which only reaches the purge when some peer is already due for a re-key:
+	// an account whose other conversations are all healthy would never get
+	// there, and a peer it has no conversation with at all is not even in that
+	// loop -- so the one account that needs this most is the one that would
+	// never have run it.
+	held, err := c.CountOneTimePrekeys()
+	if err != nil {
+		return err
+	}
+	if remaining > held {
+		return c.PurgeAndReplaceOneTimePrekeys(ctx)
+	}
+
 	var fresh []oneTimePrekeyWire
 	if remaining < OneTimePrekeyLowWaterMark {
 		if fresh, err = c.mintOneTimePrekeys(&id, OneTimePrekeyBatch-remaining); err != nil {
