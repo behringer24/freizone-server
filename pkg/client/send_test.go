@@ -371,6 +371,72 @@ func TestPurgeAndReplaceOneTimePrekeysDiscardsAPoisonedEntry(t *testing.T) {
 	}
 }
 
+// A pool the server holds more of than this device has private halves for is
+// the one shape topping up cannot fix, and it has to heal on an ordinary
+// connect -- not only when RecoverDesyncedSessions happens to reach the purge,
+// which needs some peer to already be due for a re-key. Found live: an account
+// whose other conversations were all healthy never got there, so every new
+// first contact against it failed at RespondToSession forever.
+func TestATopUpPurgesAPoolItHasNoPrivateHalvesFor(t *testing.T) {
+	srv := newFakeServer(t)
+	c := srv.account(t, "d1")
+
+	// Published, unclaimed, and this device holds no private half -- exactly
+	// what a key minted by an older build that never told this core looks like.
+	srv.set(func(s *fakeServer) {
+		dev := s.device("d1")
+		dev.oneTimePrekeys = append([]oneTimePrekeyWire{{KeyID: 4242, PubKey: "cG9pc29uZWQtcHJla2V5LWJ5dGVzLS0zMg=="}}, dev.oneTimePrekeys...)
+	})
+
+	// A pool this far above the water mark would otherwise be left alone: the
+	// point is that the mismatch is what triggers the purge, not the count.
+	if got := srv.remainingPrekeys("d1"); got <= OneTimePrekeyLowWaterMark {
+		t.Fatalf("pool is %d, too low to prove the water mark is not what fires", got)
+	}
+
+	if err := c.TopUpOneTimePrekeys(t.Context()); err != nil {
+		t.Fatalf("TopUpOneTimePrekeys: %v", err)
+	}
+
+	for _, k := range srv.device("d1").oneTimePrekeys {
+		if k.KeyID == 4242 {
+			t.Error("the key this device cannot open is still published -- a top-up must purge it, not add alongside it")
+		}
+		if priv, err := c.OneTimePrekey(k.KeyID); err != nil || priv == nil {
+			t.Errorf("still publishing a key (id %d) with no private half here", k.KeyID)
+		}
+	}
+}
+
+// The mirror image: a pool this device holds *more* of than the server does is
+// the ordinary state -- a claim in flight, deleted server-side the moment it
+// was handed out and here only once it has been used. That must not be read as
+// a mismatch and must not cost the pool.
+func TestATopUpLeavesAHealthyPoolAloneWhenAClaimIsInFlight(t *testing.T) {
+	srv := newFakeServer(t)
+	c := srv.account(t, "d1")
+
+	before := srv.device("d1").oneTimePrekeys
+	// One claimed but not yet used: gone from the server, still held here.
+	srv.set(func(s *fakeServer) {
+		dev := s.device("d1")
+		dev.oneTimePrekeys = dev.oneTimePrekeys[1:]
+	})
+
+	if err := c.TopUpOneTimePrekeys(t.Context()); err != nil {
+		t.Fatalf("TopUpOneTimePrekeys: %v", err)
+	}
+
+	after := srv.device("d1").oneTimePrekeys
+	if len(after) != len(before)-1 {
+		t.Errorf("pool went from %d to %d: a claim in flight must not trigger a purge", len(before)-1, len(after))
+	}
+	// And the untouched ones are still the originals, not a replacement batch.
+	if after[0].KeyID != before[1].KeyID {
+		t.Errorf("pool was replaced (first id %d, want %d)", after[0].KeyID, before[1].KeyID)
+	}
+}
+
 // A session established without a one-time prekey still works -- and says so,
 // because the alternative is that it degrades silently forever.
 func TestAWithheldOneTimePrekeyIsReportedNotRefused(t *testing.T) {
