@@ -124,9 +124,15 @@ func (c *Client) UploadAttachment(ctx context.Context, recipients []PeerEndpoint
 
 // DownloadAttachment fetches and decrypts one attachment.
 //
-// server is where the blob lives, which is the *sender's* server rather than
-// ours -- a federated picture is never copied to the recipient's side. Empty
-// for a blob on our own.
+// server names a server other than this account's own only for the one
+// legitimate case: an attachment on a group whose blob was uploaded
+// (federated) to a *different* member's server rather than this account's.
+// For an ordinary one-to-one attachment it is always empty -- a blob is
+// uploaded to the *recipient's* own server (see UploadAttachment), precisely
+// so the recipient never has to reach the sender's server to read something
+// the sender sent. Passing the sender's server here for a one-to-one
+// attachment sends the fetch, federated, to a server that was never handed
+// the blob at all.
 func (c *Client) DownloadAttachment(ctx context.Context, server string, att Attachment) ([]byte, error) {
 	if att.Algorithm != "" && att.Algorithm != blobAlgorithm {
 		// Named rather than assumed, so changing ciphers stays a data question
