@@ -311,8 +311,14 @@ func (c *Client) ClaimBundle(ctx context.Context, peer PeerEndpoint) (Bundle, er
 		auth:   authDevice,
 	}
 	if peer.Federated() {
-		issuedAt := time.Now().UTC()
-		sig, err := signDeviceCertificate(id, issuedAt)
+		// Shares signDeviceCert with postEnvelope/sendGroupControl rather than
+		// building this shape a second time: this exact duplication is why the
+		// "device_pub_key" field name (PROTOCOL.md §9, deliberately not the
+		// "device_pubkey" every other identity block uses) drifted to
+		// "device_pubkey" here and went unnoticed -- a claim is a request, not
+		// a send, so a wrong response here read as "no one-time prekey
+		// offered" rather than a visible failure.
+		cert, err := signDeviceCert(id, time.Now().UTC())
 		if err != nil {
 			return Bundle{}, err
 		}
@@ -321,12 +327,7 @@ func (c *Client) ClaimBundle(ctx context.Context, peer PeerEndpoint) (Bundle, er
 		req.body = map[string]any{
 			"sender_account_id":   id.AccountID,
 			"sender_root_pub_key": base64.StdEncoding.EncodeToString(id.RootPub),
-			"sender_device_cert": map[string]any{
-				"device_id":     id.DeviceID,
-				"device_pubkey": base64.StdEncoding.EncodeToString(id.DevicePub),
-				"issued_at":     issuedAt.Format(time.RFC3339),
-				"signature":     base64.StdEncoding.EncodeToString(sig),
-			},
+			"sender_device_cert":  cert,
 		}
 	}
 
