@@ -55,6 +55,12 @@ type fakeServer struct {
 	// instead of accepting it -- how a test makes delivery fail on demand.
 	sendStatus int
 
+	// failAccounts refuses a message POST addressed to one of these account
+	// ids specifically, while every other recipient still succeeds -- for a
+	// group fan-out test that needs one member's copy to fail without the
+	// others', which sendStatus (all-or-nothing) cannot express.
+	failAccounts map[string]bool
+
 	// bundleClaims counts prekey-bundle claims, which is how the tests tell a
 	// session that was established once from one established again.
 	bundleClaims int
@@ -305,6 +311,10 @@ func (s *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			s.writeError(w, http.StatusBadRequest, "bad_request")
+			return
+		}
+		if s.failAccounts[body.RecipientAccountID] {
+			s.writeError(w, http.StatusServiceUnavailable, "unknown_recipient_device")
 			return
 		}
 		sender := body.SenderAccountID
