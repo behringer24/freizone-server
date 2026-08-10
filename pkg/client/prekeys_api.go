@@ -272,6 +272,15 @@ func (c *Client) TopUpOneTimePrekeys(ctx context.Context) error {
 // every id being discarded is, by definition, unclaimed (a claim deletes
 // atomically the moment it happens), so nothing has ever been built against
 // any of them.
+//
+// Clears first and mints only once the clearing is confirmed, in two round
+// trips rather than one. That order exists for a server that predates
+// replace_one_time_prekeys: encoding/json ignores an unknown field, so such a
+// server silently *appends* the batch instead of replacing, leaving the
+// poisoned ids in front of it -- and since it hands out the oldest first,
+// nothing improves. Minting first would then add ten keys per attempt,
+// forever, to both sides. Confirming the clear before minting turns that into
+// one wasted request and an error saying exactly what is wrong.
 func (c *Client) PurgeAndReplaceOneTimePrekeys(ctx context.Context) error {
 	id, err := c.Identity()
 	if err != nil {
@@ -283,6 +292,22 @@ func (c *Client) PurgeAndReplaceOneTimePrekeys(ctx context.Context) error {
 	}
 	now := time.Now().UTC()
 
+	// Step one: ask for the pool to be emptied, and check that it was. The
+	// account is briefly published without a one-time prekey, which is a
+	// documented, working state (a bundle without one starts a session on the
+	// signed prekey alone) and lasts one request.
+	if err := c.replacePool(ctx, id, now, nil); err != nil {
+		return err
+	}
+	switch remaining, err := c.RemainingOneTimePrekeys(ctx); {
+	case err != nil:
+		return err
+	case remaining > 0:
+		return fmt.Errorf(
+			"client: this server kept %d one-time prekeys after being asked to replace the pool, so it cannot be cleared of keys this device has no private half for -- it predates replace_one_time_prekeys and needs updating",
+			remaining)
+	}
+
 	fresh, err := c.mintOneTimePrekeys(&id, OneTimePrekeyBatch)
 	if err != nil {
 		return err
@@ -293,7 +318,13 @@ func (c *Client) PurgeAndReplaceOneTimePrekeys(ctx context.Context) error {
 	if err := c.SetIdentity(id); err != nil {
 		return err
 	}
+	return c.replacePool(ctx, id, now, fresh)
+}
 
+// replacePool publishes keys as the whole pool rather than as an addition to
+// it, re-asserting the certificates the endpoint requires alongside. A nil
+// keys empties the pool.
+func (c *Client) replacePool(ctx context.Context, id Identity, now time.Time, keys []oneTimePrekeyWire) error {
 	dhCert, err := devicecert.SignDHIdentityCertificate(
 		id.AccountID, id.DeviceID, id.DHIdentityPub, now, ed25519.PrivateKey(id.DevicePriv))
 	if err != nil {
@@ -310,7 +341,7 @@ func (c *Client) PurgeAndReplaceOneTimePrekeys(ctx context.Context) error {
 			Signature: base64.StdEncoding.EncodeToString(dhCert.Signature),
 		},
 		SignedPrekey:          spk,
-		OneTimePrekeys:        fresh,
+		OneTimePrekeys:        keys,
 		ReplaceOneTimePrekeys: true,
 	})
 }
