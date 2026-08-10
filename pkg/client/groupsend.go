@@ -5,6 +5,7 @@ import (
 	"crypto/ecdh"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -160,6 +161,165 @@ func (c *Client) SendGroupText(ctx context.Context, groupID, text string, opts S
 	at := now
 	chat.LastActivityAt = &at
 	return res, c.PutGroupChat(*chat)
+}
+
+// RetryGroupMessage re-sends a group message whose send failed, addressing
+// only the members whose copy never arrived.
+//
+// Mirrors [Client.RetryMessage]'s shape and for the same reason: an attachment
+// that never made it to the server is re-uploaded, one that did is simply
+// named again, and the message must already be recorded [SendFailed]. It
+// deliberately does not go back to everyone -- a member whose delivery is
+// already [SendSent] is not revisited, or a retry would duplicate the text
+// for whoever already has it. That is also why fanOut's own de-duplication
+// (an advance is only persisted once the copy has actually gone out) is
+// enough here too: a second attempt re-encrypts under the same message
+// number, and a recipient who did receive the first copy recognises the
+// retry as the duplicate it is.
+//
+// A member who joined after the original attempt is not retroactively sent
+// it: they have no delivery record for this message at all, so they are
+// never in the retried set -- joining grants no access to what was said
+// before, and a retry is not an exception to that.
+func (c *Client) RetryGroupMessage(ctx context.Context, groupID, messageID string) (SendResult, error) {
+	msgs, err := c.Messages(groupID)
+	if err != nil {
+		return SendResult{}, err
+	}
+	var line *Message
+	for i := range msgs {
+		if msgs[i].ID == messageID {
+			line = &msgs[i]
+			break
+		}
+	}
+	if line == nil {
+		return SendResult{}, fmt.Errorf("client: no message %s in group %s", messageID, groupID)
+	}
+	// Unlike the one-to-one path, a group message's own SendState is not the
+	// right gate: "delivered to somebody" already makes it [SendSent] (see
+	// SendGroupText), so a partial failure looks exactly like success at that
+	// granularity. Retryability is a per-delivery question, decided below from
+	// which members are not yet [SendSent] -- the caller's own view of the
+	// message (client-side, StoredMessage.aggregateSendState) already reads it
+	// the same way.
+	if line.SendState == SendPending {
+		return SendResult{}, fmt.Errorf("client: message %s is still sending", messageID)
+	}
+
+	id, err := c.Identity()
+	if err != nil {
+		return SendResult{}, err
+	}
+	membership, err := c.GroupMembership(groupID)
+	if err != nil {
+		return SendResult{}, err
+	}
+	if membership == nil {
+		return SendResult{}, fmt.Errorf("client: no facts about group %s", groupID)
+	}
+	if membership.Dissolved {
+		return SendResult{}, fmt.Errorf("client: group %s has been dissolved", groupID)
+	}
+
+	pending := map[string]bool{}
+	for _, d := range line.Deliveries {
+		if d.State != SendSent {
+			pending[d.AccountID] = true
+		}
+	}
+	var recipients []group.Member
+	for _, m := range joinedMembers(membership, id.AccountID) {
+		if pending[m.AccountID] {
+			recipients = append(recipients, m)
+		}
+	}
+	if len(recipients) == 0 {
+		// Every recorded delivery already succeeded -- the aggregate state was
+		// [SendFailed] for a reason unrelated to any one member (or every member
+		// who was behind has since left). Report it as sent rather than doing
+		// nothing silently.
+		if err := c.SetMessageSendState(groupID, messageID, SendSent); err != nil {
+			return SendResult{}, err
+		}
+		line.SendState = SendSent
+		return SendResult{Message: *line}, nil
+	}
+
+	// An attachment that never made it to the server has to go up before the
+	// message can name it again. One that did is simply named again: the blob
+	// is still there under the same id, and a second copy would be one nobody
+	// references.
+	if len(line.Attachments) == 1 && line.Attachments[0].BlobID == "" {
+		bytes, err := c.AttachmentFile(groupID, messageID)
+		if err != nil {
+			return SendResult{}, err
+		}
+		if bytes == nil {
+			// Composed on a device that no longer has the file, or cleared since.
+			// Sending the caption alone would deliver something the user never
+			// wrote.
+			return SendResult{}, ErrAttachmentNotResendable
+		}
+		placeholder := line.Attachments[0]
+		uploaded, err := c.uploadForGroup(ctx, recipients, OutgoingMedia{
+			Bytes: bytes, MimeType: placeholder.MimeType, Kind: placeholder.Kind,
+			Width: placeholder.Width, Height: placeholder.Height, Thumb: placeholder.Thumb,
+		})
+		if err != nil {
+			return SendResult{}, err
+		}
+		if err := c.SetMessageAttachments(groupID, messageID, []Attachment{uploaded}); err != nil {
+			return SendResult{}, err
+		}
+		line.Attachments = []Attachment{uploaded}
+	}
+
+	if err := c.SetMessageSendState(groupID, messageID, SendPending); err != nil {
+		return SendResult{}, err
+	}
+	res := SendResult{Message: *line}
+
+	plaintext, err := encodeGroupText(*line, groupID, membership.StateHash, line.Timestamp)
+	if err != nil {
+		return res, err
+	}
+	deliveries, err := c.fanOut(ctx, groupID, plaintext, recipients)
+	if err != nil {
+		if markErr := c.SetMessageSendState(groupID, messageID, SendFailed); markErr != nil {
+			return res, errors.Join(err, markErr)
+		}
+		return res, err
+	}
+	if err := c.recordDeliveries(groupID, messageID, deliveries); err != nil {
+		return res, err
+	}
+
+	// Merged in the transcript's own order, deliberately not the map iteration
+	// order fanOut returns: a member already [SendSent] keeps that record
+	// untouched, a retried member takes whatever this attempt produced.
+	byAccount := make(map[string]GroupDelivery, len(deliveries))
+	for _, d := range deliveries {
+		byAccount[d.AccountID] = d
+	}
+	final := make([]GroupDelivery, len(line.Deliveries))
+	state := SendFailed
+	for i, d := range line.Deliveries {
+		if updated, ok := byAccount[d.AccountID]; ok {
+			final[i] = updated
+		} else {
+			final[i] = d
+		}
+		if final[i].State == SendSent {
+			state = SendSent
+		}
+	}
+	res.Message.Deliveries = final
+	if err := c.SetMessageSendState(groupID, messageID, state); err != nil {
+		return res, err
+	}
+	res.Message.SendState = state
+	return res, nil
 }
 
 // preparedCopy is one recipient's copy, encrypted and waiting to be posted.

@@ -770,16 +770,26 @@ func signDeviceCertificate(id Identity, issuedAt time.Time) ([]byte, error) {
 
 // signDeviceCert wraps that signature in the shape a federated request body
 // expects.
+//
+// "device_pub_key", not the "device_pubkey" every other identity block on the
+// wire uses (PROTOCOL.md §2) -- this one specific inline shape (§9's
+// sender_device_cert, documented at PROTOCOL.md:781) really does spell it
+// with the extra underscore, and internal/api/dto.go's
+// federationDeviceCertDTO agrees. Get it wrong and the server's decode
+// silently leaves the field at its zero value: "invalid
+// sender_device_cert.device_pub_key: expected 32 bytes, got 0" -- which reads
+// like a local identity problem, not a wire-shape typo, and is why this was
+// never caught by anything short of an actual federated send.
 func signDeviceCert(id Identity, issuedAt time.Time) (map[string]any, error) {
 	sig, err := signDeviceCertificate(id, issuedAt)
 	if err != nil {
 		return nil, err
 	}
 	return map[string]any{
-		"device_id":     id.DeviceID,
-		"device_pubkey": base64.StdEncoding.EncodeToString(id.DevicePub),
-		"issued_at":     issuedAt.Format(time.RFC3339),
-		"signature":     base64.StdEncoding.EncodeToString(sig),
+		"device_id":      id.DeviceID,
+		"device_pub_key": base64.StdEncoding.EncodeToString(id.DevicePub),
+		"issued_at":      issuedAt.Format(time.RFC3339),
+		"signature":      base64.StdEncoding.EncodeToString(sig),
 	}, nil
 }
 

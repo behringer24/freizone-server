@@ -55,6 +55,12 @@ type fakeServer struct {
 	// instead of accepting it -- how a test makes delivery fail on demand.
 	sendStatus int
 
+	// failAccounts refuses a message POST addressed to one of these account
+	// ids specifically, while every other recipient still succeeds -- for a
+	// group fan-out test that needs one member's copy to fail without the
+	// others', which sendStatus (all-or-nothing) cannot express.
+	failAccounts map[string]bool
+
 	// bundleClaims counts prekey-bundle claims, which is how the tests tell a
 	// session that was established once from one established again.
 	bundleClaims int
@@ -87,6 +93,29 @@ type fakeDevice struct {
 	dhIdentityPub  string
 	signedPrekey   signedPrekeyWire
 	oneTimePrekeys []oneTimePrekeyWire
+}
+
+// fakeFederationDeviceCert mirrors internal/api/dto.go's
+// federationDeviceCertDTO -- deliberately a second, independent definition of
+// the wire shape rather than an import, since the point is to catch a client
+// that drifted from the server's own field names, and importing the server's
+// struct would make that drift invisible to this test binary too.
+type fakeFederationDeviceCert struct {
+	DeviceID     string `json:"device_id"`
+	DevicePubKey string `json:"device_pub_key"`
+	IssuedAt     string `json:"issued_at"`
+	Signature    string `json:"signature"`
+}
+
+func (c *fakeFederationDeviceCert) validate() error {
+	raw, err := base64.StdEncoding.DecodeString(c.DevicePubKey)
+	if err != nil {
+		return fmt.Errorf("invalid sender_device_cert.device_pub_key: %w", err)
+	}
+	if len(raw) != ed25519.PublicKeySize {
+		return fmt.Errorf("invalid sender_device_cert.device_pub_key: expected %d bytes, got %d", ed25519.PublicKeySize, len(raw))
+	}
+	return nil
 }
 
 type queuedEnvelope struct {
@@ -270,6 +299,24 @@ func (s *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 			s.writeError(w, http.StatusNotFound, "unknown_device")
 			return
 		}
+		// See the /v1/messages case above: decoded only to catch a federated
+		// claimant whose sender_device_cert has drifted from the server's
+		// field names, not to authenticate it (this stub never does).
+		var body struct {
+			SenderDeviceCert *fakeFederationDeviceCert `json:"sender_device_cert"`
+		}
+		if r.ContentLength != 0 {
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				s.writeError(w, http.StatusBadRequest, "bad_request")
+				return
+			}
+		}
+		if body.SenderDeviceCert != nil {
+			if err := body.SenderDeviceCert.validate(); err != nil {
+				s.writeError(w, http.StatusBadRequest, "invalid_request")
+				return
+			}
+		}
 		s.bundleClaims++
 		bundle := prekeyBundleWire{
 			DeviceID:         deviceID,
@@ -297,14 +344,31 @@ func (s *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var body struct {
-			MessageID          string          `json:"message_id"`
-			RecipientAccountID string          `json:"recipient_account_id"`
-			RecipientDeviceID  string          `json:"recipient_device_id"`
-			SenderAccountID    string          `json:"sender_account_id"`
-			Payload            json.RawMessage `json:"payload"`
+			MessageID          string                    `json:"message_id"`
+			RecipientAccountID string                    `json:"recipient_account_id"`
+			RecipientDeviceID  string                    `json:"recipient_device_id"`
+			SenderAccountID    string                    `json:"sender_account_id"`
+			SenderDeviceCert   *fakeFederationDeviceCert `json:"sender_device_cert"`
+			Payload            json.RawMessage           `json:"payload"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			s.writeError(w, http.StatusBadRequest, "bad_request")
+			return
+		}
+		// Present on a federated send only, but when it is present it is what
+		// the real server actually decodes -- see internal/api/dto.go's
+		// federationDeviceCertDTO. A client that got the wire shape wrong (the
+		// live "device_pubkey" vs "device_pub_key" bug this guards against)
+		// must fail here exactly like the real server, not pass silently
+		// because this stub never looked.
+		if body.SenderDeviceCert != nil {
+			if err := body.SenderDeviceCert.validate(); err != nil {
+				s.writeError(w, http.StatusBadRequest, "invalid_request")
+				return
+			}
+		}
+		if s.failAccounts[body.RecipientAccountID] {
+			s.writeError(w, http.StatusServiceUnavailable, "unknown_recipient_device")
 			return
 		}
 		sender := body.SenderAccountID

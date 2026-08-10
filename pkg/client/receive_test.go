@@ -240,6 +240,68 @@ func TestKnownPeerNotifiesOnEveryMessage(t *testing.T) {
 	}
 }
 
+// A peer on this side's own server still states sender_server on every
+// message (send.go's encodeText sends it unconditionally, not only when
+// federated -- it is how a peer who lost local state finds its way back).
+// Taking that at face value would leave Conversation.PeerServer non-empty for
+// a same-server peer, and PeerEndpoint.Federated's whole contract is "empty
+// means our own": every later send to them would then run the federated path
+// and build a device certificate this send path has no reason to get right
+// for a local peer. Found live (SRV-23): a same-server contact's first reply
+// silently broke every send to them from that point on.
+func TestSameServerSenderNeverMarksThePeerAsFederated(t *testing.T) {
+	c, p := newFixture(t, "me", "them", nil)
+	if err := c.MarkPeerKnown("them"); err != nil {
+		t.Fatalf("MarkPeerKnown: %v", err)
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"v": 1, "id": "id-1", "text": "hi", "sender_server": "https://home.test",
+	})
+	if err != nil {
+		t.Fatalf("encoding plaintext: %v", err)
+	}
+	mustHandle(t, c, p.msg("m1", p.send(payload)), ReceiveOptions{})
+
+	convo, err := c.Conversation("them")
+	if err != nil || convo == nil {
+		t.Fatalf("Conversation: %v, %v", convo, err)
+	}
+	if convo.PeerServer != "" {
+		t.Errorf("PeerServer: want empty (same server as us), got %q", convo.PeerServer)
+	}
+}
+
+// The self-heal above must run in reverse too: a PeerServer already wrongly
+// set to this side's own server (exactly what the bug above left behind on
+// disk before it was fixed) is cleared by the peer's very next message, not
+// just left stale until something else notices.
+func TestSameServerSenderClearsAPreviouslyWrongPeerServer(t *testing.T) {
+	c, p := newFixture(t, "me", "them", nil)
+	if err := c.MarkPeerKnown("them"); err != nil {
+		t.Fatalf("MarkPeerKnown: %v", err)
+	}
+	if err := c.PutConversation(Conversation{PeerAccountID: "them", PeerServer: "https://home.test"}); err != nil {
+		t.Fatalf("PutConversation: %v", err)
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"v": 1, "id": "id-1", "text": "hi", "sender_server": "https://home.test",
+	})
+	if err != nil {
+		t.Fatalf("encoding plaintext: %v", err)
+	}
+	mustHandle(t, c, p.msg("m1", p.send(payload)), ReceiveOptions{})
+
+	convo, err := c.Conversation("them")
+	if err != nil || convo == nil {
+		t.Fatalf("Conversation: %v, %v", convo, err)
+	}
+	if convo.PeerServer != "" {
+		t.Errorf("PeerServer: want cleared, got %q", convo.PeerServer)
+	}
+}
+
 // A message into the chat the user is looking at must neither notify nor mark
 // it unread.
 func TestMessageIntoTheOpenChatIsSilent(t *testing.T) {
@@ -452,6 +514,89 @@ func TestAcceptedRekeyLeavesATranscriptMarker(t *testing.T) {
 	convo, _ := c.Conversation("aaa-them")
 	if convo.LastActivityAt == nil || !convo.LastActivityAt.Equal(*lastActivityOf(t, c, "aaa-them")) {
 		t.Error("last activity moved on a re-key")
+	}
+}
+
+// A peer that lost its ratchet state entirely (no rekey flag -- from its own
+// point of view this is an ordinary first establishment, not a deliberate
+// one) must still be adopted once this side has actually confirmed the
+// session it is holding, whatever the account-id tie-break says. Found live
+// (SRV-23's "one-time reset, no migration path" left exactly this shape): the
+// higher-sorting id kept sending on a session the peer had just proven it
+// could not read, and never self-healed.
+func TestOrdinaryReestablishmentIsAdoptedOverAConfirmedSession(t *testing.T) {
+	// "zzz-them" sorts above "aaa-me", so the old account-id tie-break would
+	// have this side keep its own (stale) session -- the exact failure mode.
+	c, p := newFixture(t, "aaa-me", "zzz-them", nil)
+	if err := c.MarkPeerKnown("zzz-them"); err != nil {
+		t.Fatalf("MarkPeerKnown: %v", err)
+	}
+
+	// A real, working, mutually confirmed session: this side has actually
+	// decrypted something on it, which a coincidental race could never have
+	// -- both sides of a genuine race start from nothing.
+	mustHandle(t, c, p.msg("m1", p.send(textPayload(t, "id-1", "hello", ""))), ReceiveOptions{})
+	p.settled()
+
+	// The peer's local session is gone -- same DH identity key (nothing about
+	// who they are changed), a brand new ratchet session, and critically no
+	// rekey flag: it has no idea anything is wrong.
+	id, err := c.Identity()
+	if err != nil {
+		t.Fatalf("Identity: %v", err)
+	}
+	lost := &peer{t: t, accountID: "zzz-them", dhPriv: p.dhPriv, withBlock: true}
+	lost.session, lost.initial, err = ratchet.InitiateSession(lost.dhPriv, ratchet.RemoteBundle{
+		DHIdentityPubKey: pubKey(t, id.DHIdentityPub),
+		SignedPrekeyID:   id.SignedPrekeyID,
+		SignedPrekeyPub:  pubKey(t, id.SignedPrekeyPub),
+	})
+	if err != nil {
+		t.Fatalf("InitiateSession: %v", err)
+	}
+
+	res := mustHandle(t, c, lost.msg("m2", lost.send(textPayload(t, "id-2", "hi again", ""))), ReceiveOptions{})
+	if !res.AdoptedPeerSession {
+		t.Fatal("a peer that lost its session must be adopted even though its account id sorts higher and it never said 'rekey'")
+	}
+	if res.StoredMessageID == "" {
+		t.Error("the message riding the re-established session must still be stored")
+	}
+}
+
+// Mirror image of the above: two sides genuinely establish within the same
+// breath (a group's "everyone reaches back at once", see send.go), so neither
+// has confirmed anything on the sessions currently competing -- the
+// account-id tie-break must still decide it, exactly as before this change.
+func TestGenuineRaceStillUsesTheAccountIDTieBreak(t *testing.T) {
+	// "aaa-me" sorts below "zzz-them", so this side's session should win the
+	// tie-break and be kept for sending.
+	c, mine := newFixture(t, "zzz-me", "aaa-them", nil)
+	if err := c.MarkPeerKnown("aaa-them"); err != nil {
+		t.Fatalf("MarkPeerKnown: %v", err)
+	}
+
+	// A second, independent initiator session for the same pair, standing in
+	// for our own outstanding attempt -- what makes this a race rather than
+	// the scenario above is that nothing has been decrypted on either side
+	// yet.
+	id, err := c.Identity()
+	if err != nil {
+		t.Fatalf("Identity: %v", err)
+	}
+	other := &peer{t: mine.t, accountID: "aaa-them", dhPriv: generateKey(mine.t), withBlock: true}
+	other.session, other.initial, err = ratchet.InitiateSession(other.dhPriv, ratchet.RemoteBundle{
+		DHIdentityPubKey: pubKey(mine.t, id.DHIdentityPub),
+		SignedPrekeyID:   id.SignedPrekeyID,
+		SignedPrekeyPub:  pubKey(mine.t, id.SignedPrekeyPub),
+	})
+	if err != nil {
+		t.Fatalf("InitiateSession: %v", err)
+	}
+
+	res := mustHandle(t, c, other.msg("m1", other.send(textPayload(t, "id-1", "hi", ""))), ReceiveOptions{})
+	if res.AdoptedPeerSession {
+		t.Fatal("a genuine race with nothing confirmed on either side must still resolve by account id, not adopt automatically")
 	}
 }
 

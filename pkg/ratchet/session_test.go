@@ -174,6 +174,24 @@ func TestDecryptRejectsTamperedHeader(t *testing.T) {
 	}
 }
 
+// An initiator that has sent but never received has no receiving chain at
+// all yet -- DHr is still Bob's signed prekey, exactly as X3DH left it, since
+// only a DH ratchet step (triggered by an unfamiliar DHPub) ever creates one.
+// A header claiming that same, familiar DHPub skips that step and must be
+// refused explicitly, not silently HMAC'd with a nil chain key -- which
+// reports the same "authentication failed" a genuinely corrupted message
+// would, and is exactly what made a real desync (SRV-23, see receive_test.go)
+// look identical to ordinary bit rot.
+func TestDecryptWithNoReceivingChainYetIsDiagnosedNotMisreadAsAuthFailure(t *testing.T) {
+	p := setupParties(t, true)
+	alice, _ := mustInitiateAndRespond(t, p)
+
+	header := Header{DHPub: alice.DHr.Bytes(), PN: 0, N: 0}
+	if _, err := alice.Decrypt(header, []byte("anything")); !errors.Is(err, ErrNoReceivingChain) {
+		t.Errorf("Decrypt() error = %v, want ErrNoReceivingChain", err)
+	}
+}
+
 func TestSessionJSONRoundTrip(t *testing.T) {
 	p := setupParties(t, true)
 	alice, bob := mustInitiateAndRespond(t, p)

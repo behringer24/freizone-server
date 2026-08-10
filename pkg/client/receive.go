@@ -515,12 +515,35 @@ func (c *Client) decrypt(msg IncomingMessage) (decryptResult, sessionEffect, err
 		if env.Prekey.Rekey == nil {
 			deliberate = DecodeContent(plaintext).Kind == ContentRekey
 		}
+
+		// A prekey block from a peer who genuinely raced us arrives before
+		// either side has confirmed anything: a race is two sides each
+		// starting fresh within the same breath, and until a message has
+		// actually been *received* on one of the two competing sessions,
+		// neither side has any confirmation of the other's, which is exactly
+		// what the tie-break below is for. Sent-but-unconfirmed does not
+		// disqualify it -- reaching for a new member and immediately sending
+		// is routine (see the group case above) and proves nothing about who
+		// is racing whom. Once this side has actually decrypted something on
+		// the session it is holding, though, that is no longer an open
+		// question: the peer has a working, mutually-confirmed session and
+		// still sent an "ordinary" prekey block instead of a deliberate one,
+		// which only happens when their own copy of it is gone (a reset that
+		// predates this field, a reinstall, a device migrated onto state that
+		// never carried sessions across -- see SRV-23). Keeping our side of
+		// that conversation on a session they have just proven they cannot
+		// read, merely because our account id happens to sort lower, strands
+		// every message either of us sends from here on: they cannot read
+		// ours, and RecordDecryptFailure/RecoverDesyncedSessions has no way to
+		// tell "corrupted" apart from "the peer moved on", so nothing
+		// self-heals.
+		sessionWasConfirmed := session.Nr > 0
 		// Otherwise it is a race, settled by the rule re-keying already uses:
 		// the lower account id's session wins. Both sides compute the same
 		// answer without exchanging anything.
 		peerWins := peer < id.AccountID
 
-		if deliberate || peerWins {
+		if deliberate || sessionWasConfirmed || peerWins {
 			session = fresh
 			effect.adoptedPeer = true
 		} else {
@@ -664,9 +687,27 @@ func (c *Client) storeIncomingText(res ReceiveResult, msg IncomingMessage, conte
 	// same sender.
 	convo.Blocked = res.Blocked
 	// Refreshed on every message that carries one, not just the first, so this
-	// self-heals if local state is ever lost.
+	// self-heals if local state is ever lost -- including, deliberately, this
+	// side's own past mistake about it: SenderServer travels on every message a
+	// peer sends, including one on our own server (see send.go's encodeText --
+	// it is unconditional, not federation-only), so it is compared against this
+	// account's own server rather than believed outright. A same-server peer
+	// clears a stale non-empty PeerServer the same way a genuinely federated
+	// one would refresh a correct one. PeerEndpoint.Federated's whole contract
+	// is "empty means our own" -- getting that wrong routes every later send
+	// through the federated path, which requires a device certificate this
+	// send path never had a reason to build correctly for a local peer, and
+	// fails outright.
+	myID, err := c.Identity()
+	if err != nil {
+		return res, err
+	}
 	if content.SenderServer != "" {
-		convo.PeerServer = content.SenderServer
+		if content.SenderServer == myID.Server {
+			convo.PeerServer = ""
+		} else {
+			convo.PeerServer = content.SenderServer
+		}
 	}
 
 	if res.Blocked {

@@ -507,6 +507,93 @@ func TestAnActionTheFoldRejectsIsNotSent(t *testing.T) {
 	}
 }
 
+// A group send that reaches one member but not the other is retried into
+// exactly the gap: the member who already has it is not sent a duplicate, and
+// the one who does not gets it.
+func TestRetryGroupMessageAddressesOnlyTheGap(t *testing.T) {
+	srv := newFakeServer(t)
+	alice := srv.account(t, "alice")
+	bob := srv.account(t, "bob")
+	carol := srv.account(t, "carol")
+	bobID := identityOf(t, bob).AccountID
+
+	groupID := groupWith(t, srv, alice, bob, carol)
+
+	// Bob's copy never arrives; carol's does.
+	srv.set(func(s *fakeServer) { s.failAccounts = map[string]bool{bobID: true} })
+	sent, err := alice.SendGroupText(t.Context(), groupID, "wo seid ihr?", SendOptions{})
+	if err != nil {
+		t.Fatalf("SendGroupText: %v", err)
+	}
+	if sent.Message.SendState != SendSent {
+		t.Fatalf("delivered to somebody is sent, got %s", sent.Message.SendState)
+	}
+	for _, d := range sent.Message.Deliveries {
+		want := SendSent
+		if d.AccountID == bobID {
+			want = SendFailed
+		}
+		if d.State != want {
+			t.Errorf("delivery to %s: want %s, got %s", d.AccountID, want, d.State)
+		}
+	}
+	if srv.queueLen("carol") != 1 {
+		t.Fatalf("carol should already have her copy, queue has %d", srv.queueLen("carol"))
+	}
+
+	// Bob's server recovers. The retry must reach him without giving carol a
+	// second copy of the same message.
+	srv.set(func(s *fakeServer) { s.failAccounts = nil })
+	retried, err := alice.RetryGroupMessage(t.Context(), groupID, sent.Message.ID)
+	if err != nil {
+		t.Fatalf("RetryGroupMessage: %v", err)
+	}
+	if retried.Message.SendState != SendSent {
+		t.Errorf("retried message: want sent, got %s", retried.Message.SendState)
+	}
+	for _, d := range retried.Message.Deliveries {
+		if d.State != SendSent {
+			t.Errorf("delivery to %s after retry: %s", d.AccountID, d.State)
+		}
+	}
+	if srv.queueLen("carol") != 1 {
+		t.Errorf("carol must not receive a duplicate: queue has %d", srv.queueLen("carol"))
+	}
+	if srv.queueLen("bob") != 1 {
+		t.Fatalf("bob should now have exactly one copy, queue has %d", srv.queueLen("bob"))
+	}
+
+	// Retrying a message with nothing left pending is a harmless no-op, not an
+	// error -- and must not resend to anyone who already has it. Checked before
+	// draining either queue below, since a queue length of zero would prove
+	// nothing about whether a duplicate was sent.
+	again, err := alice.RetryGroupMessage(t.Context(), groupID, sent.Message.ID)
+	if err != nil {
+		t.Fatalf("retrying a fully-delivered message should be a no-op, got: %v", err)
+	}
+	if again.Message.SendState != SendSent {
+		t.Errorf("no-op retry: want sent, got %s", again.Message.SendState)
+	}
+	if srv.queueLen("carol") != 1 || srv.queueLen("bob") != 1 {
+		t.Errorf("no-op retry must not resend: carol=%d bob=%d", srv.queueLen("carol"), srv.queueLen("bob"))
+	}
+
+	got := syncGroups(t, bob)
+	var read string
+	for _, res := range got {
+		if res.StoredMessageID != "" {
+			read = res.Content.Text
+		}
+	}
+	if read != "wo seid ihr?" {
+		t.Errorf("bob read %q", read)
+	}
+
+	if _, err := alice.RetryGroupMessage(t.Context(), groupID, "no-such-message"); err == nil {
+		t.Error("retrying an unknown message must be refused")
+	}
+}
+
 // groupWith founds a group and gets everyone in it, which most tests need
 // before they can start.
 func groupWith(t *testing.T, srv *fakeServer, founder *Client, members ...*Client) string {
