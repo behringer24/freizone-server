@@ -414,6 +414,20 @@ func (c *Client) RecoverDesyncedSessions(ctx context.Context) ([]string, error) 
 	}
 	now := time.Now().UTC()
 
+	// Reset a session and the peer still cannot read the reply: on this
+	// side, that looks identical to a desync, but it can also mean *our own*
+	// published one-time-prekey pool holds an id this device never actually
+	// minted a private half for (SRV-23's Dart/core minting overlap left
+	// exactly this on every account that talked to anyone before the cut).
+	// Topping up cannot fix that -- the server always hands out the oldest
+	// unclaimed key first, so a poisoned entry would still be claimed before
+	// any addition -- only a real replace does. Done once per call, lazily,
+	// the first time there is actually something to recover: healthy
+	// accounts reconnect far more often than they ever reach this method
+	// doing anything, and this would otherwise add a request to every one of
+	// them for a problem only some have.
+	var purged bool
+
 	var recovered []string
 	for _, convo := range convos {
 		if convo.Blocked || convo.PendingApproval {
@@ -428,6 +442,13 @@ func (c *Client) RecoverDesyncedSessions(ctx context.Context) ([]string, error) 
 		}
 		if !due {
 			continue
+		}
+		if !purged {
+			// Best-effort: a failed purge must not block the resets that
+			// were already due -- they still help if this side's pool
+			// turns out not to have been the problem.
+			_ = c.PurgeAndReplaceOneTimePrekeys(ctx)
+			purged = true
 		}
 		if err := c.ResetSession(ctx, convo.PeerAccountID, RekeyDecryptFailures); err != nil {
 			// One peer being unreachable must not stop the others: the whole

@@ -327,6 +327,50 @@ func TestTopUpOnlyRefillsBelowTheWaterMark(t *testing.T) {
 	}
 }
 
+// The fix for a pool that has drifted from this device's own store: an id
+// the server will still hand out, but this side never actually minted a
+// private half for (SRV-23's Dart/core minting overlap leaves exactly this).
+// TopUpOneTimePrekeys can only ever add more on top of it -- the server
+// always hands out the oldest unclaimed key first (see
+// store.ClaimOneTimePrekey), so the poisoned entry would still be claimed
+// before any addition ever is. PurgeAndReplaceOneTimePrekeys has to
+// actually discard it.
+func TestPurgeAndReplaceOneTimePrekeysDiscardsAPoisonedEntry(t *testing.T) {
+	srv := newFakeServer(t)
+	c := srv.account(t, "d1")
+
+	// A pool entry this device's own store has no record of at all --
+	// exactly what a stale Dart-minted key the core never learned about
+	// looks like from here.
+	srv.set(func(s *fakeServer) {
+		dev := s.device("d1")
+		dev.oneTimePrekeys = append([]oneTimePrekeyWire{{KeyID: 777, PubKey: "cG9pc29uZWQtcHJla2V5LWJ5dGVzLS0zMg=="}}, dev.oneTimePrekeys...)
+	})
+	if got := srv.remainingPrekeys("d1"); got != OneTimePrekeyBatch+1 {
+		t.Fatalf("pool after poisoning = %d, want %d", got, OneTimePrekeyBatch+1)
+	}
+
+	if err := c.PurgeAndReplaceOneTimePrekeys(t.Context()); err != nil {
+		t.Fatalf("PurgeAndReplaceOneTimePrekeys: %v", err)
+	}
+
+	published := srv.device("d1").oneTimePrekeys
+	if len(published) != OneTimePrekeyBatch {
+		t.Fatalf("pool after replace = %d, want a fresh batch of %d", len(published), OneTimePrekeyBatch)
+	}
+	// Every published id must be something this device's own store can
+	// actually open -- the poisoned one discarded, not sitting at the back
+	// of the queue waiting to be claimed after the fresh batch.
+	for _, k := range published {
+		if k.KeyID == 777 {
+			t.Fatal("the poisoned key is still published -- replace did not actually discard it")
+		}
+		if priv, err := c.OneTimePrekey(k.KeyID); err != nil || priv == nil {
+			t.Errorf("this device has no private half for a key (id %d) it published: priv=%v, err=%v", k.KeyID, priv, err)
+		}
+	}
+}
+
 // A session established without a one-time prekey still works -- and says so,
 // because the alternative is that it degrades silently forever.
 func TestAWithheldOneTimePrekeyIsReportedNotRefused(t *testing.T) {
@@ -560,6 +604,56 @@ func TestRecoveryReKeysOnlyEligiblePeers(t *testing.T) {
 	}
 	if len(again) != 0 {
 		t.Errorf("a second re-key straight after the first must be spaced out, got %v", again)
+	}
+}
+
+// RecoverDesyncedSessions must not stop at re-keying the peers the evidence
+// names -- it also fixes this side's own published pool, once, the first
+// time there is actually something due. A reset that resolves a genuine
+// desync but still leaves this side's own pool holding an id it minted no
+// private half for accomplishes nothing for the *next* peer who claims that
+// id: it hits the exact same failure, indistinguishable from ordinary bit
+// rot, all over again (SRV-23, found live).
+func TestRecoveryPurgesThisSidesOwnPoolWhenSomethingIsDue(t *testing.T) {
+	srv := newFakeServer(t)
+	alice := srv.account(t, "alice")
+	bob := srv.account(t, "bob")
+	bobID := identityOf(t, bob).AccountID
+	if _, err := alice.StartConversation(t.Context(), bobID, ""); err != nil {
+		t.Fatalf("StartConversation: %v", err)
+	}
+	if _, err := alice.SendText(t.Context(), bobID, "establish", SendOptions{}); err != nil {
+		t.Fatalf("SendText: %v", err)
+	}
+	deliverTo(t, bob)
+
+	// A pool entry alice's own store has no record of at all -- exactly what
+	// a stale Dart-minted key the core never learned about looks like.
+	srv.set(func(s *fakeServer) {
+		dev := s.device("alice")
+		dev.oneTimePrekeys = append([]oneTimePrekeyWire{{KeyID: 777, PubKey: "cG9pc29uZWQtcHJla2V5LWJ5dGVzLS0zMg=="}}, dev.oneTimePrekeys...)
+	})
+
+	long := time.Now().UTC().Add(-2 * AutoRekeyResponderGrace)
+	if _, err := alice.RecordDesyncEvidence(bobID, long); err != nil {
+		t.Fatalf("RecordDesyncEvidence: %v", err)
+	}
+	recovered, err := alice.RecoverDesyncedSessions(t.Context())
+	if err != nil {
+		t.Fatalf("RecoverDesyncedSessions: %v", err)
+	}
+	if len(recovered) != 1 {
+		t.Fatalf("want bob recovered so there is something for this to piggyback on, got %v", recovered)
+	}
+
+	published := srv.device("alice").oneTimePrekeys
+	for _, k := range published {
+		if k.KeyID == 777 {
+			t.Fatal("the poisoned key is still published -- recovery did not purge this side's own pool")
+		}
+		if priv, err := alice.OneTimePrekey(k.KeyID); err != nil || priv == nil {
+			t.Errorf("alice has no private half for a key (id %d) her own recovery just published", k.KeyID)
+		}
 	}
 }
 

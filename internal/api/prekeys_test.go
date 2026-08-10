@@ -116,6 +116,111 @@ func uploadPrekeysT(t *testing.T, handler http.Handler, k identityKeys, otpkCoun
 	return uploadedPrekeys{dhPriv: dhPriv, spkPriv: spkPriv, spkKeyID: spkKeyID, otpkPrivs: otpkPrivs}
 }
 
+// replaceOneTimePrekeysT re-asserts uploaded's existing dh identity and
+// signed prekey (required on every upload) alongside a fresh one-time-prekey
+// batch, with replace_one_time_prekeys set -- what
+// pkg/client.PurgeAndReplaceOneTimePrekeys actually sends.
+func replaceOneTimePrekeysT(t *testing.T, handler http.Handler, k identityKeys, uploaded uploadedPrekeys, otpkCount int) uploadedPrekeys {
+	t.Helper()
+	curve := ecdh.X25519()
+	now := time.Now().Truncate(time.Second)
+
+	dhCert, err := devicecert.SignDHIdentityCertificate(k.accountID, k.deviceID, uploaded.dhPriv.PublicKey().Bytes(), now, k.devicePriv)
+	if err != nil {
+		t.Fatalf("SignDHIdentityCertificate() error = %v", err)
+	}
+	spkCert, err := devicecert.SignSignedPrekeyCertificate(k.accountID, k.deviceID, uploaded.spkKeyID, uploaded.dhPriv.PublicKey().Bytes(), uploaded.spkPriv.PublicKey().Bytes(), now, k.devicePriv)
+	if err != nil {
+		t.Fatalf("SignSignedPrekeyCertificate() error = %v", err)
+	}
+
+	otpkPrivs := make(map[uint32]*ecdh.PrivateKey, otpkCount)
+	otpkDTOs := make([]oneTimePrekeyDTO, 0, otpkCount)
+	for i := 0; i < otpkCount; i++ {
+		priv, err := curve.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatalf("GenerateKey() error = %v", err)
+		}
+		// Deliberately disjoint from uploadPrekeysT's 100+ range, so a test
+		// can tell "a fresh key" from "an old one that should have been
+		// discarded" by id alone.
+		keyID := uint32(900 + i)
+		otpkPrivs[keyID] = priv
+		otpkDTOs = append(otpkDTOs, oneTimePrekeyDTO{KeyID: keyID, PubKey: b64(priv.PublicKey().Bytes())})
+	}
+
+	req := uploadPrekeysRequest{
+		DHIdentityCert: &dhIdentityCertDTO{
+			DHPubKey:  b64(dhCert.DHPubKey),
+			IssuedAt:  dhCert.IssuedAt.UTC().Format(time.RFC3339),
+			Signature: b64(dhCert.Signature),
+		},
+		SignedPrekey: signedPrekeyDTO{
+			KeyID:            spkCert.KeyID,
+			DHIdentityPubKey: b64(spkCert.DHIdentityPubKey),
+			PubKey:           b64(spkCert.PrekeyPubKey),
+			IssuedAt:         spkCert.IssuedAt.UTC().Format(time.RFC3339),
+			Signature:        b64(spkCert.Signature),
+		},
+		OneTimePrekeys:        otpkDTOs,
+		ReplaceOneTimePrekeys: true,
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	rec := doSignedRequest(t, handler, http.MethodPost, "/v1/devices/"+k.deviceID+"/prekeys", body, k.deviceID, k.devicePriv)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload prekeys status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+
+	return uploadedPrekeys{dhPriv: uploaded.dhPriv, spkPriv: uploaded.spkPriv, spkKeyID: uploaded.spkKeyID, otpkPrivs: otpkPrivs}
+}
+
+// A client whose published pool has drifted from its own store (SRV-23: the
+// Dart/core minting overlap) needs a real way out -- topping up only ever
+// adds more on top of the poisoned entries, and the server always hands out
+// the oldest unclaimed key first, so the poison would still be claimed
+// before any addition. replace_one_time_prekeys is that way out: it must
+// actually discard what was there, not just append alongside it.
+func TestReplaceOneTimePrekeysDiscardsTheOldPoolNotJustAddsToIt(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+	k := registerAccount(t, a)
+	initiator := registerAccount(t, a)
+
+	original := uploadPrekeysT(t, a.Router(), k, 2) // ids 100, 101
+	replaced := replaceOneTimePrekeysT(t, a.Router(), k, original, 2) // ids 900, 901
+
+	for i := 0; i < 2; i++ {
+		rec := claimBundleT(t, a.Router(), k.deviceID, initiator)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("claim %d: status = %d, body = %s", i, rec.Code, rec.Body.String())
+		}
+		var resp prekeyBundleResponse
+		decodeJSON(t, rec, &resp)
+		if resp.OneTimePrekey == nil {
+			t.Fatalf("claim %d: expected a one-time prekey", i)
+		}
+		if _, ok := original.otpkPrivs[resp.OneTimePrekey.KeyID]; ok {
+			t.Errorf("claim %d: got a discarded pre-replace key (id %d) -- replace did not actually discard the old pool", i, resp.OneTimePrekey.KeyID)
+		}
+		if _, ok := replaced.otpkPrivs[resp.OneTimePrekey.KeyID]; !ok {
+			t.Errorf("claim %d: key id %d is neither the old nor the new pool", i, resp.OneTimePrekey.KeyID)
+		}
+	}
+
+	// The pool held exactly the replacement batch -- a third claim finds it
+	// exhausted, not still holding an old entry the replace should have
+	// discarded.
+	rec := claimBundleT(t, a.Router(), k.deviceID, initiator)
+	var resp prekeyBundleResponse
+	decodeJSON(t, rec, &resp)
+	if resp.OneTimePrekey != nil {
+		t.Errorf("claim 3: got a one-time prekey (id %d), want the pool exhausted", resp.OneTimePrekey.KeyID)
+	}
+}
+
 func TestHandleUploadPrekeys(t *testing.T) {
 	a, _ := newTestAPI(t, config.PolicyOpen)
 	k := registerAccount(t, a)

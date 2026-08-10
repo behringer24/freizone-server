@@ -280,6 +280,12 @@ func (s *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 			dev.dhIdentityPub = body.DHIdentityCert.DHPubKey
 		}
 		dev.signedPrekey = body.SignedPrekey
+		if body.ReplaceOneTimePrekeys {
+			// Mirrors internal/store.DeleteOneTimePrekeys: discard the whole
+			// pool rather than append to it. See
+			// Client.PurgeAndReplaceOneTimePrekeys.
+			dev.oneTimePrekeys = nil
+		}
 		dev.oneTimePrekeys = append(dev.oneTimePrekeys, body.OneTimePrekeys...)
 		s.writeJSON(w, map[string]any{"ok": true})
 

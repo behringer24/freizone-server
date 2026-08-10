@@ -20,7 +20,9 @@ const x25519PubKeySize = 32
 
 // handleUploadPrekeys uploads/replaces a device's X3DH key material: its
 // long-term DH identity key (on first upload, or to rotate), its current
-// signed prekey, and a batch of one-time prekeys to append to its pool.
+// signed prekey, and a batch of one-time prekeys -- appended to its pool by
+// default, or replacing it outright when ReplaceOneTimePrekeys asks for that
+// (see uploadPrekeysRequest).
 func (a *API) handleUploadPrekeys(w http.ResponseWriter, r *http.Request) {
 	identity, ok := auth.IdentityFromContext(r.Context())
 	if !ok {
@@ -143,6 +145,13 @@ func (a *API) handleUploadPrekeys(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
 		return
+	}
+
+	if req.ReplaceOneTimePrekeys {
+		if err := store.DeleteOneTimePrekeys(a.DB, deviceID); err != nil {
+			writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+			return
+		}
 	}
 
 	if len(req.OneTimePrekeys) > 0 {
