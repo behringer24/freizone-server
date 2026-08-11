@@ -398,11 +398,27 @@ func (c *Client) SetGroupDelivery(chatID, messageID string, delivery GroupDelive
 // replayed in full on every read.
 const reasonLimit = 200
 
+// Cut from the middle, not the end. A wrapped error reads outside in: what was
+// attempted comes first and why it failed comes last, and the why is the half
+// worth keeping. Cutting only the tail is how a real one came out against a
+// stopped server -- "posting their copy: client: POST /v1/federation/messages:
+// Post "http://...": dial tcp [fe80::...]:18081: connectex: No connection
+// could be m..." -- three ways of naming the same request, and the one clause
+// that explains anything lost to the ellipsis.
 func truncateReason(reason string) string {
 	if len(reason) <= reasonLimit {
 		return reason
 	}
-	return reason[:reasonLimit] + "..."
+	// By rune: an error can carry a server's message, and cutting a multi-byte
+	// character in half writes a broken one into the transcript for good.
+	r := []rune(reason)
+	if len(r) <= reasonLimit {
+		return reason
+	}
+	const ellipsis = " ... "
+	head := (reasonLimit - len(ellipsis)) * 2 / 3
+	tail := reasonLimit - len(ellipsis) - head
+	return string(r[:head]) + ellipsis + string(r[len(r)-tail:])
 }
 
 // Messages returns a chat's whole transcript in arrival order.

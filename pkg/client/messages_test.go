@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func at(minute int) time.Time {
@@ -469,5 +470,41 @@ func TestLastMessageIsCorrectOnALogBeyondTheWindow(t *testing.T) {
 	}
 	if last == nil || last.ID != "m000399" {
 		t.Fatalf("last message: want m000399, got %v", last)
+	}
+}
+
+// A long reason keeps both ends: what was attempted, and why it failed.
+//
+// From a real run against a stopped server, where the old rule -- keep the
+// first 200 bytes -- left the reader with three restatements of the request
+// and no cause at all.
+func TestALongFailureReasonKeepsWhyItFailed(t *testing.T) {
+	const reason = `posting their copy: client: POST /v1/federation/messages: ` +
+		`Post "http://aff-abe:18081/v1/federation/messages": dial tcp ` +
+		`[fe80::239e:35de:3167:f800%Ethernet 2]:18081: connectex: No connection ` +
+		`could be made because the target machine actively refused it.`
+
+	got := truncateReason(reason)
+	if len([]rune(got)) > reasonLimit {
+		t.Errorf("a reason of %d runes was written to the transcript", len([]rune(got)))
+	}
+	if !strings.HasPrefix(got, "posting their copy:") {
+		t.Errorf("the reason no longer says what was attempted: %q", got)
+	}
+	if !strings.HasSuffix(got, "actively refused it.") {
+		t.Errorf("the reason no longer says why it failed: %q", got)
+	}
+}
+
+// Cutting by byte would leave half a character behind, and a transcript is
+// written once and read forever.
+func TestATruncatedReasonIsStillValidText(t *testing.T) {
+	reason := "posting their copy: " + strings.Repeat("ü", reasonLimit)
+	got := truncateReason(reason)
+	if !utf8.ValidString(got) {
+		t.Errorf("truncation produced invalid UTF-8: %q", got)
+	}
+	if strings.ContainsRune(got, utf8.RuneError) {
+		t.Errorf("truncation broke a character: %q", got)
 	}
 }
