@@ -873,6 +873,13 @@ func (c *Client) ReconcileGroup(ctx context.Context, outcome GroupOutcome, peerA
 // The founder first because they are the one member who cannot have left, then
 // anybody who has joined; a pending invitee may hold nothing yet.
 //
+// Asked only where there is reason to think we are behind, which is what
+// keeps this from being pure traffic: a group everybody agrees about is left
+// alone. See groupSyncWorthAsking -- the first version fired on every open,
+// and on a device holding a dozen accounts that were members of the same
+// group it turned each chat switch into a burst of envelopes to accounts on
+// the same phone, every one of them costing the recipient a push wake.
+//
 // Best-effort by design: no debt is recorded and nothing is owed to anyone,
 // because this asks for something we lack rather than sending something
 // somebody else needs. The per-group cooldown is [AskForGroupFacts]'s.
@@ -893,7 +900,43 @@ func (c *Client) RequestGroupSync(ctx context.Context, groupID string) error {
 	if target == nil {
 		return nil
 	}
+	worth, err := c.groupSyncWorthAsking(groupID, membership.StateHash)
+	if err != nil || !worth {
+		return err
+	}
 	return c.AskForGroupFacts(ctx, groupID, target.AccountID, target.Server)
+}
+
+// groupSyncWorthAsking reports whether anything suggests this device is behind
+// on a group's facts.
+//
+// The evidence is the state hash each member last stated, which every group
+// envelope carries and [Client.RecordGroupPeerStateHash] files. One that
+// differs from ours means the two of us hold different fact sets -- it never
+// says which of us is behind, which is exactly why asking is worth an envelope.
+// Every member we have heard from agreeing with us means there is nothing to
+// ask for, and the cheapest thing to send is nothing.
+//
+// Having heard from nobody counts as worth asking: a device that has just been
+// set up, or a group nobody has spoken in since, is the case this exists for.
+// The per-group cooldown is what keeps that from repeating.
+func (c *Client) groupSyncWorthAsking(groupID, ours string) (bool, error) {
+	if ours == "" {
+		return true, nil
+	}
+	hashes, err := c.GroupPeerStateHashes(groupID)
+	if err != nil {
+		return false, err
+	}
+	if len(hashes) == 0 {
+		return true, nil
+	}
+	for _, theirs := range hashes {
+		if theirs != "" && theirs != ours {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // syncTargetFor picks the one member worth asking, or nil for a group with

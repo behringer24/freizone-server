@@ -762,11 +762,28 @@ func TestRequestGroupSyncAsksTheFounderFirst(t *testing.T) {
 	alice := srv.account(t, "alice")
 	bob := srv.account(t, "bob")
 	carol := srv.account(t, "carol")
+	aliceID := identityOf(t, alice).AccountID
 
 	// Alice founds it, so bob and carol both have a founder to prefer.
 	groupID := groupWith(t, srv, alice, bob, carol)
 
+	// A group everybody agrees about is left alone. This is what stops the
+	// question being pure traffic: it runs whenever a group screen opens, and
+	// on a device holding a dozen accounts in one group the answer is almost
+	// always "nothing to ask".
 	before := srv.queueLen("alice")
+	if err := bob.RequestGroupSync(t.Context(), groupID); err != nil {
+		t.Fatalf("RequestGroupSync while level: %v", err)
+	}
+	if got := srv.queueLen("alice") - before; got != 0 {
+		t.Errorf("a converged group must ask nobody, got %d envelopes", got)
+	}
+
+	// Alice's last word said a fact set we do not share. Which of us is behind
+	// is exactly what a hash cannot say, which is why it is worth an envelope.
+	if err := bob.RecordGroupPeerStateHash(groupID, aliceID, "a-hash-we-do-not-share"); err != nil {
+		t.Fatalf("RecordGroupPeerStateHash: %v", err)
+	}
 	if err := bob.RequestGroupSync(t.Context(), groupID); err != nil {
 		t.Fatalf("RequestGroupSync: %v", err)
 	}
@@ -786,6 +803,9 @@ func TestRequestGroupSyncAsksTheFounderFirst(t *testing.T) {
 	}
 
 	// The founder asking picks somebody else rather than nobody.
+	if err := alice.RecordGroupPeerStateHash(groupID, identityOf(t, bob).AccountID, "nor this one"); err != nil {
+		t.Fatalf("RecordGroupPeerStateHash: %v", err)
+	}
 	beforeBob := srv.queueLen("bob")
 	if err := alice.RequestGroupSync(t.Context(), groupID); err != nil {
 		t.Fatalf("the founder asking: %v", err)
