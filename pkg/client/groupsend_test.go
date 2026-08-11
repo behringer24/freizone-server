@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net/http"
 	"testing"
+	"time"
 )
 
 // Groups, end to end: three real clients through the stub server, every
@@ -392,6 +393,147 @@ func TestAGroupReceiptIsFiledPerMember(t *testing.T) {
 	}
 }
 
+// A receipt that would say nothing new is not sent again, so opening a group
+// twice does not cost a second round of them.
+func TestAGroupReceiptIsNotRepeated(t *testing.T) {
+	srv := newFakeServer(t)
+	alice := srv.account(t, "alice")
+	bob := srv.account(t, "bob")
+	aliceID := identityOf(t, alice).AccountID
+
+	groupID := groupWith(t, srv, alice, bob)
+	if _, err := alice.SendGroupText(t.Context(), groupID, "zweimal lesen", SendOptions{}); err != nil {
+		t.Fatalf("SendGroupText: %v", err)
+	}
+	got := syncGroups(t, bob)
+	if len(got) == 0 || got[0].Group == nil || got[0].Group.DeliveredUpTo == nil {
+		t.Fatalf("bob has nothing to confirm: %+v", got)
+	}
+	upTo := *got[0].Group.DeliveredUpTo
+
+	before := srv.queueLen("alice")
+	for range 3 {
+		if err := bob.SendGroupReceipt(t.Context(), groupID, aliceID, ReceiptRead, upTo); err != nil {
+			t.Fatalf("SendGroupReceipt: %v", err)
+		}
+	}
+	if got := srv.queueLen("alice") - before; got != 1 {
+		t.Errorf("three identical receipts should cost one envelope, got %d", got)
+	}
+
+	// An older one says even less, and must not walk the record back either.
+	if err := bob.SendGroupReceipt(t.Context(), groupID, aliceID, ReceiptRead, upTo.Add(-time.Minute)); err != nil {
+		t.Fatalf("SendGroupReceipt older: %v", err)
+	}
+	if got := srv.queueLen("alice") - before; got != 1 {
+		t.Errorf("an older receipt should not be sent, got %d envelopes", got)
+	}
+
+	// A newer one does say something, and goes.
+	if err := bob.SendGroupReceipt(t.Context(), groupID, aliceID, ReceiptRead, upTo.Add(time.Minute)); err != nil {
+		t.Fatalf("SendGroupReceipt newer: %v", err)
+	}
+	if got := srv.queueLen("alice") - before; got != 2 {
+		t.Errorf("a newer receipt should be sent, got %d envelopes", got)
+	}
+
+	// Delivered is tracked apart from read: the same anchor still owes one.
+	if err := bob.SendGroupReceipt(t.Context(), groupID, aliceID, ReceiptDelivered, upTo); err != nil {
+		t.Fatalf("SendGroupReceipt delivered: %v", err)
+	}
+	if got := srv.queueLen("alice") - before; got != 3 {
+		t.Errorf("a delivered receipt is not a repeat of a read one, got %d envelopes", got)
+	}
+}
+
+// The watermark a member sends back reaches the author's own anchor for the
+// message it confirms.
+//
+// It travels through receiptTimeLayout, so an anchor minted at a finer
+// precision than that format carries would sit just above every confirmation
+// of it and the newest message's tick would never turn -- silently, and only
+// for the message a sender is actually looking at. See receiptClock.
+func TestAReceiptWatermarkReachesTheAuthorsAnchor(t *testing.T) {
+	srv := newFakeServer(t)
+	alice := srv.account(t, "alice")
+	bob := srv.account(t, "bob")
+	aliceID := identityOf(t, alice).AccountID
+	bobID := identityOf(t, bob).AccountID
+
+	groupID := groupWith(t, srv, alice, bob)
+	sent, err := alice.SendGroupText(t.Context(), groupID, "erreicht mich das?", SendOptions{})
+	if err != nil {
+		t.Fatalf("SendGroupText: %v", err)
+	}
+	got := syncGroups(t, bob)
+	if len(got) == 0 || got[0].Group == nil || got[0].Group.DeliveredUpTo == nil {
+		t.Fatalf("bob has nothing to confirm: %+v", got)
+	}
+	if err := bob.SendGroupReceipt(t.Context(), groupID, aliceID, ReceiptRead, *got[0].Group.DeliveredUpTo); err != nil {
+		t.Fatalf("SendGroupReceipt: %v", err)
+	}
+	syncGroups(t, alice)
+
+	chat, err := alice.GroupChat(groupID)
+	if err != nil || chat == nil {
+		t.Fatalf("GroupChat: %v, %v", chat, err)
+	}
+	mark := chat.MemberReceipts[bobID].ReadUpTo
+	if mark == nil {
+		t.Fatal("bob's watermark was not filed")
+	}
+	anchor := sent.Message.Timestamp
+	if mark.Before(anchor) {
+		t.Errorf("watermark %s is short of the anchor %s it confirms, by %s",
+			mark.Format(time.RFC3339Nano), anchor.Format(time.RFC3339Nano), anchor.Sub(*mark))
+	}
+}
+
+// The same round trip in a one-to-one conversation, which mints its anchor the
+// same way and echoes it back through the same format.
+func TestAOneToOneReceiptReachesTheSendersAnchor(t *testing.T) {
+	srv := newFakeServer(t)
+	alice := srv.account(t, "alice")
+	bob := srv.account(t, "bob")
+	aliceID := identityOf(t, alice).AccountID
+	bobID := identityOf(t, bob).AccountID
+
+	if _, err := alice.StartConversation(t.Context(), bobID, ""); err != nil {
+		t.Fatalf("StartConversation: %v", err)
+	}
+	sent, err := alice.SendText(t.Context(), bobID, "und hier?", SendOptions{})
+	if err != nil {
+		t.Fatalf("SendText: %v", err)
+	}
+	var upTo *time.Time
+	for _, res := range deliverTo(t, bob) {
+		if res.DeliveredUpTo != nil {
+			upTo = res.DeliveredUpTo
+		}
+	}
+	if upTo == nil {
+		t.Fatal("bob has nothing to confirm")
+	}
+	if err := bob.SendReceipt(t.Context(), aliceID, ReceiptRead, *upTo); err != nil {
+		t.Fatalf("SendReceipt: %v", err)
+	}
+	deliverTo(t, alice)
+
+	convo, err := alice.Conversation(bobID)
+	if err != nil || convo == nil {
+		t.Fatalf("Conversation: %v, %v", convo, err)
+	}
+	if convo.PeerReadUpTo == nil {
+		t.Fatal("bob's watermark was not filed")
+	}
+	anchor := sent.Message.Timestamp
+	if convo.PeerReadUpTo.Before(anchor) {
+		t.Errorf("watermark %s is short of the anchor %s it confirms, by %s",
+			convo.PeerReadUpTo.Format(time.RFC3339Nano), anchor.Format(time.RFC3339Nano),
+			anchor.Sub(*convo.PeerReadUpTo))
+	}
+}
+
 // A picture is uploaded once for the whole group, granted to every member's
 // device rather than copied per member.
 func TestAGroupPictureIsUploadedOnce(t *testing.T) {
@@ -505,6 +647,167 @@ func TestAnActionTheFoldRejectsIsNotSent(t *testing.T) {
 	if err != nil || memberOf(membership, aliceID) == nil {
 		t.Error("the rejected action changed the local view")
 	}
+}
+
+// Opening a group asks somebody for the facts, rather than waiting for a
+// member to volunteer them.
+//
+// Reconciliation is otherwise reactive only: a hash says "we differ" and never
+// who is behind, so a device that missed a fact and does not itself write stays
+// behind indefinitely.
+func TestRequestGroupSyncAsksTheFounderFirst(t *testing.T) {
+	srv := newFakeServer(t)
+	alice := srv.account(t, "alice")
+	bob := srv.account(t, "bob")
+	carol := srv.account(t, "carol")
+
+	// Alice founds it, so bob and carol both have a founder to prefer.
+	groupID := groupWith(t, srv, alice, bob, carol)
+
+	before := srv.queueLen("alice")
+	if err := bob.RequestGroupSync(t.Context(), groupID); err != nil {
+		t.Fatalf("RequestGroupSync: %v", err)
+	}
+	if got := srv.queueLen("alice") - before; got != 1 {
+		t.Errorf("the founder should have been asked, got %d envelopes", got)
+	}
+	if got := srv.queueLen("carol"); got != 0 {
+		t.Errorf("only one member is asked, carol got %d", got)
+	}
+
+	// Rate limited per group: opening a screen repeatedly must not ask again.
+	if err := bob.RequestGroupSync(t.Context(), groupID); err != nil {
+		t.Fatalf("RequestGroupSync again: %v", err)
+	}
+	if got := srv.queueLen("alice") - before; got != 1 {
+		t.Errorf("a second ask inside the cooldown should be skipped, got %d", got)
+	}
+
+	// The founder asking picks somebody else rather than nobody.
+	beforeBob := srv.queueLen("bob")
+	if err := alice.RequestGroupSync(t.Context(), groupID); err != nil {
+		t.Fatalf("the founder asking: %v", err)
+	}
+	if srv.queueLen("bob")-beforeBob != 1 && srv.queueLen("carol") != 1 {
+		t.Error("the founder must ask one of the others, not nobody")
+	}
+}
+
+// A copy that failed says why, and stops saying it once it arrives.
+//
+// Without this a fan-out records a bare state, and the one question worth
+// asking about a message that did not arrive -- why not -- has no answer
+// anywhere on the device.
+func TestAFailedGroupCopySaysWhy(t *testing.T) {
+	srv := newFakeServer(t)
+	alice := srv.account(t, "alice")
+	bob := srv.account(t, "bob")
+	carol := srv.account(t, "carol")
+	bobID := identityOf(t, bob).AccountID
+
+	groupID := groupWith(t, srv, alice, bob, carol)
+	srv.set(func(s *fakeServer) { s.failAccounts = map[string]bool{bobID: true} })
+	sent, err := alice.SendGroupText(t.Context(), groupID, "kommt das an?", SendOptions{})
+	if err != nil {
+		t.Fatalf("SendGroupText: %v", err)
+	}
+	for _, d := range sent.Message.Deliveries {
+		switch {
+		case d.AccountID == bobID && d.Error == "":
+			t.Error("bob's copy failed without saying why")
+		case d.AccountID != bobID && d.Error != "":
+			t.Errorf("a copy that arrived carries a reason: %q", d.Error)
+		}
+	}
+
+	// And it is on disk, not only in what the send returned: a fan-out that
+	// failed overnight is looked at the next morning.
+	reloaded := deliveryOf(t, alice, groupID, sent.Message.ID, bobID)
+	if reloaded.Error == "" {
+		t.Error("the reason did not survive being replayed from the log")
+	}
+
+	srv.set(func(s *fakeServer) { s.failAccounts = nil })
+	if _, err := alice.RetryGroupMessage(t.Context(), groupID, sent.Message.ID); err != nil {
+		t.Fatalf("RetryGroupMessage: %v", err)
+	}
+	arrived := deliveryOf(t, alice, groupID, sent.Message.ID, bobID)
+	if arrived.State != SendSent || arrived.Error != "" {
+		t.Errorf("a copy that arrived still carries its old failure: %+v", arrived)
+	}
+}
+
+// A copy owed to somebody no longer in the group is settled rather than
+// retried forever.
+//
+// Nothing is ever sent to them again -- that would be group traffic to an
+// outsider -- so leaving the record failed would leave the message permanently
+// failed and its retry button permanently useless.
+func TestARetryStopsOwingACopyToANonMember(t *testing.T) {
+	srv := newFakeServer(t)
+	alice := srv.account(t, "alice")
+	bob := srv.account(t, "bob")
+	carol := srv.account(t, "carol")
+	carolID := identityOf(t, carol).AccountID
+
+	groupID := groupWith(t, srv, alice, bob, carol)
+	srv.set(func(s *fakeServer) { s.failAccounts = map[string]bool{carolID: true} })
+	sent, err := alice.SendGroupText(t.Context(), groupID, "und tschüss", SendOptions{})
+	if err != nil {
+		t.Fatalf("SendGroupText: %v", err)
+	}
+	if got := deliveryOf(t, alice, groupID, sent.Message.ID, carolID); got.State != SendFailed {
+		t.Fatalf("carol's copy should have failed, got %s", got.State)
+	}
+
+	// Carol leaves. Her copy is no longer owed, however reachable her server
+	// has become in the meantime.
+	if err := alice.RemoveFromGroup(t.Context(), groupID, carolID); err != nil {
+		t.Fatalf("RemoveFromGroup: %v", err)
+	}
+	srv.set(func(s *fakeServer) { s.failAccounts = nil })
+
+	before := srv.queueLen("carol")
+	retried, err := alice.RetryGroupMessage(t.Context(), groupID, sent.Message.ID)
+	if err != nil {
+		t.Fatalf("RetryGroupMessage: %v", err)
+	}
+	if srv.queueLen("carol") != before {
+		t.Error("a member who left must not be sent the message after all")
+	}
+	if retried.Message.SendState != SendSent {
+		t.Errorf("retried message: want sent, got %s", retried.Message.SendState)
+	}
+	for _, d := range retried.Message.Deliveries {
+		if d.State != SendSent {
+			t.Errorf("delivery to %s: want sent, got %s -- a copy nothing will ever "+
+				"retry must not stay failed", d.AccountID, d.State)
+		}
+	}
+	if got := deliveryOf(t, alice, groupID, sent.Message.ID, carolID); got.State != SendSent || got.Error != "" {
+		t.Errorf("carol's settled copy did not reach the log: %+v", got)
+	}
+}
+
+// deliveryOf re-reads one recipient's delivery record from the transcript.
+func deliveryOf(t *testing.T, c *Client, groupID, messageID, accountID string) GroupDelivery {
+	t.Helper()
+	msgs, err := c.Messages(groupID)
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+	for _, m := range msgs {
+		if m.ID != messageID {
+			continue
+		}
+		for _, d := range m.Deliveries {
+			if d.AccountID == accountID {
+				return d
+			}
+		}
+	}
+	t.Fatalf("no delivery to %s for message %s", accountID, messageID)
+	return GroupDelivery{}
 }
 
 // A group send that reaches one member but not the other is retried into

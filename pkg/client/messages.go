@@ -93,6 +93,13 @@ type GroupDelivery struct {
 
 	State SendState `json:"state"`
 
+	// Error is why this copy failed, in the words of whatever refused it, and
+	// empty for one that did not fail. Persisted rather than kept for the run
+	// that produced it: a fan-out that failed overnight is looked at in the
+	// morning, and "failed" with no reason is a dead end for whoever has to act
+	// on it. Local and diagnostic -- it never goes on the wire.
+	Error string `json:"error,omitempty"`
+
 	// AttachmentSkipped: they got the caption but not the picture, because
 	// their server does not store attachments or would not take this one. Not a
 	// delivery failure, and permanent -- a retry cannot fix it, since a
@@ -157,8 +164,9 @@ type logRecord struct {
 	Attachments          []Attachment    `json:"attachments,omitempty"`
 	Deliveries           []GroupDelivery `json:"deliveries,omitempty"`
 
-	// delivery: which recipient's copy this concerns
+	// delivery: which recipient's copy this concerns, and why it failed
 	AccountID string `json:"to,omitempty"`
+	Error     string `json:"error,omitempty"`
 
 	// pin
 	Pinned bool `json:"pinned,omitempty"`
@@ -244,6 +252,10 @@ func (c *Client) readTranscript(chatID string) (*transcript, error) {
 				for i := range msg.Deliveries {
 					if msg.Deliveries[i].AccountID == rec.AccountID {
 						msg.Deliveries[i].State = rec.SendState
+						// Written unconditionally, so a copy that succeeds on
+						// a later attempt loses the reason the earlier one
+						// failed rather than carrying it forever.
+						msg.Deliveries[i].Error = rec.Error
 						break
 					}
 				}
@@ -356,12 +368,29 @@ func (c *Client) SetMessageAttachments(chatID, messageID string, attachments []A
 
 // SetGroupDeliveryState moves one recipient.s copy of a group message, so a
 // retry can address only the copies that failed.
-func (c *Client) SetGroupDeliveryState(chatID, messageID, accountID string, state SendState) error {
+//
+// reason is why, for a copy that failed, and is cleared by passing "" -- which
+// is what an attempt that finally succeeded does, so the record never keeps a
+// stale explanation for a copy that has since arrived.
+func (c *Client) SetGroupDeliveryState(chatID, messageID, accountID string, state SendState, reason string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.appendRecord(chatID, logRecord{
-		T: recDelivery, ID: messageID, AccountID: accountID, SendState: state,
+		T: recDelivery, ID: messageID, AccountID: accountID,
+		SendState: state, Error: truncateReason(reason),
 	})
+}
+
+// reasonLimit caps what one failure may write into the log. An error carrying a
+// server's response body is a diagnostic, not a transcript, and a transcript is
+// replayed in full on every read.
+const reasonLimit = 200
+
+func truncateReason(reason string) string {
+	if len(reason) <= reasonLimit {
+		return reason
+	}
+	return reason[:reasonLimit] + "..."
 }
 
 // Messages returns a chat's whole transcript in arrival order.
@@ -452,6 +481,7 @@ func applyLaterChanges(lines [][]byte, msg *Message) {
 			for j := range msg.Deliveries {
 				if msg.Deliveries[j].AccountID == rec.AccountID {
 					msg.Deliveries[j].State = rec.SendState
+					msg.Deliveries[j].Error = rec.Error
 				}
 			}
 		}

@@ -102,7 +102,7 @@ func (c *Client) SendText(ctx context.Context, peerAccountID, text string, opts 
 	if now.IsZero() {
 		now = time.Now()
 	}
-	now = now.UTC()
+	now = receiptClock(now)
 
 	id, err := c.Identity()
 	if err != nil {
@@ -819,3 +819,21 @@ func signDeviceCert(id Identity, issuedAt time.Time) (map[string]any, error) {
 // required -- but emitting the same shape keeps comparisons unambiguous and a
 // transcript readable by eye.
 const receiptTimeLayout = "2006-01-02T15:04:05.000Z"
+
+// receiptPrecision is what receiptTimeLayout can actually carry.
+const receiptPrecision = time.Millisecond
+
+// receiptClock rounds an instant down to the precision a receipt survives.
+//
+// A message's stored timestamp is the anchor a receipt for it must echo back,
+// and that echo makes the round trip through receiptTimeLayout -- so a stamp
+// kept any finer can never be reached by its own confirmation: the recipient
+// returns the truncated value, the author compares it against the untruncated
+// one, and the newest message's tick never turns. (Older ones survive on the
+// next message's watermark, which is why this reads as "only the last message
+// is stuck" rather than as receipts being broken.)
+//
+// Truncating where the stamp is minted, rather than tolerating a gap at every
+// comparison, keeps one rule -- the anchor IS what went on the wire -- instead
+// of two clocks and an epsilon each place they meet.
+func receiptClock(t time.Time) time.Time { return t.UTC().Truncate(receiptPrecision) }

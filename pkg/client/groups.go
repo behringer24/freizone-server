@@ -527,14 +527,23 @@ type GroupChat struct {
 
 // MemberReceipt is one member.s pair of watermarks. Cumulative, so one
 // arriving late is harmless: it moves a monotonic value and touches no message.
+// The Sent* pair is the mirror image: how far we have already told *them*
+// about *their* messages. Kept for the same reason [Conversation] keeps it, so
+// an identical receipt is not re-sent every time the group is opened.
 type MemberReceipt struct {
 	DeliveredUpTo *time.Time
 	ReadUpTo      *time.Time
+
+	SentDeliveredReceiptUpTo *time.Time
+	SentReadReceiptUpTo      *time.Time
 }
 
 type memberReceiptFile struct {
 	DeliveredUpTo string `json:"delivered_up_to,omitempty"`
 	ReadUpTo      string `json:"read_up_to,omitempty"`
+
+	SentDeliveredReceiptUpTo string `json:"sent_delivered_receipt_up_to,omitempty"`
+	SentReadReceiptUpTo      string `json:"sent_read_receipt_up_to,omitempty"`
 }
 
 type groupChatFile struct {
@@ -573,6 +582,12 @@ func (c *Client) groupChatLocked(groupID string) (*GroupChat, error) {
 		if receipt.ReadUpTo, err = parseTime(r.ReadUpTo); err != nil {
 			return nil, err
 		}
+		if receipt.SentDeliveredReceiptUpTo, err = parseTime(r.SentDeliveredReceiptUpTo); err != nil {
+			return nil, err
+		}
+		if receipt.SentReadReceiptUpTo, err = parseTime(r.SentReadReceiptUpTo); err != nil {
+			return nil, err
+		}
 		if chat.MemberReceipts == nil {
 			chat.MemberReceipts = map[string]MemberReceipt{}
 		}
@@ -599,8 +614,10 @@ func (c *Client) PutGroupChat(chat GroupChat) error {
 			receipts = map[string]memberReceiptFile{}
 		}
 		receipts[account] = memberReceiptFile{
-			DeliveredUpTo: formatTime(r.DeliveredUpTo),
-			ReadUpTo:      formatTime(r.ReadUpTo),
+			DeliveredUpTo:            formatTime(r.DeliveredUpTo),
+			ReadUpTo:                 formatTime(r.ReadUpTo),
+			SentDeliveredReceiptUpTo: formatTime(r.SentDeliveredReceiptUpTo),
+			SentReadReceiptUpTo:      formatTime(r.SentReadReceiptUpTo),
 		}
 	}
 	return writeJSON(path, groupChatFile{

@@ -168,7 +168,10 @@ func (c *Client) HandleIncoming(msg IncomingMessage, opts ReceiveOptions) (Recei
 	if now.IsZero() {
 		now = time.Now()
 	}
-	now = now.UTC()
+	// Same clock as the send side: for a sender predating sent_at this arrival
+	// time IS the anchor a receipt echoes back, so it has to survive the wire
+	// format too -- see receiptClock.
+	now = receiptClock(now)
 
 	res, err := c.receive(msg, opts, now)
 	if err == nil {

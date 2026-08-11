@@ -198,7 +198,7 @@ func TestSetSendStateAndDeliveryState(t *testing.T) {
 		t.Fatalf("SetMessageSendState: %v", err)
 	}
 	// A group send is N states, and a retry addresses only the ones that failed.
-	if err := c.SetGroupDeliveryState("chat", "m1", "fz1b", SendFailed); err != nil {
+	if err := c.SetGroupDeliveryState("chat", "m1", "fz1b", SendFailed, "their server said no"); err != nil {
 		t.Fatalf("SetGroupDeliveryState: %v", err)
 	}
 
@@ -209,12 +209,35 @@ func TestSetSendStateAndDeliveryState(t *testing.T) {
 	if last.SendState != SendSent {
 		t.Errorf("send state: want %q, got %q", SendSent, last.SendState)
 	}
-	states := map[string]SendState{}
+	byAccount := map[string]GroupDelivery{}
 	for _, d := range last.Deliveries {
-		states[d.AccountID] = d.State
+		byAccount[d.AccountID] = d
 	}
-	if states["fz1a"] != SendPending || states["fz1b"] != SendFailed {
-		t.Errorf("per-recipient states not independent: %v", states)
+	if byAccount["fz1a"].State != SendPending || byAccount["fz1b"].State != SendFailed {
+		t.Errorf("per-recipient states not independent: %+v", byAccount)
+	}
+	// The reason rides with the state, so a sheet can say why rather than only
+	// that -- and it survives being replayed from the log.
+	if got := byAccount["fz1b"].Error; got != "their server said no" {
+		t.Errorf("failure reason: want %q, got %q", "their server said no", got)
+	}
+	if got := byAccount["fz1a"].Error; got != "" {
+		t.Errorf("a copy that did not fail must carry no reason, got %q", got)
+	}
+
+	// Succeeding later clears it: a reason that outlives its failure is worse
+	// than none.
+	if err := c.SetGroupDeliveryState("chat", "m1", "fz1b", SendSent, ""); err != nil {
+		t.Fatalf("SetGroupDeliveryState again: %v", err)
+	}
+	last, err = c.LastMessage("chat")
+	if err != nil {
+		t.Fatalf("LastMessage: %v", err)
+	}
+	for _, d := range last.Deliveries {
+		if d.AccountID == "fz1b" && (d.State != SendSent || d.Error != "") {
+			t.Errorf("a copy that arrived still carries a failure: %+v", d)
+		}
 	}
 }
 

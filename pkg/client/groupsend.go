@@ -45,7 +45,7 @@ func (c *Client) SendGroupText(ctx context.Context, groupID, text string, opts S
 	if now.IsZero() {
 		now = time.Now()
 	}
-	now = now.UTC()
+	now = receiptClock(now)
 
 	id, err := c.Identity()
 	if err != nil {
@@ -222,23 +222,44 @@ func (c *Client) RetryGroupMessage(ctx context.Context, groupID, messageID strin
 		return SendResult{}, fmt.Errorf("client: group %s has been dissolved", groupID)
 	}
 
-	pending := map[string]bool{}
-	for _, d := range line.Deliveries {
-		if d.State != SendSent {
-			pending[d.AccountID] = true
-		}
+	joined := map[string]group.Member{}
+	for _, m := range joinedMembers(membership, id.AccountID) {
+		joined[m.AccountID] = m
 	}
 	var recipients []group.Member
-	for _, m := range joinedMembers(membership, id.AccountID) {
-		if pending[m.AccountID] {
-			recipients = append(recipients, m)
+	for i := range line.Deliveries {
+		d := &line.Deliveries[i]
+		if d.State == SendSent {
+			continue
 		}
+		m, owed := joined[d.AccountID]
+		if !owed {
+			// Not a member this device knows to be in the group any more --
+			// removed, gone, or an accept that never reached these facts. Their
+			// copy is no longer owed, and sending it would be group traffic to
+			// somebody outside the group.
+			//
+			// Settled here rather than left alone, because a delivery no retry
+			// will ever address again is a failure with no way out: the caller
+			// reads the message's state off these records (see
+			// StoredMessage.aggregateSendState), so one stuck copy means a
+			// permanently failed message and a retry button that does nothing
+			// however often it is pressed.
+			d.State = SendSent
+			d.Error = ""
+			if err := c.SetGroupDeliveryState(groupID, messageID, d.AccountID, SendSent, ""); err != nil {
+				return SendResult{}, err
+			}
+			continue
+		}
+		recipients = append(recipients, m)
 	}
 	if len(recipients) == 0 {
-		// Every recorded delivery already succeeded -- the aggregate state was
-		// [SendFailed] for a reason unrelated to any one member (or every member
-		// who was behind has since left). Report it as sent rather than doing
-		// nothing silently.
+		// Every recorded delivery already succeeded, or every member who was
+		// behind has since left -- in which case the loop above has just
+		// settled their records, so this really is nothing left to send rather
+		// than a failure being papered over. Report it as sent rather than
+		// doing nothing silently.
 		if err := c.SetMessageSendState(groupID, messageID, SendSent); err != nil {
 			return SendResult{}, err
 		}
@@ -367,7 +388,13 @@ func (c *Client) fanOut(ctx context.Context, groupID string, plaintext []byte, r
 		}
 		copy, err := c.prepareCopy(ctx, m, id.Server, plaintext)
 		if err != nil {
-			deliveries = append(deliveries, GroupDelivery{AccountID: m.AccountID, State: SendFailed})
+			// Never even encrypted: their device could not be resolved, or no
+			// session could be built. Worth saying so, since it is a different
+			// problem from a copy the network lost.
+			deliveries = append(deliveries, GroupDelivery{
+				AccountID: m.AccountID, State: SendFailed,
+				Error: fmt.Sprintf("preparing their copy: %v", err),
+			})
 			continue
 		}
 		copies = append(copies, copy)
@@ -387,11 +414,18 @@ func (c *Client) fanOut(ctx context.Context, groupID string, plaintext []byte, r
 	}
 	sort.Strings(servers)
 
-	sent := map[string]bool{}
+	// nil for a copy the recipient's server took, the refusal itself otherwise.
+	// Every prepared copy has an entry, which is what lets a missing one below
+	// be treated as a failure rather than read as success.
+	posted := map[string]error{}
 	for _, server := range servers {
-		for account, ok := range c.deliverToServer(ctx, server, byServer[server]) {
-			sent[account] = ok
+		for account, err := range c.deliverToServer(ctx, server, byServer[server]) {
+			posted[account] = err
 		}
+	}
+	sent := func(account string) bool {
+		err, attempted := posted[account]
+		return attempted && err == nil
 	}
 	// A session built for a copy that never left has to go with it. The peer
 	// never saw the prekey block, so keeping it would mean every later message
@@ -399,7 +433,7 @@ func (c *Client) fanOut(ctx context.Context, groupID string, plaintext []byte, r
 	// good. Only the establishment is undone; an advance on a session they
 	// already hold is left, because other copies rode on it.
 	for _, copy := range copies {
-		if copy.established && !sent[copy.member.AccountID] {
+		if copy.established && !sent(copy.member.AccountID) {
 			if err := c.DeleteSession(copy.member.AccountID, Sending); err != nil {
 				return deliveries, err
 			}
@@ -409,18 +443,39 @@ func (c *Client) fanOut(ctx context.Context, groupID string, plaintext []byte, r
 		if deliveries[i].State != SendPending {
 			continue
 		}
-		if sent[deliveries[i].AccountID] {
+		account := deliveries[i].AccountID
+		if sent(account) {
 			deliveries[i].State = SendSent
-		} else {
-			deliveries[i].State = SendFailed
-			// A member who did not get this copy has also not heard whatever
-			// facts rode with it, so they are owed the whole set.
-			if err := c.oweGroupSnapshot(groupID, deliveries[i].AccountID); err != nil {
-				return deliveries, err
-			}
+			// Cleared, not left: this copy is no longer failing, and a reason
+			// that outlives its failure is worse than none.
+			deliveries[i].Error = ""
+			continue
+		}
+		deliveries[i].State = SendFailed
+		deliveries[i].Error = postFailureReason(posted, account)
+		// A member who did not get this copy has also not heard whatever
+		// facts rode with it, so they are owed the whole set.
+		if err := c.oweGroupSnapshot(groupID, account); err != nil {
+			return deliveries, err
 		}
 	}
 	return deliveries, nil
+}
+
+// postFailureReason phrases why one prepared copy did not arrive.
+func postFailureReason(posted map[string]error, account string) string {
+	err, attempted := posted[account]
+	switch {
+	case !attempted:
+		// Their copy was encrypted and then never handed to a server at all.
+		// Should not happen -- every prepared copy is passed to deliverToServer
+		// -- so say that rather than inventing a network error.
+		return "their copy was prepared but never posted"
+	case err == nil:
+		return "posting their copy failed for no stated reason"
+	default:
+		return fmt.Sprintf("posting their copy: %v", err)
+	}
 }
 
 // prepareCopy resolves one member's device and encrypts for them, persisting
@@ -490,8 +545,8 @@ func (c *Client) prepareCopy(ctx context.Context, m group.Member, ownServer stri
 
 // deliverToServer posts every copy bound for one server, in one batch where
 // that server takes them. Returns which accounts were delivered to.
-func (c *Client) deliverToServer(ctx context.Context, server string, copies []preparedCopy) map[string]bool {
-	sent := make(map[string]bool, len(copies))
+func (c *Client) deliverToServer(ctx context.Context, server string, copies []preparedCopy) map[string]error {
+	sent := make(map[string]error, len(copies))
 
 	batchSize := 1
 	if len(copies) > 1 {
@@ -509,22 +564,22 @@ func (c *Client) deliverToServer(ctx context.Context, server string, copies []pr
 	if batchSize > 1 {
 		for start := 0; start < len(copies); start += batchSize {
 			end := min(start+batchSize, len(copies))
-			for account, ok := range c.sendBatch(ctx, server, copies[start:end]) {
-				sent[account] = ok
+			for account, err := range c.sendBatch(ctx, server, copies[start:end]) {
+				sent[account] = err
 			}
 		}
 		return sent
 	}
 	for _, copy := range copies {
-		sent[copy.member.AccountID] = c.postEnvelope(ctx, copy.endpoint, copy.messageID, copy.payload) == nil
+		sent[copy.member.AccountID] = c.postEnvelope(ctx, copy.endpoint, copy.messageID, copy.payload)
 	}
 	return sent
 }
 
 // sendBatch posts several copies in one request, falling back to one at a time
 // if the server refuses the batch outright.
-func (c *Client) sendBatch(ctx context.Context, server string, copies []preparedCopy) map[string]bool {
-	sent := make(map[string]bool, len(copies))
+func (c *Client) sendBatch(ctx context.Context, server string, copies []preparedCopy) map[string]error {
+	sent := make(map[string]error, len(copies))
 
 	items := make([]map[string]any, 0, len(copies))
 	for _, copy := range copies {
@@ -540,11 +595,11 @@ func (c *Client) sendBatch(ctx context.Context, server string, copies []prepared
 	if server != "" {
 		id, err := c.Identity()
 		if err != nil {
-			return sent
+			return failAll(copies, fmt.Errorf("reading this device's identity: %w", err))
 		}
 		cert, err := signDeviceCert(id, time.Now().UTC())
 		if err != nil {
-			return sent
+			return failAll(copies, fmt.Errorf("signing this device's certificate: %w", err))
 		}
 		req.server = server
 		req.auth = authFederated
@@ -569,7 +624,7 @@ func (c *Client) sendBatch(ctx context.Context, server string, copies []prepared
 		// stopped accepting them. Falling back one at a time is what keeps a
 		// group working against a server that changed under us.
 		for _, copy := range copies {
-			sent[copy.member.AccountID] = c.postEnvelope(ctx, copy.endpoint, copy.messageID, copy.payload) == nil
+			sent[copy.member.AccountID] = c.postEnvelope(ctx, copy.endpoint, copy.messageID, copy.payload)
 		}
 		return sent
 	}
@@ -583,7 +638,12 @@ func (c *Client) sendBatch(ctx context.Context, server string, copies []prepared
 		// A per-item status the server did not report is treated as delivered:
 		// it accepted the batch, and inventing a failure would re-send a copy
 		// the recipient already has.
-		sent[copy.member.AccountID] = !answered || status == "accepted" || status == "duplicate"
+		switch {
+		case !answered || status == "accepted" || status == "duplicate":
+			sent[copy.member.AccountID] = nil
+		default:
+			sent[copy.member.AccountID] = fmt.Errorf("their server answered %q", status)
+		}
 		if answered && IsStaleRecipientStatus(status) {
 			// Their device is gone. Forget it so the next attempt re-resolves
 			// rather than failing against the same dead id forever.
@@ -591,6 +651,15 @@ func (c *Client) sendBatch(ctx context.Context, server string, copies []prepared
 		}
 	}
 	return sent
+}
+
+// failAll blames one error on every copy in a batch that never left.
+func failAll(copies []preparedCopy, err error) map[string]error {
+	out := make(map[string]error, len(copies))
+	for _, copy := range copies {
+		out[copy.member.AccountID] = err
+	}
+	return out
 }
 
 // BroadcastGroupEvents tells every member about new facts.
@@ -705,6 +774,64 @@ func (c *Client) ReconcileGroup(ctx context.Context, outcome GroupOutcome, peerA
 	return nil
 }
 
+// RequestGroupSync asks one member of a group we already hold facts about to
+// send us the whole set.
+//
+// The active half of reconciliation, and the one easily left out: a state hash
+// says "we differ", never who is behind, so a device that missed a fact finds
+// out only when somebody next sends into the group -- and if that somebody is
+// *us*, and we are the one behind, nothing happens at all. This asks outright.
+// [Client.ReconcileGroup] covers only the case where there are no facts here
+// whatsoever, which is a different and much louder failure.
+//
+// One member rather than all: the fact set is grow-only, so any member holds
+// the whole of it and one answer is as good as ten -- where ten would put a
+// snapshot in every member's queue each time somebody opens a group screen.
+// The founder first because they are the one member who cannot have left, then
+// anybody who has joined; a pending invitee may hold nothing yet.
+//
+// Best-effort by design: no debt is recorded and nothing is owed to anyone,
+// because this asks for something we lack rather than sending something
+// somebody else needs. The per-group cooldown is [AskForGroupFacts]'s.
+func (c *Client) RequestGroupSync(ctx context.Context, groupID string) error {
+	membership, err := c.GroupMembership(groupID)
+	if err != nil || membership == nil {
+		return err
+	}
+	if membership.Dissolved {
+		// Nothing left to converge on, and nobody left who should answer.
+		return nil
+	}
+	id, err := c.Identity()
+	if err != nil {
+		return err
+	}
+	target := syncTargetFor(membership, id.AccountID)
+	if target == nil {
+		return nil
+	}
+	return c.AskForGroupFacts(ctx, groupID, target.AccountID, target.Server)
+}
+
+// syncTargetFor picks the one member worth asking, or nil for a group with
+// nobody else in it yet.
+func syncTargetFor(r *group.Resolved, except string) *group.Member {
+	var fallback *group.Member
+	for i := range r.Members {
+		m := &r.Members[i]
+		if m.AccountID == except || !m.Joined {
+			continue
+		}
+		if m.AccountID == r.Founder {
+			return m
+		}
+		if fallback == nil {
+			fallback = m
+		}
+	}
+	return fallback
+}
+
 // AskForGroupFacts sends a sync request to one member.
 //
 // Rate limited per group rather than per member: the point is to get the facts
@@ -783,6 +910,13 @@ func (c *Client) PayGroupSnapshotDebts(ctx context.Context) (int, error) {
 // between reader and author. That is also why the receipt carries the group id
 // -- without it the author would file it against their one-to-one chat with us
 // and confirm messages we never mentioned.
+//
+// upTo is a cumulative watermark in the *author's* clock, so confirming their
+// newest message confirms every earlier one they wrote: one marker per member
+// answers for the whole transcript, and nothing has to be tracked per message.
+// One that would say nothing new is skipped entirely, since opening a group
+// twice must not cost a second round of receipts -- see [Client.SendReceipt],
+// which follows the same rule for a one-to-one conversation.
 func (c *Client) SendGroupReceipt(ctx context.Context, groupID, toAccountID string, status ReceiptStatus, upTo time.Time) error {
 	if status != ReceiptDelivered && status != ReceiptRead {
 		return fmt.Errorf("client: unknown receipt status %q", status)
@@ -799,15 +933,67 @@ func (c *Client) SendGroupReceipt(ctx context.Context, groupID, toAccountID stri
 	if err != nil {
 		return err
 	}
+	upTo = upTo.UTC()
+
+	chat, err := c.GroupChat(groupID)
+	if err != nil {
+		return err
+	}
+	if chat != nil {
+		receipt := chat.MemberReceipts[toAccountID]
+		if sent := sentReceiptUpTo(receipt, status); sent != nil && !upTo.After(*sent) {
+			return nil
+		}
+	}
+
 	plaintext, err := json.Marshal(map[string]any{
 		"v": versionReceipt, "kind": "receipt",
-		"status": string(status), "up_to_sent_at": upTo.UTC().Format(receiptTimeLayout),
+		"status": string(status), "up_to_sent_at": upTo.Format(receiptTimeLayout),
 		"group_id": groupID,
 	})
 	if err != nil {
 		return fmt.Errorf("client: encoding group receipt: %w", err)
 	}
-	return c.sendGroupControl(ctx, *member, id.Server, plaintext)
+	if err := c.sendGroupControl(ctx, *member, id.Server, plaintext); err != nil {
+		return err
+	}
+
+	// Re-read rather than write back the copy loaded above: the receive loop
+	// files *their* watermarks into the same record, from another goroutine,
+	// and the send in between is a network call -- long enough to lose one.
+	if chat, err = c.GroupChat(groupID); err != nil {
+		return err
+	}
+	if chat == nil {
+		// Nothing to record it against, and minting a chat for a group with no
+		// transcript would invent one. The receipt still went out.
+		return nil
+	}
+
+	// Recorded only once it is actually gone. A receipt recorded as sent but
+	// never delivered is never re-sent, and the author's ticks stay wrong for
+	// good.
+	receipt := chat.MemberReceipts[toAccountID]
+	at := upTo
+	switch status {
+	case ReceiptDelivered:
+		receipt.SentDeliveredReceiptUpTo = &at
+	case ReceiptRead:
+		receipt.SentReadReceiptUpTo = &at
+	}
+	if chat.MemberReceipts == nil {
+		chat.MemberReceipts = map[string]MemberReceipt{}
+	}
+	chat.MemberReceipts[toAccountID] = receipt
+	return c.PutGroupChat(*chat)
+}
+
+// sentReceiptUpTo is how far this member has already been told, for status.
+func sentReceiptUpTo(receipt MemberReceipt, status ReceiptStatus) *time.Time {
+	if status == ReceiptRead {
+		return receipt.SentReadReceiptUpTo
+	}
+	return receipt.SentDeliveredReceiptUpTo
 }
 
 // sendGroupControl encrypts one plaintext for one member and posts it.
@@ -938,7 +1124,7 @@ func encodeGroupControl(kind GroupControlKind, groupID, stateHash string, events
 
 func (c *Client) recordDeliveries(groupID, messageID string, deliveries []GroupDelivery) error {
 	for _, d := range deliveries {
-		if err := c.SetGroupDeliveryState(groupID, messageID, d.AccountID, d.State); err != nil {
+		if err := c.SetGroupDeliveryState(groupID, messageID, d.AccountID, d.State, d.Error); err != nil {
 			return err
 		}
 	}
