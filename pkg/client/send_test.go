@@ -131,6 +131,66 @@ func TestAFailedSendDoesNotAdvanceTheRatchet(t *testing.T) {
 	}
 }
 
+// Forgetting a peer leaves nothing of them to decrypt with.
+//
+// What "remove permanently" rests on: the shell offers it only where the
+// account directory says the peer is gone, and promises nothing about them is
+// left on the device. Both sessions have to go, not one -- an inbound session
+// left behind would still open their messages, which is the state the action
+// exists to clear.
+func TestForgettingAPeerLeavesNoSessionBehind(t *testing.T) {
+	srv := newFakeServer(t)
+	alice := srv.account(t, "alice")
+	bob := srv.account(t, "bob")
+	aliceID := identityOf(t, alice).AccountID
+	bobID := identityOf(t, bob).AccountID
+
+	if _, err := alice.StartConversation(t.Context(), bobID, ""); err != nil {
+		t.Fatalf("StartConversation: %v", err)
+	}
+	if _, err := alice.SendText(t.Context(), bobID, "hallo", SendOptions{}); err != nil {
+		t.Fatalf("SendText: %v", err)
+	}
+	deliverTo(t, bob)
+	if _, err := bob.SendText(t.Context(), aliceID, "zurück", SendOptions{}); err != nil {
+		t.Fatalf("bob replying: %v", err)
+	}
+	deliverTo(t, alice)
+
+	for _, kind := range []SessionKind{Sending, Inbound} {
+		if _, err := alice.Session(bobID, kind); err != nil {
+			t.Fatalf("reading the %s session: %v", kind, err)
+		}
+	}
+	if err := alice.ForgetPeerDevice(bobID); err != nil {
+		t.Fatalf("ForgetPeerDevice: %v", err)
+	}
+	for _, kind := range []SessionKind{Sending, Inbound} {
+		session, err := alice.Session(bobID, kind)
+		if err != nil {
+			t.Fatalf("reading the %s session after forgetting: %v", kind, err)
+		}
+		if session != nil {
+			t.Errorf("the %s session survived being forgotten", kind)
+		}
+	}
+
+	// And the proof that matters: bob writes again on the session he still
+	// holds, and nothing on this side can open it.
+	if _, err := bob.SendText(t.Context(), aliceID, "noch da?", SendOptions{}); err != nil {
+		t.Fatalf("bob writing again: %v", err)
+	}
+	msgs, err := alice.FetchMessages(t.Context())
+	if err != nil || len(msgs) == 0 {
+		t.Fatalf("FetchMessages: %v, %d", err, len(msgs))
+	}
+	for _, msg := range msgs {
+		if _, err := alice.HandleIncoming(msg, ReceiveOptions{}); err == nil {
+			t.Error("a message from a forgotten peer must not decrypt -- something was left behind")
+		}
+	}
+}
+
 // The nastier half of the same rule: the POST failed but the server had
 // already stored the message. The retry must not show up twice.
 func TestARetryOfAMessageThatArrivedIsRejectedAsADuplicate(t *testing.T) {
