@@ -553,9 +553,11 @@ func TestAGroupPictureIsUploadedOnce(t *testing.T) {
 	if got := srv.blobCount(); got != 1 {
 		t.Fatalf("one picture, %d blobs", got)
 	}
-	blobID := sent.Message.Attachments[0].BlobID
-	if got := srv.blobRecipientsFor(blobID); len(got) != 2 {
-		t.Errorf("the blob must be granted to every member's device, got %d", len(got))
+	// The sender's own line keeps the placeholder: a group's blob is per
+	// recipient server, so there is no one id for the message to hold. The id
+	// that means anything is the one each member was sent.
+	if got := sent.Message.Attachments[0].BlobID; got != "" {
+		t.Errorf("the sender's line should hold no blob id, got %q", got)
 	}
 
 	for _, member := range []*Client{bob, carol} {
@@ -570,6 +572,9 @@ func TestAGroupPictureIsUploadedOnce(t *testing.T) {
 		if messageID == "" {
 			t.Fatal("a member did not receive the picture")
 		}
+		if got := srv.blobRecipientsFor(att.BlobID); len(got) != 2 {
+			t.Errorf("the blob must be granted to every member's device on that server, got %d", len(got))
+		}
 		fetched, err := member.EnsureAttachment(t.Context(), groupID, messageID, "", att)
 		if err != nil {
 			t.Fatalf("EnsureAttachment: %v", err)
@@ -577,6 +582,103 @@ func TestAGroupPictureIsUploadedOnce(t *testing.T) {
 		if !bytes.Equal(fetched, original) {
 			t.Error("the picture came back different")
 		}
+	}
+}
+
+// A picture reaches a group whose members do not all sit on one server.
+//
+// A blob id means nothing off the server that stored it, so one upload cannot
+// serve them all -- and collapsing the fan-out to a single upload made the
+// whole send fail with "recipients for one attachment must share a server",
+// caption included. One upload per server, one reference per member.
+func TestAGroupPictureCrossesServers(t *testing.T) {
+	srv := newFakeServer(t)
+	alice := srv.account(t, "alice")
+	bob := srv.account(t, "bob")
+	carol := srv.account(t, "carol")
+	bobID := identityOf(t, bob).AccountID
+
+	groupID := groupWith(t, srv, alice, bob, carol)
+
+	// Bob's endpoint names a server, carol's does not -- the shape a federated
+	// group has, and equally the shape a same-server group takes when one
+	// member's cached device was written by a path that knew the URL and
+	// another's by one that did not. Either way the two no longer compare
+	// equal, which is all the old code looked at.
+	bobEndpoint, err := alice.endpointOn(t.Context(), bobID, "")
+	if err != nil {
+		t.Fatalf("resolving bob: %v", err)
+	}
+	bobEndpoint.Server = srv.url
+	if err := alice.putPeerDevice(bobEndpoint); err != nil {
+		t.Fatalf("putPeerDevice: %v", err)
+	}
+
+	original := imageBytes()
+	sent, err := alice.SendGroupText(t.Context(), groupID, "vom Gipfel", SendOptions{
+		Media: &OutgoingMedia{Bytes: original, MimeType: "image/jpeg", Thumb: []byte("tiny")},
+	})
+	if err != nil {
+		t.Fatalf("SendGroupText across servers: %v", err)
+	}
+	if got := srv.blobCount(); got != 2 {
+		t.Errorf("one upload per server, want 2 blobs, got %d", got)
+	}
+	for _, d := range sent.Message.Deliveries {
+		if d.State != SendSent {
+			t.Errorf("delivery to %s: %s (%s)", d.AccountID, d.State, d.Error)
+		}
+		if d.AttachmentSkipped {
+			t.Errorf("%s should have been granted the picture", d.AccountID)
+		}
+	}
+
+	// And each of them can actually open the copy they were pointed at, which
+	// is the half a per-server upload could get wrong by handing somebody the
+	// other server's id.
+	for _, member := range []*Client{bob, carol} {
+		var att Attachment
+		var messageID string
+		for _, res := range syncGroups(t, member) {
+			if len(res.Content.Attachments) == 1 {
+				att, messageID = res.Content.Attachments[0], res.StoredMessageID
+			}
+		}
+		if messageID == "" {
+			t.Fatal("a member did not receive the picture")
+		}
+		fetched, err := member.EnsureAttachment(t.Context(), groupID, messageID, "", att)
+		if err != nil {
+			t.Fatalf("EnsureAttachment: %v", err)
+		}
+		if !bytes.Equal(fetched, original) {
+			t.Error("the picture came back different")
+		}
+	}
+}
+
+// A member no server would store the picture for gets the caption, and their
+// delivery says why the picture is missing.
+func TestAMemberWithoutTheAttachmentIsRecordedAsSkipped(t *testing.T) {
+	deliveries := []GroupDelivery{
+		{AccountID: "granted", State: SendSent},
+		{AccountID: "skipped", State: SendSent},
+	}
+	references := map[string]Attachment{"granted": {BlobID: "b1"}}
+
+	markAttachmentSkipped(deliveries, true, references)
+	if deliveries[0].AttachmentSkipped {
+		t.Error("a member who was granted the blob must not read as skipped")
+	}
+	if !deliveries[1].AttachmentSkipped {
+		t.Error("a member with no reference got the caption alone and must say so")
+	}
+
+	// A message with no picture has nothing to skip, however empty the map is.
+	plain := []GroupDelivery{{AccountID: "somebody", State: SendSent}}
+	markAttachmentSkipped(plain, false, nil)
+	if plain[0].AttachmentSkipped {
+		t.Error("a message without a picture must not mark anybody skipped")
 	}
 }
 

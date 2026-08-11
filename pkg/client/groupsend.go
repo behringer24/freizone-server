@@ -89,6 +89,10 @@ func (c *Client) SendGroupText(ctx context.Context, groupID, text string, opts S
 		if err := c.WriteAttachmentThumb(groupID, messageID, opts.Media.Thumb); err != nil {
 			return SendResult{}, err
 		}
+		// The sender's own line keeps the placeholder rather than an uploaded
+		// reference: with a blob per recipient server there is no single id
+		// that would be true for the whole message, and this device renders
+		// the picture from the file it just wrote either way.
 		attachments = []Attachment{placeholderFor(*opts.Media)}
 	} else {
 		attachments = opts.Attachments
@@ -106,31 +110,28 @@ func (c *Client) SendGroupText(ctx context.Context, groupID, text string, opts S
 	}
 	res := SendResult{Message: line}
 
-	// One upload for the whole group rather than one per member: the blob is
-	// stored once and granted to every recipient device, which is why the
-	// recipient set is part of the upload.
+	// One upload per recipient server, and the reference each member gets for
+	// their own -- a blob id is only meaningful where it was stored.
+	var references map[string]Attachment
 	if opts.Media != nil {
-		uploaded, err := c.uploadForGroup(ctx, recipients, *opts.Media)
+		references, err = c.uploadForGroup(ctx, recipients, *opts.Media)
 		if err != nil {
 			if markErr := c.SetMessageSendState(groupID, messageID, SendFailed); markErr != nil {
 				return res, fmt.Errorf("%w (and marking it failed: %v)", err, markErr)
 			}
 			return res, err
 		}
-		if err := c.SetMessageAttachments(groupID, messageID, []Attachment{uploaded}); err != nil {
-			return res, err
-		}
-		line.Attachments = []Attachment{uploaded}
 	}
 
-	plaintext, err := encodeGroupText(line, groupID, membership.StateHash, now)
+	encode, err := groupPlaintextFor(line, groupID, membership.StateHash, now, references)
 	if err != nil {
 		return res, err
 	}
-	deliveries, err := c.fanOut(ctx, groupID, plaintext, recipients)
+	deliveries, err := c.fanOut(ctx, groupID, encode, recipients)
 	if err != nil {
 		return res, err
 	}
+	markAttachmentSkipped(deliveries, opts.Media != nil, references)
 	line.Deliveries = deliveries
 	res.Message = line
 
@@ -247,7 +248,9 @@ func (c *Client) RetryGroupMessage(ctx context.Context, groupID, messageID strin
 			// however often it is pressed.
 			d.State = SendSent
 			d.Error = ""
-			if err := c.SetGroupDeliveryState(groupID, messageID, d.AccountID, SendSent, ""); err != nil {
+			if err := c.SetGroupDeliveryState(
+				groupID, messageID, d.AccountID, SendSent, "", d.AttachmentSkipped,
+			); err != nil {
 				return SendResult{}, err
 			}
 			continue
@@ -267,10 +270,16 @@ func (c *Client) RetryGroupMessage(ctx context.Context, groupID, messageID strin
 		return SendResult{Message: *line}, nil
 	}
 
-	// An attachment that never made it to the server has to go up before the
-	// message can name it again. One that did is simply named again: the blob
-	// is still there under the same id, and a second copy would be one nobody
-	// references.
+	// A picture goes up again for whoever is being retried.
+	//
+	// Always, rather than only when the first attempt never uploaded: since a
+	// group's blob is per recipient server there is no single id for the
+	// message to have kept, so the sender's own line holds the placeholder and
+	// the bytes on disk are the record. Re-uploading for a server that already
+	// has a copy leaves one blob nobody references, which the server can
+	// collect -- cheaper than remembering an id per server to save an upload
+	// that only happens after a failure anyway.
+	var references map[string]Attachment
 	if len(line.Attachments) == 1 && line.Attachments[0].BlobID == "" {
 		bytes, err := c.AttachmentFile(groupID, messageID)
 		if err != nil {
@@ -283,17 +292,16 @@ func (c *Client) RetryGroupMessage(ctx context.Context, groupID, messageID strin
 			return SendResult{}, ErrAttachmentNotResendable
 		}
 		placeholder := line.Attachments[0]
-		uploaded, err := c.uploadForGroup(ctx, recipients, OutgoingMedia{
+		// Re-uploaded for the servers of the members this attempt addresses,
+		// not for the whole group: the ones who already have their copy are
+		// not revisited, and their blob is on their own server regardless.
+		references, err = c.uploadForGroup(ctx, recipients, OutgoingMedia{
 			Bytes: bytes, MimeType: placeholder.MimeType, Kind: placeholder.Kind,
 			Width: placeholder.Width, Height: placeholder.Height, Thumb: placeholder.Thumb,
 		})
 		if err != nil {
 			return SendResult{}, err
 		}
-		if err := c.SetMessageAttachments(groupID, messageID, []Attachment{uploaded}); err != nil {
-			return SendResult{}, err
-		}
-		line.Attachments = []Attachment{uploaded}
 	}
 
 	if err := c.SetMessageSendState(groupID, messageID, SendPending); err != nil {
@@ -301,17 +309,18 @@ func (c *Client) RetryGroupMessage(ctx context.Context, groupID, messageID strin
 	}
 	res := SendResult{Message: *line}
 
-	plaintext, err := encodeGroupText(*line, groupID, membership.StateHash, line.Timestamp)
+	encode, err := groupPlaintextFor(*line, groupID, membership.StateHash, line.Timestamp, references)
 	if err != nil {
 		return res, err
 	}
-	deliveries, err := c.fanOut(ctx, groupID, plaintext, recipients)
+	deliveries, err := c.fanOut(ctx, groupID, encode, recipients)
 	if err != nil {
 		if markErr := c.SetMessageSendState(groupID, messageID, SendFailed); markErr != nil {
 			return res, errors.Join(err, markErr)
 		}
 		return res, err
 	}
+	markAttachmentSkipped(deliveries, references != nil, references)
 	if err := c.recordDeliveries(groupID, messageID, deliveries); err != nil {
 		return res, err
 	}
@@ -368,7 +377,77 @@ type preparedCopy struct {
 // has exactly one recipient to be consistent with; here a partial success
 // means some peers have moved on and some have not, so nothing is rolled back
 // and the delivery record carries who is behind.
-func (c *Client) fanOut(ctx context.Context, groupID string, plaintext []byte, recipients []group.Member) ([]GroupDelivery, error) {
+// plaintextFor gives one member's copy of a message. Per member rather than
+// one shared blob of bytes because a picture is stored per recipient server
+// (see uploadForGroup): everything else in the copy is identical, and the
+// attachment reference cannot be.
+type plaintextFor func(m group.Member) ([]byte, error)
+
+// groupPlaintextFor encodes line for each member, giving each the attachment
+// reference minted for their own server.
+//
+// With no picture -- or with an already-uploaded one carried in line, which is
+// the [Client.SendGroupText] caller that passes Attachments rather than Media
+// -- every copy is identical and encoded once. A member with no reference is
+// sent the message without an attachment at all rather than with one they
+// cannot fetch: they see the text, and their delivery says the picture was
+// skipped.
+func groupPlaintextFor(
+	line Message,
+	groupID, stateHash string,
+	sentAt time.Time,
+	references map[string]Attachment,
+) (plaintextFor, error) {
+	if references == nil {
+		plaintext, err := encodeGroupText(line, groupID, stateHash, sentAt)
+		if err != nil {
+			return nil, err
+		}
+		return func(group.Member) ([]byte, error) { return plaintext, nil }, nil
+	}
+
+	// Encoded once per member, but cached by account id: a retry addresses a
+	// subset of the same people, and two members on one server share a
+	// reference and therefore a copy.
+	cache := map[string][]byte{}
+	return func(m group.Member) ([]byte, error) {
+		if plaintext, ok := cache[m.AccountID]; ok {
+			return plaintext, nil
+		}
+		theirs := line
+		if reference, ok := references[m.AccountID]; ok {
+			theirs.Attachments = []Attachment{reference}
+		} else {
+			theirs.Attachments = nil
+		}
+		plaintext, err := encodeGroupText(theirs, groupID, stateHash, sentAt)
+		if err != nil {
+			return nil, err
+		}
+		cache[m.AccountID] = plaintext
+		return plaintext, nil
+	}, nil
+}
+
+// markAttachmentSkipped records, per member, that they got the caption but not
+// the picture.
+//
+// Not a delivery failure and never retried: the message itself arrived, and a
+// copy that counts as sent is never revisited -- so this is a statement of
+// fact for the sender to read, which is exactly what
+// [GroupDelivery.AttachmentSkipped] is for.
+func markAttachmentSkipped(deliveries []GroupDelivery, hadMedia bool, references map[string]Attachment) {
+	if !hadMedia {
+		return
+	}
+	for i := range deliveries {
+		if _, granted := references[deliveries[i].AccountID]; !granted {
+			deliveries[i].AttachmentSkipped = true
+		}
+	}
+}
+
+func (c *Client) fanOut(ctx context.Context, groupID string, encode plaintextFor, recipients []group.Member) ([]GroupDelivery, error) {
 	id, err := c.Identity()
 	if err != nil {
 		return nil, err
@@ -385,6 +464,10 @@ func (c *Client) fanOut(ctx context.Context, groupID string, plaintext []byte, r
 			// Blocked is about the person, not the room: their copy is simply
 			// never prepared, and the rest of the group is unaffected.
 			continue
+		}
+		plaintext, err := encode(m)
+		if err != nil {
+			return nil, err
 		}
 		copy, err := c.prepareCopy(ctx, m, id.Server, plaintext)
 		if err != nil {
@@ -1023,13 +1106,30 @@ func (c *Client) sendGroupControl(ctx context.Context, m group.Member, ownServer
 	return nil
 }
 
-// uploadForGroup uploads one blob granted to every recipient's device.
-func (c *Client) uploadForGroup(ctx context.Context, recipients []group.Member, media OutgoingMedia) (Attachment, error) {
+// uploadForGroup uploads the picture once per recipient *server* and returns
+// the reference each member is to be sent, by account id.
+//
+// A blob id means nothing off the server that minted it, so a group spanning
+// servers cannot share one: the members on each server are granted a blob
+// stored there, and every member is sent the reference for their own. One
+// upload per server rather than per member is what SRV-18 buys -- a group of
+// twenty on two servers costs two uploads, not twenty.
+//
+// A member missing from the result gets the caption without the picture, which
+// is why nothing here is an error: their device would not resolve, or their
+// server would not take the blob. One member's server refusing pictures must
+// not decide what the rest of the group receives.
+func (c *Client) uploadForGroup(ctx context.Context, recipients []group.Member, media OutgoingMedia) (map[string]Attachment, error) {
 	id, err := c.Identity()
 	if err != nil {
-		return Attachment{}, err
+		return nil, err
 	}
-	endpoints := make([]PeerEndpoint, 0, len(recipients))
+
+	// Grouped by the endpoint's own server string rather than the fact set's:
+	// endpointOn fills a blank in from the device cache, so the same server can
+	// arrive spelled two ways, and the upload has to agree with whichever one
+	// its members actually carry.
+	byServer := map[string][]PeerEndpoint{}
 	for _, m := range recipients {
 		server := m.Server
 		if server == id.Server {
@@ -1037,17 +1137,38 @@ func (c *Client) uploadForGroup(ctx context.Context, recipients []group.Member, 
 		}
 		endpoint, err := c.endpointOn(ctx, m.AccountID, server)
 		if err != nil {
-			// A member whose device cannot be resolved cannot be granted the
-			// blob. They still get the caption, which is better than nobody
-			// getting the picture.
 			continue
 		}
-		endpoints = append(endpoints, endpoint)
+		byServer[endpoint.Server] = append(byServer[endpoint.Server], endpoint)
 	}
-	if len(endpoints) == 0 {
-		return Attachment{}, fmt.Errorf("client: no reachable recipient for the attachment")
+	if len(byServer) == 0 {
+		return nil, fmt.Errorf("client: no reachable recipient for the attachment")
 	}
-	return c.UploadAttachment(ctx, endpoints, media)
+
+	servers := make([]string, 0, len(byServer))
+	for server := range byServer {
+		servers = append(servers, server)
+	}
+	sort.Strings(servers)
+
+	references := make(map[string]Attachment, len(recipients))
+	for _, server := range servers {
+		endpoints := byServer[server]
+		// Encrypted afresh per server, deliberately: a distinct key per stored
+		// object means the key that reached one server's members cannot open
+		// another server's copy.
+		uploaded, err := c.UploadAttachment(ctx, endpoints, media)
+		if err != nil {
+			continue
+		}
+		for _, endpoint := range endpoints {
+			references[endpoint.AccountID] = uploaded
+		}
+	}
+	if len(references) == 0 {
+		return nil, fmt.Errorf("client: no server would store the attachment")
+	}
+	return references, nil
 }
 
 func (c *Client) dhIdentityKey() (*ecdh.PrivateKey, error) {
@@ -1124,7 +1245,7 @@ func encodeGroupControl(kind GroupControlKind, groupID, stateHash string, events
 
 func (c *Client) recordDeliveries(groupID, messageID string, deliveries []GroupDelivery) error {
 	for _, d := range deliveries {
-		if err := c.SetGroupDeliveryState(groupID, messageID, d.AccountID, d.State, d.Error); err != nil {
+		if err := c.SetGroupDeliveryState(groupID, messageID, d.AccountID, d.State, d.Error, d.AttachmentSkipped); err != nil {
 			return err
 		}
 	}

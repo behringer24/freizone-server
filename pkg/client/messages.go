@@ -164,9 +164,11 @@ type logRecord struct {
 	Attachments          []Attachment    `json:"attachments,omitempty"`
 	Deliveries           []GroupDelivery `json:"deliveries,omitempty"`
 
-	// delivery: which recipient's copy this concerns, and why it failed
-	AccountID string `json:"to,omitempty"`
-	Error     string `json:"error,omitempty"`
+	// delivery: which recipient's copy this concerns, why it failed, and
+	// whether they were left without the picture
+	AccountID         string `json:"to,omitempty"`
+	Error             string `json:"error,omitempty"`
+	AttachmentSkipped bool   `json:"attachment_skipped,omitempty"`
 
 	// pin
 	Pinned bool `json:"pinned,omitempty"`
@@ -256,6 +258,7 @@ func (c *Client) readTranscript(chatID string) (*transcript, error) {
 						// a later attempt loses the reason the earlier one
 						// failed rather than carrying it forever.
 						msg.Deliveries[i].Error = rec.Error
+						msg.Deliveries[i].AttachmentSkipped = rec.AttachmentSkipped
 						break
 					}
 				}
@@ -371,13 +374,21 @@ func (c *Client) SetMessageAttachments(chatID, messageID string, attachments []A
 //
 // reason is why, for a copy that failed, and is cleared by passing "" -- which
 // is what an attempt that finally succeeded does, so the record never keeps a
-// stale explanation for a copy that has since arrived.
-func (c *Client) SetGroupDeliveryState(chatID, messageID, accountID string, state SendState, reason string) error {
+// stale explanation for a copy that has since arrived. attachmentSkipped says
+// this member got the caption without the picture, which is not a failure and
+// is decided per attempt for the same reason.
+func (c *Client) SetGroupDeliveryState(
+	chatID, messageID, accountID string,
+	state SendState,
+	reason string,
+	attachmentSkipped bool,
+) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.appendRecord(chatID, logRecord{
 		T: recDelivery, ID: messageID, AccountID: accountID,
 		SendState: state, Error: truncateReason(reason),
+		AttachmentSkipped: attachmentSkipped,
 	})
 }
 
@@ -482,6 +493,7 @@ func applyLaterChanges(lines [][]byte, msg *Message) {
 				if msg.Deliveries[j].AccountID == rec.AccountID {
 					msg.Deliveries[j].State = rec.SendState
 					msg.Deliveries[j].Error = rec.Error
+					msg.Deliveries[j].AttachmentSkipped = rec.AttachmentSkipped
 				}
 			}
 		}
