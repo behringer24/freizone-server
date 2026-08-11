@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -1537,10 +1538,14 @@ func TestEveryWayAServerCanFailHasWords(t *testing.T) {
 		err  error
 		want string
 	}{
-		{"unreachable", errors.New("dial tcp 10.0.0.1:443: connect: connection refused"),
+		{"unreachable", &url.Error{Op: "Post", URL: "http://a", Err: errors.New("connection refused")},
+			"Their server could not be reached."},
+		{"gave up connecting", fmt.Errorf("%w: stream did not open", ErrUnreachable),
 			"Their server could not be reached."},
 		{"timed out", fmt.Errorf("posting: %w", context.DeadlineExceeded),
 			"Their server could not be reached."},
+		{"never got near a server", errors.New("reading this device's identity: no such file"),
+			"The message could not be sent. Try again."},
 		{"gone from their server", &APIError{StatusCode: 404, Code: "not_found"},
 			"Their server no longer knows this account."},
 		{"federation off", &APIError{StatusCode: 404, Code: "federation_disabled"},

@@ -224,9 +224,13 @@ func (c *Client) streamOnce(ctx context.Context, policy StreamPolicy, events cha
 			// which of them stalled. Uses ctx, not the attempt context, which
 			// has just been cancelled -- and returns quickly enough not to
 			// delay the retry meaningfully.
+			// Marked: this timeout is ours, so unlike a refused socket there
+			// is no *url.Error underneath for IsUnreachable to recognise --
+			// and a stream that would not open is the single most ordinary
+			// way a server is away.
 			return false, fmt.Errorf(
-				"client: message stream to %s did not open within %s. Probing: %s",
-				id.Server, policy.ConnectTimeout, diagnoseReach(ctx, id.Server))
+				"%w: message stream to %s did not open within %s. Probing: %s",
+				ErrUnreachable, id.Server, policy.ConnectTimeout, diagnoseReach(ctx, id.Server))
 		case ctx.Err() != nil:
 			// A deliberate stop. Returned so the loop's own ctx check ends it
 			// quietly; nothing reports this to a user.

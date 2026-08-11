@@ -1,8 +1,11 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 )
 
 // APIError is a Freizone server refusing a request in its own JSON error
@@ -39,6 +42,52 @@ type NotFreizoneServerError struct {
 
 func (e *NotFreizoneServerError) Error() string {
 	return fmt.Sprintf("client: %s did not answer as a Freizone server (HTTP %d)", e.Host, e.StatusCode)
+}
+
+// ErrUnreachable marks a failure where the request never reached a working
+// server, so nothing at all was learned -- not about the account, not about
+// its state, not about whether the thing we asked for would have succeeded.
+//
+// Most transport failures identify themselves (*url.Error, net.Error) and need
+// no marking. This is for the ones that do not: a connect this package gave up
+// on itself, where the timeout is ours rather than the socket's.
+var ErrUnreachable = errors.New("client: server unreachable")
+
+// IsUnreachable reports whether err means the server was not there, as opposed
+// to a server that answered and said no ([APIError]) or a host that answered
+// as something else entirely ([NotFreizoneServerError]).
+//
+// Worth its own predicate because the two call for opposite treatment. In a
+// federation nobody operates every server, so unreachable is an ordinary
+// event: it is retried on its own, it says nothing that a later attempt will
+// not say better, and putting it in front of somebody trains them to ignore
+// the notices that do need reading. A refusal is a fact about the account, and
+// retrying it changes nothing.
+//
+// Deliberately positive: a JSON that would not parse, a file that would not
+// open, a caller's own mistake -- none of those are the server being away, and
+// classifying by exclusion would quietly silence all of them.
+func IsUnreachable(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return false
+	}
+	var notFreizone *NotFreizoneServerError
+	if errors.As(err, &notFreizone) {
+		return false
+	}
+	if errors.Is(err, ErrUnreachable) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr)
 }
 
 // enqueueError is one copy's per-item batch status (PROTOCOL.md §7) saying the

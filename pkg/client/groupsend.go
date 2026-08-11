@@ -623,8 +623,13 @@ func humanFailure(err error) string {
 	if errors.As(err, &notFreizone) {
 		return "That address is not a Freizone server."
 	}
+	if IsUnreachable(err) {
+		return "Their server could not be reached."
+	}
 
-	return "Their server could not be reached."
+	// Left over: nothing that got as far as a server. Says so rather than
+	// blaming the far end for something at this one.
+	return "The message could not be sent. Try again."
 }
 
 // prepareCopy resolves one member's device and encrypts for them, persisting
