@@ -69,3 +69,22 @@ func IsStaleDevice(err error) bool {
 // Only `unknown_recipient` does -- `queue_full`, `invalid` and `internal_error`
 // all describe conditions a retry against the same device can outlive.
 func IsStaleRecipientStatus(status string) bool { return status == "unknown_recipient" }
+
+// IsDeliveredStatus reports whether one copy's per-item status means the
+// recipient's server took it.
+//
+// Two of them do. `queued` is the ordinary answer -- the server holds the
+// envelope until that device fetches it, which is what delivery *is* here,
+// since nothing waits for the recipient to be online. `duplicate` means it
+// already had this message id, which is the answer a retry is built to get:
+// posting under the id a previous attempt used is how a second attempt avoids
+// delivering the same message twice.
+//
+// Everything else -- `invalid`, `unknown_recipient`, `queue_full`,
+// `internal_error` -- is a copy that did not arrive. A status this build does
+// not know counts as failure too: inventing success for an answer we cannot
+// read would record a message as delivered on the strength of not
+// understanding the reply.
+func IsDeliveredStatus(status string) bool {
+	return status == "queued" || status == "duplicate"
+}

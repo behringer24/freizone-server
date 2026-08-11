@@ -245,9 +245,13 @@ func (s *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	switch {
 	case r.Method == http.MethodGet && path == "/v1/server-status":
+		// Batching advertised, so the fan-out takes the route it takes in the
+		// field. Saying nothing here is what left that route untested.
 		s.writeJSON(w, map[string]any{
 			"registration_open":  true,
 			"federation_enabled": s.federationEnabled,
+			"batch_messages":     true,
+			"max_batch_messages": 16,
 		})
 
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/v1/accounts/"):
@@ -401,6 +405,73 @@ func (s *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 			Payload:         body.Payload,
 		})
 		s.writeJSON(w, map[string]any{"ok": true})
+
+	case r.Method == http.MethodPost &&
+		(path == "/v1/messages/batch" || path == "/v1/federation/messages/batch"):
+		// The endpoint the fan-out prefers, and until now the one this stub did
+		// not have -- so every group send in these tests quietly fell back to
+		// posting one at a time and the batch path was never exercised at all.
+		// It cost a live bug: the client read a per-item status the real server
+		// never sends, so every batched copy was recorded as failed.
+		//
+		// The statuses below are internal/api's enqueueOutcome verbatim. That
+		// is the whole point of answering them here: a client that disagrees
+		// with the server about what "it arrived" looks like must fail in this
+		// suite rather than on somebody's phone.
+		var body struct {
+			SenderAccountID  string                    `json:"sender_account_id"`
+			SenderDeviceCert *fakeFederationDeviceCert `json:"sender_device_cert"`
+			Messages         []struct {
+				MessageID         string          `json:"message_id"`
+				RecipientDeviceID string          `json:"recipient_device_id"`
+				Payload           json.RawMessage `json:"payload"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			s.writeError(w, http.StatusBadRequest, "bad_request")
+			return
+		}
+		if body.SenderDeviceCert != nil {
+			if err := body.SenderDeviceCert.validate(); err != nil {
+				s.writeError(w, http.StatusBadRequest, "invalid_request")
+				return
+			}
+		}
+		sender := body.SenderAccountID
+		if sender == "" {
+			sender = s.accountForDevice(r.Header.Get(httpsig.HeaderKeyID))
+		}
+
+		results := make([]map[string]string, 0, len(body.Messages))
+		for _, item := range body.Messages {
+			status := "queued"
+			switch {
+			case s.devices[item.RecipientDeviceID] == nil:
+				status = "unknown_recipient"
+			case s.failAccounts[s.accountForDevice(item.RecipientDeviceID)]:
+				status = "unknown_recipient"
+			default:
+				for _, q := range s.queues[item.RecipientDeviceID] {
+					if q.MessageID == item.MessageID {
+						status = "duplicate"
+						break
+					}
+				}
+			}
+			if status == "queued" {
+				s.queues[item.RecipientDeviceID] = append(s.queues[item.RecipientDeviceID], queuedEnvelope{
+					MessageID:       item.MessageID,
+					SenderAccountID: sender,
+					SenderDeviceID:  "sender-device",
+					SentAt:          time.Now().UTC().Format(time.RFC3339),
+					Payload:         item.Payload,
+				})
+			}
+			results = append(results, map[string]string{
+				"message_id": item.MessageID, "status": status,
+			})
+		}
+		s.writeJSON(w, map[string]any{"results": results})
 
 	case r.Method == http.MethodPost && (path == "/v1/blobs" || path == "/v1/federation/blobs"):
 		body, err := io.ReadAll(r.Body)

@@ -815,6 +815,60 @@ func TestRequestGroupSyncAsksTheFounderFirst(t *testing.T) {
 	}
 }
 
+// What a per-item status means, against the only list that decides it:
+// internal/api's enqueueOutcome.
+//
+// Read wrongly, this is invisible and total -- every batched copy recorded as
+// failed while the recipient had it all along, which is what "Delivered to 0 of
+// 2" turned out to be on a live group. Note there is no "accepted": the client
+// used to look for one, and the server has never sent it.
+func TestOnlyQueuedAndDuplicateMeanDelivered(t *testing.T) {
+	for _, status := range []string{"queued", "duplicate"} {
+		if !IsDeliveredStatus(status) {
+			t.Errorf("%q means the server took the copy", status)
+		}
+	}
+	for _, status := range []string{
+		"invalid", "unknown_recipient", "queue_full", "internal_error",
+		// Neither a status this build has never heard of nor one it merely
+		// hoped for may be read as success.
+		"accepted", "something_a_newer_server_says", "",
+	} {
+		if IsDeliveredStatus(status) {
+			t.Errorf("%q must not count as delivered", status)
+		}
+	}
+}
+
+// A group send over the batch route records what the server actually said.
+//
+// The route the fan-out prefers, and the one that was silently untested until
+// the stub grew the endpoint -- see fakeServer.serve.
+func TestABatchedGroupSendIsRecordedAsDelivered(t *testing.T) {
+	srv := newFakeServer(t)
+	alice := srv.account(t, "alice")
+	bob := srv.account(t, "bob")
+	carol := srv.account(t, "carol")
+
+	groupID := groupWith(t, srv, alice, bob, carol)
+	sent, err := alice.SendGroupText(t.Context(), groupID, "an alle", SendOptions{})
+	if err != nil {
+		t.Fatalf("SendGroupText: %v", err)
+	}
+	if sent.Message.SendState != SendSent {
+		t.Errorf("message state: want %s, got %s", SendSent, sent.Message.SendState)
+	}
+	for _, d := range sent.Message.Deliveries {
+		if d.State != SendSent {
+			t.Errorf("copy for %s: %s (%s) -- the server queued it", d.AccountID, d.State, d.Error)
+		}
+	}
+	if srv.queueLen("bob") != 1 || srv.queueLen("carol") != 1 {
+		t.Errorf("both copies must be queued: bob=%d carol=%d",
+			srv.queueLen("bob"), srv.queueLen("carol"))
+	}
+}
+
 // A retry does not deliver the message to anybody a second time.
 //
 // Found on a live device: one member's transcript held the same group message

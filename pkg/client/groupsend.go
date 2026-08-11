@@ -743,7 +743,7 @@ func (c *Client) sendBatch(ctx context.Context, server string, copies []prepared
 		// it accepted the batch, and inventing a failure would re-send a copy
 		// the recipient already has.
 		switch {
-		case !answered || status == "accepted" || status == "duplicate":
+		case !answered || IsDeliveredStatus(status):
 			sent[copy.member.AccountID] = nil
 		default:
 			sent[copy.member.AccountID] = fmt.Errorf("their server answered %q", status)
