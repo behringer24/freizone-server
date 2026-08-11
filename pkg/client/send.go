@@ -288,6 +288,11 @@ func (c *Client) RetryMessage(ctx context.Context, peerAccountID, messageID stri
 // move our own record of it is skipped entirely, since a receipt that says
 // nothing new is pure traffic.
 func (c *Client) SendReceipt(ctx context.Context, peerAccountID string, status ReceiptStatus, upTo time.Time) error {
+	// Asked before anything is prepared, so declining costs no round trip and
+	// leaves no trace on the wire -- see [Client.ReceiptsEnabled].
+	if on, err := c.ReceiptsEnabled(); err != nil || !on {
+		return err
+	}
 	convo, err := c.Conversation(peerAccountID)
 	if err != nil || convo == nil {
 		return err

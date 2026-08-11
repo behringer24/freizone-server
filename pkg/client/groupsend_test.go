@@ -1065,6 +1065,148 @@ func TestASnapshotDebtIsDroppedOnlyWhenTheAccountIsGone(t *testing.T) {
 	}
 }
 
+// A receipt that never went out is sent again on the next fresh connection.
+//
+// The watermark advances only once a send has actually gone, so a lost one is
+// not marked done -- but nothing re-tries it until there is something new to
+// confirm, and a quiet conversation may not offer that for days.
+func TestPendingReceiptsAreResentOnAFreshConnection(t *testing.T) {
+	srv := newFakeServer(t)
+	alice := srv.account(t, "alice")
+	bob := srv.account(t, "bob")
+	aliceID := identityOf(t, alice).AccountID
+	bobID := identityOf(t, bob).AccountID
+
+	if _, err := alice.StartConversation(t.Context(), bobID, ""); err != nil {
+		t.Fatalf("StartConversation: %v", err)
+	}
+	if _, err := alice.SendText(t.Context(), bobID, "gelesen?", SendOptions{}); err != nil {
+		t.Fatalf("SendText: %v", err)
+	}
+
+	// Bob receives it, and his confirmation does not get out.
+	srv.set(func(s *fakeServer) { s.sendStatus = http.StatusServiceUnavailable })
+	for _, res := range deliverTo(t, bob) {
+		if res.DeliveredUpTo != nil {
+			_ = bob.SendReceipt(t.Context(), aliceID, ReceiptDelivered, *res.DeliveredUpTo)
+		}
+	}
+	convo, err := bob.Conversation(aliceID)
+	if err != nil || convo == nil {
+		t.Fatalf("Conversation: %v, %v", convo, err)
+	}
+	if convo.SentDeliveredReceiptUpTo != nil {
+		t.Fatal("a receipt that did not go out must not be recorded as sent")
+	}
+
+	// The connection comes back. Nothing new has been said, so only the sweep
+	// can close this.
+	srv.set(func(s *fakeServer) { s.sendStatus = 0 })
+	before := srv.queueLen("alice")
+	sent, err := bob.ResendPendingReceipts(t.Context())
+	if err != nil {
+		t.Fatalf("ResendPendingReceipts: %v", err)
+	}
+	if sent == 0 || srv.queueLen("alice") == before {
+		t.Error("the receipt that never went out was not re-sent")
+	}
+
+	// And it is not sent a third time: the sweep decides nothing itself, it
+	// only offers, and the watermark refuses what would say nothing new.
+	after := srv.queueLen("alice")
+	if _, err := bob.ResendPendingReceipts(t.Context()); err != nil {
+		t.Fatalf("ResendPendingReceipts again: %v", err)
+	}
+	if srv.queueLen("alice") != after {
+		t.Error("a settled account must send nothing at all")
+	}
+}
+
+// An unread chat is never confirmed as read by the sweep.
+func TestTheSweepNeverClaimsAnUnreadChatWasRead(t *testing.T) {
+	srv := newFakeServer(t)
+	alice := srv.account(t, "alice")
+	bob := srv.account(t, "bob")
+	aliceID := identityOf(t, alice).AccountID
+	bobID := identityOf(t, bob).AccountID
+
+	if _, err := alice.StartConversation(t.Context(), bobID, ""); err != nil {
+		t.Fatalf("StartConversation: %v", err)
+	}
+	if _, err := alice.SendText(t.Context(), bobID, "ungelesen", SendOptions{}); err != nil {
+		t.Fatalf("SendText: %v", err)
+	}
+	deliverTo(t, bob) // arrives into no open chat, so it is unread
+
+	if _, err := bob.ResendPendingReceipts(t.Context()); err != nil {
+		t.Fatalf("ResendPendingReceipts: %v", err)
+	}
+	convo, err := bob.Conversation(aliceID)
+	if err != nil || convo == nil {
+		t.Fatalf("Conversation: %v, %v", convo, err)
+	}
+	if convo.SentReadReceiptUpTo != nil {
+		t.Error("a chat the user never opened must not be confirmed as read")
+	}
+	if convo.SentDeliveredReceiptUpTo == nil {
+		t.Error("...but it did arrive, and saying so is not a claim about reading it")
+	}
+}
+
+// With receipts switched off this account confirms nothing and records
+// nothing, which is what makes the setting reciprocal rather than one-sided.
+func TestReceiptsOffSendsNothingAndRecordsNothing(t *testing.T) {
+	srv := newFakeServer(t)
+	alice := srv.account(t, "alice")
+	bob := srv.account(t, "bob")
+	aliceID := identityOf(t, alice).AccountID
+	bobID := identityOf(t, bob).AccountID
+
+	groupID := groupWith(t, srv, alice, bob)
+	if err := bob.SetReceiptsEnabled(false); err != nil {
+		t.Fatalf("SetReceiptsEnabled: %v", err)
+	}
+
+	if _, err := alice.SendGroupText(t.Context(), groupID, "hallo", SendOptions{}); err != nil {
+		t.Fatalf("SendGroupText: %v", err)
+	}
+	before := srv.queueLen("alice")
+	for _, res := range syncGroups(t, bob) {
+		if res.Group != nil && res.Group.DeliveredUpTo != nil {
+			if err := bob.SendGroupReceipt(t.Context(), groupID, aliceID, ReceiptDelivered, *res.Group.DeliveredUpTo); err != nil {
+				t.Fatalf("SendGroupReceipt: %v", err)
+			}
+		}
+	}
+	if _, err := bob.ResendPendingReceipts(t.Context()); err != nil {
+		t.Fatalf("ResendPendingReceipts: %v", err)
+	}
+	if got := srv.queueLen("alice") - before; got != 0 {
+		t.Errorf("receipts are off, yet %d went out", got)
+	}
+
+	// The other direction of the same switch: what alice says about her own
+	// messages is not recorded either.
+	if _, err := bob.SendGroupText(t.Context(), groupID, "und?", SendOptions{}); err != nil {
+		t.Fatalf("bob sending: %v", err)
+	}
+	for _, res := range syncGroups(t, alice) {
+		if res.Group != nil && res.Group.DeliveredUpTo != nil {
+			if err := alice.SendGroupReceipt(t.Context(), groupID, bobID, ReceiptRead, *res.Group.DeliveredUpTo); err != nil {
+				t.Fatalf("alice confirming: %v", err)
+			}
+		}
+	}
+	syncGroups(t, bob)
+	chat, err := bob.GroupChat(groupID)
+	if err != nil || chat == nil {
+		t.Fatalf("GroupChat: %v, %v", chat, err)
+	}
+	if receipt, ok := chat.MemberReceipts[aliceID]; ok && receipt.ReadUpTo != nil {
+		t.Error("with receipts off, a peer's confirmation must leave no mark either")
+	}
+}
+
 // A copy that failed says why, and stops saying it once it arrives.
 //
 // Without this a fan-out records a bare state, and the one question worth

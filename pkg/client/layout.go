@@ -48,6 +48,7 @@ const (
 	fileFailures  = "failures.json"
 	fileKnown     = "known.json"
 	fileBlocked   = "blocked.json"
+	fileSettings  = "settings.json"
 
 	dirPrekeys = "prekeys"
 	dirPeers   = "peers"
@@ -85,6 +86,7 @@ func (s *store) processedPath() (string, error) { return s.path(fileProcessed) }
 func (s *store) failuresPath() (string, error)  { return s.path(fileFailures) }
 func (s *store) knownPath() (string, error)     { return s.path(fileKnown) }
 func (s *store) blockedPath() (string, error)   { return s.path(fileBlocked) }
+func (s *store) settingsPath() (string, error)  { return s.path(fileSettings) }
 
 func (s *store) prekeyPath(name string) (string, error) {
 	return s.path(dirPrekeys, name)

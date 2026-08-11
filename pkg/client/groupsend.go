@@ -1121,6 +1121,11 @@ func (c *Client) SendGroupReceipt(ctx context.Context, groupID, toAccountID stri
 	if status != ReceiptDelivered && status != ReceiptRead {
 		return fmt.Errorf("client: unknown receipt status %q", status)
 	}
+	// Same rule as a one-to-one confirmation, and asked in the same place: a
+	// group receipt says as much about the reader as any other.
+	if on, err := c.ReceiptsEnabled(); err != nil || !on {
+		return err
+	}
 	membership, err := c.GroupMembership(groupID)
 	if err != nil || membership == nil {
 		return err
@@ -1186,6 +1191,148 @@ func (c *Client) SendGroupReceipt(ctx context.Context, groupID, toAccountID stri
 	}
 	chat.MemberReceipts[toAccountID] = receipt
 	return c.PutGroupChat(*chat)
+}
+
+// ResendPendingReceipts re-fires every confirmation that never went out.
+//
+// A receipt is recorded as sent only once it actually has (see
+// [Client.SendReceipt]), so one lost to a failed send is not marked done and
+// goes again -- but only the next time there is something new to confirm, and a
+// quiet conversation may not offer that for days. The peer's ticks stay a step
+// behind for no reason either side can see. This is the sweep that closes it,
+// hung off a fresh connection, where whatever broke the last attempt is most
+// likely to have passed.
+//
+// Nothing here decides what to send: it names the newest thing each peer said
+// and lets SendReceipt and SendGroupReceipt apply their own rule, which already
+// skips anything that would say nothing new. A converged account therefore
+// sends nothing at all, and the "already told them" watermarks stay the single
+// place that decides.
+//
+// A read receipt only for a chat whose unread flag is clear. Re-firing one for
+// a chat the user never opened would claim they had read it, and a sweep must
+// not tell a peer something the user did not do.
+func (c *Client) ResendPendingReceipts(ctx context.Context) (int, error) {
+	on, err := c.ReceiptsEnabled()
+	if err != nil || !on {
+		return 0, err
+	}
+	var sent int
+
+	convos, err := c.Conversations()
+	if err != nil {
+		return 0, err
+	}
+	for _, convo := range convos {
+		msgs, err := c.Messages(convo.PeerAccountID)
+		if err != nil {
+			return sent, err
+		}
+		upTo, ok := newestFromPeer(msgs)
+		if !ok {
+			continue
+		}
+		if err := c.SendReceipt(ctx, convo.PeerAccountID, ReceiptDelivered, upTo); err == nil {
+			sent++
+		}
+		if convo.HasUnread {
+			continue
+		}
+		if err := c.SendReceipt(ctx, convo.PeerAccountID, ReceiptRead, upTo); err == nil {
+			sent++
+		}
+	}
+
+	groups, err := c.Groups()
+	if err != nil {
+		return sent, err
+	}
+	for _, groupID := range groups {
+		msgs, err := c.Messages(groupID)
+		if err != nil {
+			return sent, err
+		}
+		chat, err := c.GroupChat(groupID)
+		if err != nil {
+			return sent, err
+		}
+		unread := chat != nil && chat.HasUnread
+		// Per author, because a group receipt goes to the author alone and is
+		// anchored in their clock -- the same reduction reading a group does,
+		// for the same reason.
+		for _, author := range newestPerGroupAuthor(msgs) {
+			if err := c.SendGroupReceipt(ctx, groupID, author.accountID, ReceiptDelivered, author.upTo); err == nil {
+				sent++
+			}
+			if unread {
+				continue
+			}
+			if err := c.SendGroupReceipt(ctx, groupID, author.accountID, ReceiptRead, author.upTo); err == nil {
+				sent++
+			}
+		}
+	}
+	return sent, nil
+}
+
+// authorAnchor is one author and the newest thing of theirs we hold.
+type authorAnchor struct {
+	accountID string
+	upTo      time.Time
+}
+
+// newestPerGroupAuthor reduces a group transcript to one anchor per author.
+//
+// A watermark is cumulative, so confirming an author's newest message confirms
+// every earlier one they wrote. Each author's anchor is their *own* newest:
+// anchoring everyone at the transcript's newest would hand each of them a
+// reading of somebody else's clock, and a watermark set too far ahead can never
+// be walked back.
+func newestPerGroupAuthor(msgs []Message) []authorAnchor {
+	newest := map[string]time.Time{}
+	for i := range msgs {
+		m := &msgs[i]
+		if m.Mine || m.SenderAccountID == "" || m.Kind != MessageNormal {
+			continue
+		}
+		anchor := receiptAnchorOf(m)
+		if at, seen := newest[m.SenderAccountID]; !seen || anchor.After(at) {
+			newest[m.SenderAccountID] = anchor
+		}
+	}
+	anchors := make([]authorAnchor, 0, len(newest))
+	for account, upTo := range newest {
+		anchors = append(anchors, authorAnchor{accountID: account, upTo: upTo})
+	}
+	sort.Slice(anchors, func(i, j int) bool { return anchors[i].accountID < anchors[j].accountID })
+	return anchors
+}
+
+// newestFromPeer is the same reduction for a conversation, which has one other
+// author by construction.
+func newestFromPeer(msgs []Message) (time.Time, bool) {
+	var newest time.Time
+	var found bool
+	for i := range msgs {
+		m := &msgs[i]
+		if m.Mine || m.Kind != MessageNormal {
+			continue
+		}
+		if anchor := receiptAnchorOf(m); !found || anchor.After(newest) {
+			newest, found = anchor, true
+		}
+	}
+	return newest, found
+}
+
+// receiptAnchorOf is the instant a receipt for this message confirms up to: the
+// sender's own stamp where there is one, since a watermark only means anything
+// in the clock the sender used.
+func receiptAnchorOf(m *Message) time.Time {
+	if m.SenderSentAt != nil {
+		return *m.SenderSentAt
+	}
+	return m.Timestamp
 }
 
 // sentReceiptUpTo is how far this member has already been told, for status.

@@ -53,12 +53,6 @@ type ReceiveOptions struct {
 	// them.
 	OpenChatID string
 
-	// ReceiptsDisabled drops incoming receipts instead of recording them,
-	// mirroring the user's read-receipts setting. Negative because the default
-	// is on: a zero ReceiveOptions must behave like the app's default, not like
-	// a privacy setting nobody chose.
-	ReceiptsDisabled bool
-
 	// Now overrides the clock, for tests. Zero means time.Now().
 	Now time.Time
 }
@@ -363,17 +357,27 @@ func (c *Client) receive(msg IncomingMessage, opts ReceiveOptions, now time.Time
 		return res, nil
 
 	case ContentReceipt:
+		// The other half of the same setting, read from the same place rather
+		// than passed in: with receipts off this account does not record what a
+		// peer says about its own messages either, which is what makes turning
+		// them off reciprocal instead of one-sided. The envelope is still
+		// decrypted and acknowledged -- the ratchet has moved and refusing to
+		// read it would strand the queue behind it.
+		on, err := c.ReceiptsEnabled()
+		if err != nil {
+			return res, err
+		}
 		if dec.content.ReceiptGroupID != "" {
 			// One member telling *us*, the author, how far they have got with
 			// our messages in that group. Filed against them and never passed
 			// on: who has read what stays between reader and author.
 			res.Group = &GroupOutcome{GroupID: dec.content.ReceiptGroupID}
-			if opts.ReceiptsDisabled {
+			if !on {
 				return res, nil
 			}
 			return res, c.recordMemberReceipt(dec.content.ReceiptGroupID, peer, dec.content)
 		}
-		if !opts.ReceiptsDisabled {
+		if on {
 			if err := c.recordReceipt(peer, dec.content); err != nil {
 				return res, err
 			}

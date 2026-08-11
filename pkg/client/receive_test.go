@@ -406,10 +406,16 @@ func TestDisabledReceiptsAreDroppedNotRecorded(t *testing.T) {
 	if err := c.PutConversation(Conversation{PeerAccountID: "them"}); err != nil {
 		t.Fatalf("PutConversation: %v", err)
 	}
+	// The account's own setting, not a per-call flag: a background wake opens
+	// this account knowing nothing the app knows, and a rule it cannot see is a
+	// rule that does not hold.
+	if err := c.SetReceiptsEnabled(false); err != nil {
+		t.Fatalf("SetReceiptsEnabled: %v", err)
+	}
 
 	mustHandle(t, c, p.msg("r1", p.send(mustJSON(t, map[string]any{
 		"v": 2, "kind": "receipt", "status": "delivered", "up_to_sent_at": "2026-08-09T10:00:00.000Z",
-	}))), ReceiveOptions{ReceiptsDisabled: true})
+	}))), ReceiveOptions{})
 
 	convo, _ := c.Conversation("them")
 	if convo.PeerDeliveredUpTo != nil {
