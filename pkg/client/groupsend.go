@@ -546,10 +546,11 @@ func (c *Client) fanOut(
 			// Cleared, not left: this copy is no longer failing, and a reason
 			// that outlives its failure is worse than none.
 			deliveries[i].Error = ""
+			deliveries[i].Detail = ""
 			continue
 		}
 		deliveries[i].State = SendFailed
-		deliveries[i].Error = postFailureReason(posted, account)
+		deliveries[i].Error, deliveries[i].Detail = postFailureReason(posted, account)
 		// A member who did not get this copy has also not heard whatever
 		// facts rode with it, so they are owed the whole set.
 		if err := c.oweGroupSnapshot(groupID, account); err != nil {
@@ -560,19 +561,70 @@ func (c *Client) fanOut(
 }
 
 // postFailureReason phrases why one prepared copy did not arrive.
-func postFailureReason(posted map[string]error, account string) string {
+// Returns two things: a sentence for the row under this member's name in the
+// delivery sheet, and the technical text behind it for [GroupDelivery.Detail].
+func postFailureReason(posted map[string]error, account string) (reason, detail string) {
 	err, attempted := posted[account]
 	switch {
 	case !attempted:
 		// Their copy was encrypted and then never handed to a server at all.
 		// Should not happen -- every prepared copy is passed to deliverToServer
 		// -- so say that rather than inventing a network error.
-		return "their copy was prepared but never posted"
+		return "Not sent. Try again.", "their copy was prepared but never posted"
 	case err == nil:
-		return "posting their copy failed for no stated reason"
+		return "Not delivered.", "posting their copy failed for no stated reason"
 	default:
-		return fmt.Sprintf("posting their copy: %v", err)
+		return humanFailure(err), fmt.Sprintf("posting their copy: %v", err)
 	}
+}
+
+// humanFailure says why a copy did not arrive, for somebody who is not going
+// to read a stack of wrapped errors and should not have to.
+//
+// The default matters more than the special cases. In a federation there is no
+// single operator, so a server that does not answer is an ordinary event, not
+// an incident: it may be down for the afternoon, switched off for good, or
+// pointed at something else since the last time anybody sent there. All of
+// that is one thing to the person looking at the bubble -- their message did
+// not get there, and the reason is on the far end -- and none of it is helped
+// by naming a syscall. [GroupDelivery.Detail] keeps the naming.
+func humanFailure(err error) string {
+	var enqueue *enqueueError
+	if errors.As(err, &enqueue) {
+		switch enqueue.Status {
+		case "unknown_recipient":
+			return "Their server no longer knows this account."
+		case "queue_full":
+			return "Their server is full right now. Try again later."
+		case "invalid":
+			return "Their server would not accept the message."
+		default:
+			return "Their server could not take the message. Try again later."
+		}
+	}
+
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		switch {
+		case apiErr.Code == "federation_disabled":
+			return "Their server does not accept messages from other servers."
+		case apiErr.StatusCode == 404:
+			return "Their server no longer knows this account."
+		case apiErr.StatusCode == 429:
+			return "Their server is busy right now. Try again later."
+		case apiErr.StatusCode >= 500:
+			return "Their server had a problem. Try again later."
+		default:
+			return "Their server refused the message."
+		}
+	}
+
+	var notFreizone *NotFreizoneServerError
+	if errors.As(err, &notFreizone) {
+		return "That address is not a Freizone server."
+	}
+
+	return "Their server could not be reached."
 }
 
 // prepareCopy resolves one member's device and encrypts for them, persisting
@@ -746,7 +798,7 @@ func (c *Client) sendBatch(ctx context.Context, server string, copies []prepared
 		case !answered || IsDeliveredStatus(status):
 			sent[copy.member.AccountID] = nil
 		default:
-			sent[copy.member.AccountID] = fmt.Errorf("their server answered %q", status)
+			sent[copy.member.AccountID] = &enqueueError{Status: status}
 		}
 		if answered && IsStaleRecipientStatus(status) {
 			// Their device is gone. Forget it so the next attempt re-resolves

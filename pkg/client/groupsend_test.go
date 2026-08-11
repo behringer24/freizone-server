@@ -2,6 +2,9 @@ package client
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -1485,4 +1488,77 @@ func (c *Client) forgetGroupForTest(groupID string) error {
 		}
 	}
 	return nil
+}
+
+// What the delivery sheet says is meant for the person who sent the message.
+//
+// The reason lives in a bottom sheet under a member's name in a consumer app,
+// so it has to be a sentence somebody can act on. It used to be the wrapped Go
+// error verbatim -- endpoint, URL, and syscall, three restatements of the same
+// request -- which says "something technical went wrong" and nothing else.
+func TestAFailedCopyIsExplainedInPlainWords(t *testing.T) {
+	srv := newFakeServer(t)
+	alice := srv.account(t, "alice")
+	bob := srv.account(t, "bob")
+	carol := srv.account(t, "carol")
+	bobID := identityOf(t, bob).AccountID
+
+	groupID := groupWith(t, srv, alice, bob, carol)
+	srv.set(func(s *fakeServer) { s.failAccounts = map[string]bool{bobID: true} })
+	sent, err := alice.SendGroupText(t.Context(), groupID, "kommt das an?", SendOptions{})
+	if err != nil {
+		t.Fatalf("SendGroupText: %v", err)
+	}
+
+	failed := deliveryOf(t, alice, groupID, sent.Message.ID, bobID)
+	for _, jargon := range []string{"client:", "POST /", "http://", "dial tcp", "%!"} {
+		if strings.Contains(failed.Error, jargon) {
+			t.Errorf("the sheet shows %q, which contains %q", failed.Error, jargon)
+		}
+	}
+	if !strings.HasSuffix(failed.Error, ".") {
+		t.Errorf("the sheet shows %q, which is not a sentence", failed.Error)
+	}
+
+	// And nothing was lost by saying it that way.
+	if failed.Detail == "" {
+		t.Error("the technical reason was dropped rather than moved")
+	}
+	if !strings.Contains(failed.Detail, "posting their copy") {
+		t.Errorf("the detail no longer says what was attempted: %q", failed.Detail)
+	}
+}
+
+// The one that decides how this reads in practice: in a federation nobody
+// operates every server, so "not there" is ordinary rather than exceptional.
+func TestEveryWayAServerCanFailHasWords(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"unreachable", errors.New("dial tcp 10.0.0.1:443: connect: connection refused"),
+			"Their server could not be reached."},
+		{"timed out", fmt.Errorf("posting: %w", context.DeadlineExceeded),
+			"Their server could not be reached."},
+		{"gone from their server", &APIError{StatusCode: 404, Code: "not_found"},
+			"Their server no longer knows this account."},
+		{"federation off", &APIError{StatusCode: 404, Code: "federation_disabled"},
+			"Their server does not accept messages from other servers."},
+		{"their server broke", &APIError{StatusCode: 503, Code: "unavailable"},
+			"Their server had a problem. Try again later."},
+		{"queue full", &enqueueError{Status: "queue_full"},
+			"Their server is full right now. Try again later."},
+		{"recipient gone", &enqueueError{Status: "unknown_recipient"},
+			"Their server no longer knows this account."},
+		{"not a freizone server", &NotFreizoneServerError{StatusCode: 200, Host: "example.org"},
+			"That address is not a Freizone server."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := humanFailure(tc.err); got != tc.want {
+				t.Errorf("humanFailure: want %q, got %q", tc.want, got)
+			}
+		})
+	}
 }

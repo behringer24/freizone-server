@@ -832,3 +832,44 @@ a one-time reset. No wire-format change.
   call sites, which is why the screens do not change and `AppState` stays as the
   view model, and 60 + 76 lines for `sendMessage`/`_deliver`. Step 5 is where
   the data reset takes effect; the Pixel backup exists for exactly that moment
+
+### SRV-24 — Let a server move house
+Status: `planned` · Also affects: freizone-app, shared Go core
+
+An account's address names its server, so today a server is forever: an
+operator who wants to move to another host, another domain, or hand the whole
+thing to somebody else has no move that keeps their users reachable. Everyone
+who ever wrote the old address down — every peer's contact list, every group
+fact naming a member's server — keeps pointing at a machine that is gone.
+
+The shape suggested is HTTP redirection: the old host answers `301`/`302`
+pointing at the new one, and clients follow it and remember. Cheap for the
+operator and invisible to the user, which is the appeal. What it does not
+settle, and what the design has to:
+
+- **What actually moves.** A redirect only forwards requests; it does not
+  carry accounts. The new host has to already hold the root keys, device
+  certificates, prekeys and queues, or every redirected request 404s. So the
+  redirect is the last step of a migration, not the migration.
+- **Why a client should believe it.** A redirect is an unauthenticated
+  instruction to send someone's traffic elsewhere, and the thing it moves is
+  where messages for that account go. Following one blindly is a redirection
+  attack with a `Location` header. Something has to be signed — plausibly by
+  the old server's identity, or by each account's own root key — before a
+  client rewrites a stored address.
+- **Permanent vs temporary.** `301` and `302` mean different things to a
+  client that persists what it learns: one rewrites the address in the
+  contact list and the group facts, the other is followed for this request
+  and forgotten. Group facts are signed and grow-only, which makes rewriting
+  a member's server a fact-set question rather than a string replacement.
+- **When the old host stops answering.** A redirect only works while the old
+  address still resolves and serves. Anyone offline for longer than the old
+  domain lives never sees it, so there is probably also a need for the new
+  server to be discoverable from what a peer already holds.
+
+- 2026-08-11 — raised by Andreas while reviewing how the app words a failure
+  to reach a server. A server that is unreachable was noted to be ordinary
+  rather than exceptional in this architecture — down, switched off for good,
+  or reused for something else — and permanent relocation is the case worth
+  supporting properly instead of leaving accounts stranded. Filed as its own
+  item; nothing started

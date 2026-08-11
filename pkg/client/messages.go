@@ -93,12 +93,23 @@ type GroupDelivery struct {
 
 	State SendState `json:"state"`
 
-	// Error is why this copy failed, in the words of whatever refused it, and
-	// empty for one that did not fail. Persisted rather than kept for the run
-	// that produced it: a fan-out that failed overnight is looked at in the
-	// morning, and "failed" with no reason is a dead end for whoever has to act
-	// on it. Local and diagnostic -- it never goes on the wire.
+	// Error is why this copy failed, in a sentence meant for the person who
+	// sent it, and empty for one that did not fail. Persisted rather than kept
+	// for the run that produced it: a fan-out that failed overnight is looked
+	// at in the morning, and "failed" with no reason is a dead end for whoever
+	// has to act on it. Local -- it never goes on the wire.
+	//
+	// A server being unreachable is ordinary here rather than exceptional: it
+	// may be down for an hour, switched off for good, or reused for something
+	// else entirely. So this says that, in those words, and leaves the
+	// endpoint and the syscall to [Detail].
 	Error string `json:"error,omitempty"`
+
+	// Detail is the same failure in the words of whatever refused it. Never
+	// shown: it exists so that making Error readable costs nothing in
+	// diagnosis, since for a failure nobody watched this is the only record
+	// there will ever be.
+	Detail string `json:"detail,omitempty"`
 
 	// AttachmentSkipped: they got the caption but not the picture, because
 	// their server does not store attachments or would not take this one. Not a
@@ -170,6 +181,7 @@ type logRecord struct {
 	AccountID         string `json:"to,omitempty"`
 	WireMessageID     string `json:"wire_id,omitempty"`
 	Error             string `json:"error,omitempty"`
+	Detail            string `json:"detail,omitempty"`
 	AttachmentSkipped bool   `json:"attachment_skipped,omitempty"`
 
 	// pin
@@ -260,6 +272,7 @@ func (c *Client) readTranscript(chatID string) (*transcript, error) {
 						// a later attempt loses the reason the earlier one
 						// failed rather than carrying it forever.
 						msg.Deliveries[i].Error = rec.Error
+						msg.Deliveries[i].Detail = rec.Detail
 						msg.Deliveries[i].AttachmentSkipped = rec.AttachmentSkipped
 						if rec.WireMessageID != "" {
 							msg.Deliveries[i].WireMessageID = rec.WireMessageID
@@ -388,6 +401,7 @@ func (c *Client) SetGroupDelivery(chatID, messageID string, delivery GroupDelive
 	return c.appendRecord(chatID, logRecord{
 		T: recDelivery, ID: messageID, AccountID: delivery.AccountID,
 		SendState: delivery.State, Error: truncateReason(delivery.Error),
+		Detail:            truncateReason(delivery.Detail),
 		AttachmentSkipped: delivery.AttachmentSkipped,
 		WireMessageID:     delivery.WireMessageID,
 	})

@@ -41,6 +41,16 @@ func (e *NotFreizoneServerError) Error() string {
 	return fmt.Sprintf("client: %s did not answer as a Freizone server (HTTP %d)", e.Host, e.StatusCode)
 }
 
+// enqueueError is one copy's per-item batch status (PROTOCOL.md §7) saying the
+// recipient's server did not take it. A type rather than a formatted string so
+// the status survives to whoever has to phrase it for a reader -- the batch
+// answers `queue_full` and `unknown_recipient` to two very different people.
+type enqueueError struct{ Status string }
+
+func (e *enqueueError) Error() string {
+	return fmt.Sprintf("their server answered %q", e.Status)
+}
+
 // IsStaleDevice reports whether err is a server saying the device id it was
 // given is dead -- PROTOCOL.md §4's stale-device rule.
 //
