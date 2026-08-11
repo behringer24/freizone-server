@@ -258,7 +258,10 @@ func (s *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(path, "/v1/accounts/")
 		acc := s.lookupAccount(id)
 		if acc == nil {
-			s.writeError(w, http.StatusNotFound, "unknown_account")
+			// `not_found`, as the real server answers here (internal/api's
+			// accounts.go) -- there is no `unknown_account` code, and a client
+			// that keyed off one would pass here and fail in the field.
+			s.writeError(w, http.StatusNotFound, "not_found")
 			return
 		}
 		s.writeJSON(w, accountWire{

@@ -165,12 +165,15 @@ func TestAnUnreachableMemberIsOwedTheFactsAndPaidLater(t *testing.T) {
 	}
 
 	srv.set(func(s *fakeServer) { s.sendStatus = 0 })
-	paid, err := alice.PayGroupSnapshotDebts(t.Context())
+	paid, gone, err := alice.PayGroupSnapshotDebts(t.Context())
 	if err != nil {
 		t.Fatalf("PayGroupSnapshotDebts: %v", err)
 	}
 	if paid != 1 {
 		t.Fatalf("want one debt settled, got %d", paid)
+	}
+	if len(gone) != 0 {
+		t.Errorf("nobody's account is gone here, got %v", gone)
 	}
 
 	got := syncGroups(t, bob)
@@ -995,6 +998,70 @@ func TestASecondCopyIsNeitherStoredNorAnnouncedAgain(t *testing.T) {
 	}
 	if copies != 1 {
 		t.Errorf("bob's transcript holds the message %d times", copies)
+	}
+}
+
+// A snapshot debt is kept for a member who is merely unreachable, and dropped
+// only for one whose account is gone.
+//
+// The two look identical at the failure: this server answers the same
+// `not_found` for an unknown account and an unknown device, so the difference
+// has to be asked for rather than read off the error. Getting it wrong either
+// way costs something real -- retrying forever for somebody who will never
+// answer, or giving up on somebody who just replaced their phone.
+func TestASnapshotDebtIsDroppedOnlyWhenTheAccountIsGone(t *testing.T) {
+	srv := newFakeServer(t)
+	alice := srv.account(t, "alice")
+	bob := srv.account(t, "bob")
+	bobID := identityOf(t, bob).AccountID
+
+	groupID, err := alice.CreateGroup(t.Context(), "Schuldner")
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	// The invitation cannot go out, so alice owes bob the facts.
+	srv.set(func(s *fakeServer) { s.sendStatus = http.StatusServiceUnavailable })
+	if err := alice.InviteToGroup(t.Context(), groupID, bobID, ""); err != nil {
+		t.Fatalf("InviteToGroup: %v", err)
+	}
+	owed := func() bool {
+		peers, err := alice.groupPeersFor(groupID)
+		if err != nil {
+			t.Fatalf("groupPeersFor: %v", err)
+		}
+		return peers.Owed[bobID]
+	}
+	if !owed() {
+		t.Fatal("an invitation that could not be sent must leave a debt")
+	}
+
+	// Still unreachable, but bob's account is right where it was: the debt has
+	// to survive, however many passes it takes.
+	for range 3 {
+		_, gone, err := alice.PayGroupSnapshotDebts(t.Context())
+		if err != nil {
+			t.Fatalf("PayGroupSnapshotDebts: %v", err)
+		}
+		if len(gone) != 0 {
+			t.Fatalf("bob's account exists; nothing may be given up on: %v", gone)
+		}
+	}
+	if !owed() {
+		t.Error("a debt to an unreachable member must not be dropped")
+	}
+
+	// Now the account itself is gone -- deleted by an admin, say. No attempt
+	// can ever succeed, and nothing in the group's signed facts can say so.
+	srv.set(func(s *fakeServer) { delete(s.accounts, bobID) })
+	_, gone, err := alice.PayGroupSnapshotDebts(t.Context())
+	if err != nil {
+		t.Fatalf("PayGroupSnapshotDebts: %v", err)
+	}
+	if len(gone) != 1 || gone[0] != bobID {
+		t.Errorf("want bob reported gone once, got %v", gone)
+	}
+	if owed() {
+		t.Error("a debt nobody can ever be paid must be dropped")
 	}
 }
 

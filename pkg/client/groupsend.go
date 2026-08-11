@@ -1007,16 +1007,18 @@ func (c *Client) AskForGroupFacts(ctx context.Context, groupID, peerAccountID, p
 
 // PayGroupSnapshotDebts sends the fact set to everyone owed one. Returns how
 // many debts were settled.
-func (c *Client) PayGroupSnapshotDebts(ctx context.Context) (int, error) {
+// gone names the members dropped because their account no longer exists, so a
+// caller can say so once rather than leaving the user with a member row that
+// never settles.
+func (c *Client) PayGroupSnapshotDebts(ctx context.Context) (paid int, gone []string, err error) {
 	groups, err := c.Groups()
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
-	var paid int
 	for _, groupID := range groups {
 		peers, err := c.groupPeersFor(groupID)
 		if err != nil {
-			return paid, err
+			return paid, gone, err
 		}
 		owed := make([]string, 0, len(peers.Owed))
 		for account := range peers.Owed {
@@ -1026,28 +1028,79 @@ func (c *Client) PayGroupSnapshotDebts(ctx context.Context) (int, error) {
 
 		membership, err := c.GroupMembership(groupID)
 		if err != nil {
-			return paid, err
+			return paid, gone, err
 		}
 		for _, account := range owed {
-			if membership == nil || memberOf(membership, account) == nil {
+			member := (*group.Member)(nil)
+			if membership != nil {
+				member = memberOf(membership, account)
+			}
+			if member == nil {
 				// Not a member any more: nothing to pay, and the debt would
 				// otherwise be retried on every reconnect forever.
 				if err := c.clearGroupSnapshotDebt(groupID, account); err != nil {
-					return paid, err
+					return paid, gone, err
 				}
 				continue
 			}
-			if err := c.SendGroupSnapshot(ctx, groupID, account); err != nil {
-				// Still unreachable. The debt stays, to be tried again on the
-				// next reconnect -- uncapped, unlike a failed message, because
-				// a member who never gets the facts is a member who can never
-				// take part.
+			sendErr := c.SendGroupSnapshot(ctx, groupID, account)
+			if sendErr == nil {
+				paid++
 				continue
 			}
-			paid++
+			// Still unreachable. The debt stays, to be tried again on the next
+			// reconnect -- uncapped, unlike a failed message, because a member
+			// who never gets the facts is a member who can never take part.
+			//
+			// Unless there is nobody left to reach. Nothing in a group's signed
+			// facts can say "this account ceased to exist", so that one case
+			// would be retried forever with no attempt that could ever succeed,
+			// and the member row stays until a moderator removes it either way.
+			absent, err := c.accountIsGone(ctx, member.Server, account)
+			if err != nil || !absent {
+				continue
+			}
+			if err := c.clearGroupSnapshotDebt(groupID, account); err != nil {
+				return paid, gone, err
+			}
+			gone = append(gone, account)
 		}
 	}
-	return paid, nil
+	return paid, gone, nil
+}
+
+// accountIsGone asks the server that would hold an account whether it still
+// knows it.
+//
+// Asked rather than inferred from the failure, and that distinction is the
+// whole of it. A 404 does not say what was missing: this server answers the
+// catch-all `not_found` for an unknown account and for an unknown device
+// alike, and reading the second as the first would drop a debt for a member
+// who had merely replaced their phone -- silently, permanently, and exactly
+// where the code above is careful never to give up. The account endpoint's own
+// 404 is unambiguous, so it is worth the one request, and only ever on a path
+// that has already failed.
+//
+// An account that exists but has no usable device is not gone: ResolvePeer
+// says so with an error of its own rather than a 404, and that keeps the debt.
+func (c *Client) accountIsGone(ctx context.Context, server, accountID string) (bool, error) {
+	id, err := c.Identity()
+	if err != nil {
+		return false, err
+	}
+	if server == id.Server {
+		// Our own server is addressed as "no server", the same emptiness the
+		// send path uses to choose the local route.
+		server = ""
+	}
+	if _, err := c.ResolvePeer(ctx, accountID, server); err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			return true, nil
+		}
+		return false, err
+	}
+	return false, nil
 }
 
 // SendGroupReceipt tells one member how far we have got with *their* messages
