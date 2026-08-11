@@ -1063,6 +1063,9 @@ func (c *Client) PayGroupSnapshotDebts(ctx context.Context) (paid int, gone []st
 			if err := c.clearGroupSnapshotDebt(groupID, account); err != nil {
 				return paid, gone, err
 			}
+			if err := c.recordMemberGone(groupID, account); err != nil {
+				return paid, gone, err
+			}
 			gone = append(gone, account)
 		}
 	}

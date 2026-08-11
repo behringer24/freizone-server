@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -1062,6 +1063,35 @@ func TestASnapshotDebtIsDroppedOnlyWhenTheAccountIsGone(t *testing.T) {
 	}
 	if owed() {
 		t.Error("a debt nobody can ever be paid must be dropped")
+	}
+
+	// Written where it happened, because nothing else will ever mention it and
+	// the member keeps their row until a moderator signs a removal.
+	said := func() int {
+		msgs, err := alice.Messages(groupID)
+		if err != nil {
+			t.Fatalf("Messages: %v", err)
+		}
+		var n int
+		for _, m := range msgs {
+			if m.Kind == MessageSystemInfo && strings.Contains(m.Text, "no longer exists") {
+				n++
+			}
+		}
+		return n
+	}
+	if said() != 1 {
+		t.Errorf("want the group told once, got %d lines", said())
+	}
+
+	// And not again on the next pass, nor the one after.
+	for range 2 {
+		if _, _, err := alice.PayGroupSnapshotDebts(t.Context()); err != nil {
+			t.Fatalf("PayGroupSnapshotDebts: %v", err)
+		}
+	}
+	if said() != 1 {
+		t.Errorf("the group was told %d times", said())
 	}
 }
 

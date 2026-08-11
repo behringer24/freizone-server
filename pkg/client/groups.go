@@ -741,6 +741,45 @@ func (c *Client) recordBlockedGroupMessage(groupID, senderAccountID string, now 
 	})
 }
 
+// recordMemberGone leaves a line in the group saying an account has ceased to
+// exist, so the one thing nobody else will ever mention is at least written
+// down where it happened.
+//
+// Local, like [Client.recordBlockedGroupMessage] and unlike every other system
+// line here: those are diffed from the signed fact set, and no fact can say
+// "this account is gone" -- their server did, and only this device asked. The
+// row stays in the member list either way, because only a moderator's signed
+// removal can take it out, so a reader who finds nothing said about it is left
+// with a member who never answers and no reason given.
+//
+// Once, not once per pass: the debt this comes from is cleared in the same
+// breath, so there is nothing left to discover a second time. The check against
+// an identical line is for a member owed facts in this group again later --
+// re-invited, re-created -- where saying it twice would be noise.
+func (c *Client) recordMemberGone(groupID, accountID string) error {
+	line := fmt.Sprintf(
+		"%s no longer exists on their server, so they can no longer receive anything here.",
+		memberLabel(accountID),
+	)
+	msgs, err := c.Messages(groupID)
+	if err != nil {
+		return err
+	}
+	for i := range msgs {
+		if msgs[i].Kind == MessageSystemInfo && msgs[i].Text == line {
+			return nil
+		}
+	}
+	id, err := newMessageID()
+	if err != nil {
+		return err
+	}
+	return c.AppendMessage(groupID, Message{
+		ID: id, Text: line, Timestamp: time.Now().UTC(),
+		Kind: MessageSystemInfo, SendState: SendSent,
+	})
+}
+
 func memberOf(r *group.Resolved, accountID string) *group.Member {
 	if r == nil {
 		return nil
