@@ -1,4 +1,4 @@
-package client
+﻿package client
 
 import (
 	"fmt"
@@ -635,15 +635,31 @@ func (c *Client) PutGroupChat(chat GroupChat) error {
 // transcript is created anyway rather than dropping the message -- the ratchet
 // has already advanced past this envelope, so there is no second chance at it
 // -- and it simply shows an unnamed group until the facts catch up.
-func (c *Client) storeGroupMessage(content Content, senderAccountID string, now time.Time, openChatID string) (Message, error) {
+// stored is false for a message this transcript already holds, which is not an
+// error and not a second line: the caller uses it to keep a duplicate from
+// being announced a second time.
+func (c *Client) storeGroupMessage(content Content, senderAccountID string, now time.Time, openChatID string) (line Message, stored bool, err error) {
 	id := content.ID
 	if id == "" {
-		var err error
 		if id, err = newMessageID(); err != nil {
-			return Message{}, err
+			return Message{}, false, err
+		}
+	} else {
+		// Same message, second envelope. Their copy still gets confirmed --
+		// they clearly did not hear the first confirmation -- but the
+		// transcript keeps one line and the user is interrupted once.
+		seen, err := c.MessageExists(content.GroupID, id)
+		if err != nil {
+			return Message{}, false, err
+		}
+		if seen {
+			// Only what the caller needs of it: which line this was, and the
+			// anchor to confirm back. The line itself is already in place and
+			// must not be rewritten from a second copy.
+			return Message{ID: id, SenderSentAt: content.SentAt}, false, nil
 		}
 	}
-	line := Message{
+	line = Message{
 		ID:           id,
 		Text:         content.Text,
 		Timestamp:    now,
@@ -660,17 +676,17 @@ func (c *Client) storeGroupMessage(content Content, senderAccountID string, now 
 		Attachments:          content.Attachments,
 	}
 	if err := c.AppendMessage(content.GroupID, line); err != nil {
-		return Message{}, err
+		return Message{}, false, err
 	}
 	for _, att := range content.Attachments {
 		if err := c.WriteAttachmentThumb(content.GroupID, id, att.Thumb); err != nil {
-			return Message{}, err
+			return Message{}, false, err
 		}
 	}
 
 	chat, err := c.GroupChat(content.GroupID)
 	if err != nil {
-		return Message{}, err
+		return Message{}, false, err
 	}
 	if chat == nil {
 		chat = &GroupChat{GroupID: content.GroupID}
@@ -680,7 +696,7 @@ func (c *Client) storeGroupMessage(content Content, senderAccountID string, now 
 	if openChatID != content.GroupID {
 		chat.HasUnread = true
 	}
-	return line, c.PutGroupChat(*chat)
+	return line, true, c.PutGroupChat(*chat)
 }
 
 // recordBlockedGroupMessage leaves a visible trace of a message dropped

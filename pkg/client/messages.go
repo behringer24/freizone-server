@@ -164,9 +164,11 @@ type logRecord struct {
 	Attachments          []Attachment    `json:"attachments,omitempty"`
 	Deliveries           []GroupDelivery `json:"deliveries,omitempty"`
 
-	// delivery: which recipient's copy this concerns, why it failed, and
-	// whether they were left without the picture
+	// delivery: which recipient's copy this concerns, the id their server
+	// de-duplicates it by, why it failed, and whether they were left without
+	// the picture
 	AccountID         string `json:"to,omitempty"`
+	WireMessageID     string `json:"wire_id,omitempty"`
 	Error             string `json:"error,omitempty"`
 	AttachmentSkipped bool   `json:"attachment_skipped,omitempty"`
 
@@ -259,6 +261,9 @@ func (c *Client) readTranscript(chatID string) (*transcript, error) {
 						// failed rather than carrying it forever.
 						msg.Deliveries[i].Error = rec.Error
 						msg.Deliveries[i].AttachmentSkipped = rec.AttachmentSkipped
+						if rec.WireMessageID != "" {
+							msg.Deliveries[i].WireMessageID = rec.WireMessageID
+						}
 						break
 					}
 				}
@@ -372,23 +377,19 @@ func (c *Client) SetMessageAttachments(chatID, messageID string, attachments []A
 // SetGroupDeliveryState moves one recipient.s copy of a group message, so a
 // retry can address only the copies that failed.
 //
-// reason is why, for a copy that failed, and is cleared by passing "" -- which
-// is what an attempt that finally succeeded does, so the record never keeps a
-// stale explanation for a copy that has since arrived. attachmentSkipped says
-// this member got the caption without the picture, which is not a failure and
-// is decided per attempt for the same reason.
-func (c *Client) SetGroupDeliveryState(
-	chatID, messageID, accountID string,
-	state SendState,
-	reason string,
-	attachmentSkipped bool,
-) error {
+// The whole record replaces the previous one rather than being merged into it,
+// which is what lets an attempt that finally succeeded drop the reason the
+// earlier one failed. [GroupDelivery.WireMessageID] is part of that on purpose:
+// it is the id the recipient's server de-duplicates by, so a retry that cannot
+// read it back delivers the message to them a second time.
+func (c *Client) SetGroupDelivery(chatID, messageID string, delivery GroupDelivery) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.appendRecord(chatID, logRecord{
-		T: recDelivery, ID: messageID, AccountID: accountID,
-		SendState: state, Error: truncateReason(reason),
-		AttachmentSkipped: attachmentSkipped,
+		T: recDelivery, ID: messageID, AccountID: delivery.AccountID,
+		SendState: delivery.State, Error: truncateReason(delivery.Error),
+		AttachmentSkipped: delivery.AttachmentSkipped,
+		WireMessageID:     delivery.WireMessageID,
 	})
 }
 
@@ -418,6 +419,25 @@ func (c *Client) Messages(chatID string) ([]Message, error) {
 		out = append(out, *t.messages[id])
 	}
 	return out, nil
+}
+
+// MessageExists reports whether a chat already holds a line with this id.
+//
+// The envelope-level check (see WasMessageProcessed) catches the same envelope
+// arriving twice, which is the common case. This catches the same *message*
+// arriving in two envelopes -- a group retry that could not reuse the
+// recipient's wire id, an older build's copy -- where the id in the content is
+// the only thing that says they are one message.
+func (c *Client) MessageExists(chatID, messageID string) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	t, err := c.readTranscript(chatID)
+	if err != nil {
+		return false, err
+	}
+	_, ok := t.messages[messageID]
+	return ok, nil
 }
 
 // LastMessage returns a chat's most recent line, or nil for an empty chat.
@@ -494,6 +514,9 @@ func applyLaterChanges(lines [][]byte, msg *Message) {
 					msg.Deliveries[j].State = rec.SendState
 					msg.Deliveries[j].Error = rec.Error
 					msg.Deliveries[j].AttachmentSkipped = rec.AttachmentSkipped
+					if rec.WireMessageID != "" {
+						msg.Deliveries[j].WireMessageID = rec.WireMessageID
+					}
 				}
 			}
 		}

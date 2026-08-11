@@ -198,8 +198,11 @@ func TestSetSendStateAndDeliveryState(t *testing.T) {
 		t.Fatalf("SetMessageSendState: %v", err)
 	}
 	// A group send is N states, and a retry addresses only the ones that failed.
-	if err := c.SetGroupDeliveryState("chat", "m1", "fz1b", SendFailed, "their server said no", false); err != nil {
-		t.Fatalf("SetGroupDeliveryState: %v", err)
+	if err := c.SetGroupDelivery("chat", "m1", GroupDelivery{
+		AccountID: "fz1b", WireMessageID: "w-b", State: SendFailed,
+		Error: "their server said no",
+	}); err != nil {
+		t.Fatalf("SetGroupDelivery: %v", err)
 	}
 
 	last, err := c.LastMessage("chat")
@@ -227,8 +230,10 @@ func TestSetSendStateAndDeliveryState(t *testing.T) {
 
 	// Succeeding later clears it: a reason that outlives its failure is worse
 	// than none.
-	if err := c.SetGroupDeliveryState("chat", "m1", "fz1b", SendSent, "", false); err != nil {
-		t.Fatalf("SetGroupDeliveryState again: %v", err)
+	if err := c.SetGroupDelivery("chat", "m1", GroupDelivery{
+		AccountID: "fz1b", WireMessageID: "w-b", State: SendSent,
+	}); err != nil {
+		t.Fatalf("SetGroupDelivery again: %v", err)
 	}
 	last, err = c.LastMessage("chat")
 	if err != nil {

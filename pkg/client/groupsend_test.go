@@ -815,6 +815,135 @@ func TestRequestGroupSyncAsksTheFounderFirst(t *testing.T) {
 	}
 }
 
+// A retry does not deliver the message to anybody a second time.
+//
+// Found on a live device: one member's transcript held the same group message
+// five times, as five records with one id, and every copy had interrupted them
+// again. Each attempt was minting a fresh wire id, so the recipient's server
+// saw five unrelated messages instead of one message posted five times.
+func TestARetryDoesNotDeliverAGroupMessageTwice(t *testing.T) {
+	srv := newFakeServer(t)
+	alice := srv.account(t, "alice")
+	bob := srv.account(t, "bob")
+	carol := srv.account(t, "carol")
+	bobID := identityOf(t, bob).AccountID
+
+	groupID := groupWith(t, srv, alice, bob, carol)
+
+	// Bob's copy fails, so there is something to retry -- and carol's arrives,
+	// so the retry has somebody it must leave alone.
+	srv.set(func(s *fakeServer) { s.failAccounts = map[string]bool{bobID: true} })
+	sent, err := alice.SendGroupText(t.Context(), groupID, "einmal", SendOptions{})
+	if err != nil {
+		t.Fatalf("SendGroupText: %v", err)
+	}
+	var bobsWireID string
+	for _, d := range sent.Message.Deliveries {
+		if d.AccountID == bobID {
+			bobsWireID = d.WireMessageID
+		}
+	}
+	if bobsWireID == "" {
+		t.Fatal("bob's copy was never prepared, so nothing was recorded to retry under")
+	}
+
+	srv.set(func(s *fakeServer) { s.failAccounts = nil })
+	retried, err := alice.RetryGroupMessage(t.Context(), groupID, sent.Message.ID)
+	if err != nil {
+		t.Fatalf("RetryGroupMessage: %v", err)
+	}
+	for _, d := range retried.Message.Deliveries {
+		if d.AccountID == bobID && d.WireMessageID != bobsWireID {
+			t.Errorf("the retry minted a new wire id (%s, was %s) -- their server "+
+				"cannot recognise the duplicate", d.WireMessageID, bobsWireID)
+		}
+	}
+
+	// Carol got exactly one copy and heard about it once.
+	carolLines := 0
+	for _, res := range syncGroups(t, carol) {
+		if res.StoredMessageID == sent.Message.ID && res.ShouldNotify {
+			carolLines++
+		}
+	}
+	if carolLines != 1 {
+		t.Errorf("carol was told about one message %d times", carolLines)
+	}
+	msgs, err := carol.Messages(groupID)
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+	var copies int
+	for _, m := range msgs {
+		if m.ID == sent.Message.ID {
+			copies++
+		}
+	}
+	if copies != 1 {
+		t.Errorf("carol's transcript holds the message %d times", copies)
+	}
+}
+
+// The same message arriving in a second envelope is one line and one
+// interruption, whatever carried it.
+func TestASecondCopyIsNeitherStoredNorAnnouncedAgain(t *testing.T) {
+	srv := newFakeServer(t)
+	alice := srv.account(t, "alice")
+	bob := srv.account(t, "bob")
+
+	groupID := groupWith(t, srv, alice, bob)
+	if _, err := alice.SendGroupText(t.Context(), groupID, "einmal gesagt", SendOptions{}); err != nil {
+		t.Fatalf("SendGroupText: %v", err)
+	}
+	syncGroups(t, bob)
+
+	msgs, err := bob.Messages(groupID)
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+	var received *Message
+	for i := range msgs {
+		if msgs[i].Kind == MessageNormal && !msgs[i].Mine {
+			received = &msgs[i]
+		}
+	}
+	if received == nil {
+		t.Fatal("bob did not receive the message")
+	}
+
+	// The very same content again, as a second envelope would carry it. The
+	// envelope-level check cannot catch this: only the id inside says the two
+	// are one message.
+	content := Content{
+		Kind: ContentGroupText, GroupID: groupID, ID: received.ID,
+		Text: received.Text, SentAt: received.SenderSentAt,
+	}
+	line, stored, err := bob.storeGroupMessage(content, identityOf(t, alice).AccountID, time.Now().UTC(), "")
+	if err != nil {
+		t.Fatalf("storing the second copy: %v", err)
+	}
+	if stored {
+		t.Error("a message already in the transcript was stored a second time")
+	}
+	if line.ID != received.ID {
+		t.Errorf("the caller must still learn which line this was: want %s, got %s", received.ID, line.ID)
+	}
+
+	after, err := bob.Messages(groupID)
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+	var copies int
+	for _, m := range after {
+		if m.ID == received.ID {
+			copies++
+		}
+	}
+	if copies != 1 {
+		t.Errorf("bob's transcript holds the message %d times", copies)
+	}
+}
+
 // A copy that failed says why, and stops saying it once it arrives.
 //
 // Without this a fan-out records a bare state, and the one question worth

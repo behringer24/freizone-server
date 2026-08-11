@@ -342,12 +342,15 @@ func (c *Client) receive(msg IncomingMessage, opts ReceiveOptions, now time.Time
 			// trace. See Client.recordBlockedGroupMessage.
 			return res, c.recordBlockedGroupMessage(dec.content.GroupID, peer, now)
 		}
-		stored, err := c.storeGroupMessage(dec.content, peer, now, opts.OpenChatID)
+		stored, isNew, err := c.storeGroupMessage(dec.content, peer, now, opts.OpenChatID)
 		if err != nil {
 			return res, err
 		}
 		res.StoredMessageID = stored.ID
-		res.ShouldNotify = opts.OpenChatID != dec.content.GroupID
+		// A second copy of a message already in the transcript is confirmed
+		// back but never announced again: it is the same thing being said
+		// once, however many envelopes carried it.
+		res.ShouldNotify = isNew && opts.OpenChatID != dec.content.GroupID
 		// Its own field rather than DeliveredUpTo: a receipt travels over a
 		// *conversation*, so reporting a group anchor through the one-to-one
 		// field would confirm that member's unrelated direct messages.

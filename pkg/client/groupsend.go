@@ -127,7 +127,8 @@ func (c *Client) SendGroupText(ctx context.Context, groupID, text string, opts S
 	if err != nil {
 		return res, err
 	}
-	deliveries, err := c.fanOut(ctx, groupID, encode, recipients)
+	// No prior wire ids: nothing has been posted for this message yet.
+	deliveries, err := c.fanOut(ctx, groupID, encode, recipients, nil)
 	if err != nil {
 		return res, err
 	}
@@ -248,9 +249,7 @@ func (c *Client) RetryGroupMessage(ctx context.Context, groupID, messageID strin
 			// however often it is pressed.
 			d.State = SendSent
 			d.Error = ""
-			if err := c.SetGroupDeliveryState(
-				groupID, messageID, d.AccountID, SendSent, "", d.AttachmentSkipped,
-			); err != nil {
+			if err := c.SetGroupDelivery(groupID, messageID, *d); err != nil {
 				return SendResult{}, err
 			}
 			continue
@@ -313,7 +312,16 @@ func (c *Client) RetryGroupMessage(ctx context.Context, groupID, messageID strin
 	if err != nil {
 		return res, err
 	}
-	deliveries, err := c.fanOut(ctx, groupID, encode, recipients)
+	// Each retried member's copy goes out under the id their first attempt
+	// used, so their server recognises it as the duplicate it is rather than
+	// delivering the message to them a second time.
+	wireIDs := make(map[string]string, len(line.Deliveries))
+	for _, d := range line.Deliveries {
+		if d.WireMessageID != "" {
+			wireIDs[d.AccountID] = d.WireMessageID
+		}
+	}
+	deliveries, err := c.fanOut(ctx, groupID, encode, recipients, wireIDs)
 	if err != nil {
 		if markErr := c.SetMessageSendState(groupID, messageID, SendFailed); markErr != nil {
 			return res, errors.Join(err, markErr)
@@ -447,7 +455,13 @@ func markAttachmentSkipped(deliveries []GroupDelivery, hadMedia bool, references
 	}
 }
 
-func (c *Client) fanOut(ctx context.Context, groupID string, encode plaintextFor, recipients []group.Member) ([]GroupDelivery, error) {
+func (c *Client) fanOut(
+	ctx context.Context,
+	groupID string,
+	encode plaintextFor,
+	recipients []group.Member,
+	wireIDs map[string]string,
+) ([]GroupDelivery, error) {
 	id, err := c.Identity()
 	if err != nil {
 		return nil, err
@@ -469,7 +483,7 @@ func (c *Client) fanOut(ctx context.Context, groupID string, encode plaintextFor
 		if err != nil {
 			return nil, err
 		}
-		copy, err := c.prepareCopy(ctx, m, id.Server, plaintext)
+		copy, err := c.prepareCopy(ctx, m, id.Server, plaintext, wireIDs[m.AccountID])
 		if err != nil {
 			// Never even encrypted: their device could not be resolved, or no
 			// session could be built. Worth saying so, since it is a different
@@ -563,7 +577,13 @@ func postFailureReason(posted map[string]error, account string) string {
 
 // prepareCopy resolves one member's device and encrypts for them, persisting
 // the advanced session before returning.
-func (c *Client) prepareCopy(ctx context.Context, m group.Member, ownServer string, plaintext []byte) (preparedCopy, error) {
+// wireID is the id this recipient's copy is posted under, empty for a first
+// attempt. Reusing the one a previous attempt recorded is what makes a retry
+// idempotent for them: their server de-duplicates by it and answers 409, which
+// counts as delivered. Minting a fresh one instead delivers the same message a
+// second time -- a second transcript line and a second notification, on every
+// attempt.
+func (c *Client) prepareCopy(ctx context.Context, m group.Member, ownServer string, plaintext []byte, wireID string) (preparedCopy, error) {
 	server := m.Server
 	if server == ownServer {
 		// Our own server is addressed as "no server": that emptiness is what
@@ -616,12 +636,13 @@ func (c *Client) prepareCopy(ctx context.Context, m group.Member, ownServer stri
 		return preparedCopy{}, err
 	}
 
-	messageID, err := newMessageID()
-	if err != nil {
-		return preparedCopy{}, err
+	if wireID == "" {
+		if wireID, err = newMessageID(); err != nil {
+			return preparedCopy{}, err
+		}
 	}
 	return preparedCopy{
-		member: m, endpoint: endpoint, messageID: messageID,
+		member: m, endpoint: endpoint, messageID: wireID,
 		payload: payload, established: initial != nil,
 	}, nil
 }
@@ -1131,7 +1152,9 @@ func (c *Client) sendGroupControl(ctx context.Context, m group.Member, ownServer
 	if blocked {
 		return ErrPeerBlocked
 	}
-	copy, err := c.prepareCopy(ctx, m, ownServer, plaintext)
+	// A fresh id every time: a control envelope carries no transcript line, so
+	// there is nothing for a recipient to receive twice.
+	copy, err := c.prepareCopy(ctx, m, ownServer, plaintext, "")
 	if err != nil {
 		return err
 	}
@@ -1288,7 +1311,7 @@ func encodeGroupControl(kind GroupControlKind, groupID, stateHash string, events
 
 func (c *Client) recordDeliveries(groupID, messageID string, deliveries []GroupDelivery) error {
 	for _, d := range deliveries {
-		if err := c.SetGroupDeliveryState(groupID, messageID, d.AccountID, d.State, d.Error, d.AttachmentSkipped); err != nil {
+		if err := c.SetGroupDelivery(groupID, messageID, d); err != nil {
 			return err
 		}
 	}
