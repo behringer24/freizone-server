@@ -110,6 +110,8 @@ FREIZONE_REGISTRATION_POLICY=closed \
 
 Then check `curl http://127.0.0.1:8080/healthz`. Do **not** use `FREIZONE_TLS_MODE=off` for anything reachable from the internet — it serves plain, unencrypted HTTP.
 
+To point the Android app at a server like this, write the scheme and port out in full — `http://192.168.1.10:8080`, using the address the phone can actually reach rather than `127.0.0.1`. An address typed without a scheme is always taken as `https://`, and the app never falls back to plain HTTP on its own: a connection somebody believes is encrypted must not quietly stop being one. Naming the scheme yourself is how you say you meant it.
+
 ## Trying it out: a local encrypted chat
 
 With the server above running locally, `cmd/devclient` lets you simulate two people chatting — with real X3DH + Double Ratchet end-to-end encryption, not a mock. Open two more terminals (one per "person"):

@@ -14,6 +14,88 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-08-12
+
+The protocol was implemented twice — once here in `cmd/devclient`, once in
+freizone-app's Dart state layer — and nothing forced the two to agree. This
+release is the third implementation that replaces both: `pkg/client` (`SRV-23`).
+The server's own wire behaviour is almost entirely unchanged; what changed is
+that there is now one place where a client's protocol decisions live.
+
+### Added
+
+* **`pkg/client`, the shared protocol client core (`SRV-23`).** Holds
+  identity, persistence, transport and every protocol decision a client makes:
+  signed HTTP requests, the message endpoints and the SSE stream with its
+  reconnect policy, the receive path (decrypt, fold, acknowledge, receipt),
+  the send path including X3DH first contact, attachments, and groups end to
+  end. Consumed by freizone-app through its cgo core, by `cmd/devclient`, and
+  later by freizone-bot. Persistence is plain files rather than the SQLite
+  first planned — an append-only transcript log per chat, compacted, which
+  survives a half-written record where a rewritten blob does not
+* **Groups in the core.** Fan-out encrypts once per member into that member's
+  own ratchet, with a delivery record per member: what happened, why not if it
+  did not, and the wire id their server de-duplicates by. `RetryGroupMessage`
+  re-addresses only the members whose copy never arrived, reusing that id, so
+  a retry cannot deliver the message a second time to somebody who already has
+  it. Receipts are per author and cumulative — confirming an author's newest
+  message confirms every earlier one of theirs — and a member who could not be
+  reached is owed the group's facts until they can be
+* **Receive-path conformance vectors (`pkg/conformance`, `SRV-23` stage 0).**
+  Nine authored cases, written from `PROTOCOL.md` rather than recorded from an
+  implementation, so a vector can fail on both sides and still be right. Run
+  by `cmd/devclient/conformance_test.go` and by the app
+* **An integration test against two real servers** (`pkg/client`'s `TestLive`,
+  skipped unless `FREIZONE_LIVE_A`/`_B` are set). Drives a group split across a
+  federation boundary and stops one of the two servers mid-test — the failure
+  a stub cannot reproduce, since a stub fails by being told to rather than by
+  not being there
+* **`replace_one_time_prekeys` on the prekey upload endpoint.** Discards the
+  published pool before adding, instead of appending to it. Safe
+  unconditionally: every unclaimed row is by definition unbuilt-against, since
+  a claim deletes atomically. Needed because a device that has published an id
+  it holds no private half for cannot recover by adding more — the server
+  hands out the oldest unclaimed key first, so the unusable one is always
+  claimed again
+
+### Changed
+
+* A failed group copy now records **two** things: a sentence for the person
+  who sent it ("Their server could not be reached.") and, separately, the
+  technical text behind it. In a federation nobody operates every server, so a
+  host that does not answer is an ordinary event rather than an incident, and
+  the wrapped error chain that used to be shown said only "something technical
+  went wrong"
+* `client.IsUnreachable` distinguishes a server that was not there from one
+  that answered and refused. The two call for opposite treatment — one retries
+  itself and is not worth reporting, the other is a fact about the account
+  that retrying will not change
+* The client no longer offers HTTP/2, and a stream connect that times out says
+  which layer stalled (DNS, TCP, the request itself) instead of "context
+  canceled"
+* A message stream that dies without saying so is now noticed, rather than
+  leaving a client connected to nothing
+
+### Fixed
+
+* A retried group message was delivered again to members who already had it,
+  because each attempt minted a fresh wire id and the recipient's server had
+  nothing to recognise the duplicate by. The id is persisted with the delivery
+  record and reused. Found as an unending flood of notifications on a test
+  device
+* Batch delivery read a per-item status the server never sends (`accepted`),
+  so every copy in a batch was recorded as failed while arriving perfectly —
+  `queued` and `duplicate` are what "delivered" looks like. The test stub had
+  no batch endpoint at all, which is why nothing caught it
+* A group picture was uploaded once for all recipients, which fails as soon as
+  two members are on different servers: a blob is granted to devices on one
+  server. Uploaded once per recipient server now (`SRV-18`)
+* A receipt could name a moment fractionally before the message it confirmed,
+  leaving it unconfirmed forever — the anchor is truncated where it is minted
+* Group facts were re-requested from every peer on every open, and owed
+  forever to accounts that no longer exist. Asked only where a recorded state
+  hash says somebody is behind, and settled when the account is gone
+
 ## [0.16.0] — 2026-08-07
 
 ### Added

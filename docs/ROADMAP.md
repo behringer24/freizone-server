@@ -496,7 +496,7 @@ admins against the server's real active-account count — never on `GET
   parser in Node, not just reasoned about
 
 ### SRV-23 — Shared protocol client core
-Status: `planned` · Also affects: freizone-app, future freizone-bot
+Status: `in progress` · Also affects: freizone-app, future freizone-bot
 Design: [design/23-shared-client-core.md](design/23-shared-client-core.md)
 
 The protocol is implemented twice: `cmd/devclient` (3,236 lines of Go) and
@@ -523,3 +523,353 @@ a one-time reset. No wire-format change.
   planned Go-based freizone-bot as a third consumer, which fixes the core's API
   as idiomatic Go rather than the app's FFI shape, concurrent, and
   multi-identity. Not started — implementation waits for explicit go-ahead
+- 2026-08-07 — stage 0 done on `dev_go`: `pkg/conformance` holds nine authored
+  receive-path vectors (expectations written from PROTOCOL.md, deliberately not
+  recorded from either implementation, so a vector can fail on both sides and
+  still be right), and `cmd/devclient/conformance_test.go` runs this repo's
+  client against them. Four pass — first contact, the tie-break both ways, the
+  SRV-17 re-key override — and five fail, all real defects here: no
+  processed-message-id tracking, the ratchet's `FailureCode`/`SuggestsDesync`
+  classification discarded by an `fmt.Errorf` without `%w` (so a harmless
+  redelivery is indistinguishable from a desync), a one-time prekey consumed
+  before the responder session has decrypted anything, and no content fallback
+  for a pre-SRV-17 sender's re-key. Recorded in the test's `knownDivergences`
+  with their causes so the suite stays green while the defects stay visible;
+  the list fails if a listed step starts conforming, which makes emptying it
+  the completion signal. Design doc carries the findings, and one expectation
+  the vectors disproved
+- 2026-08-07 — app half of the suite running too, and it changes the plan's
+  shape: **freizone-app passes all nine vectors, this client four.** Where the
+  two disagree the app is right every time, so `pkg/client` is not "extract
+  devclient and tidy up" — the app is the specification and devclient is what
+  gets raised to it. Reaching that measurement needed a host build of the core:
+  the bindings only ever loaded the Android `.so` and fell back to
+  `DynamicLibrary.process()`, which finds nothing in a test process, so all
+  8,700 lines of the app's `lib/state/` were untestable on a dev host. Now
+  buildable via a new `native/build_desktop.ps1` (mingw-w64 for cgo; the NDK's
+  clang only targets Android) plus a test-only `libraryPath` parameter that
+  leaves the production loader alone. That capability outlasts the vectors —
+  it is what makes the whole state layer testable for the first time
+- 2026-08-07 — stage 1 (first slice) on `dev_go`: `pkg/client` exists, with the
+  crypto-layer state on SQLite — identity, one-time prekeys, sending/inbound
+  sessions, processed-message ids, decrypt-failure counts, per-peer session
+  health, and the conversation metadata those rules reference. Cut there
+  deliberately: local_state.dart calls conversations "the UI/history layer on
+  top of sessions's crypto layer", so the transcript is the next slice rather
+  than a half-finished part of this one. The app's semantics are reproduced
+  exactly, including the ones easy to get subtly wrong — re-marking a processed
+  id does not refresh its eviction position, reaching the decrypt-failure limit
+  clears the counter as it reports it, and desync evidence is refused for a peer
+  with no conversation so a stranger cannot grow the database one row per
+  invented account id. 17 tests, including concurrent writers and two accounts
+  in one process. Size, measured not estimated: `pkg/client` costs +7.04 MB on
+  an `android/arm64` c-shared build, taking the shipped core from 5.96 MB to
+  ~13 MB and the release APK from 78.1 MB to ~85 MB (+9%). Design doc carries
+  the numbers and two corrections they force — the pure-Go argument for
+  `modernc.org/sqlite` is weaker than written, since the core is already cgo,
+  and the driver choice is a one-function change behind `database/sql`, so it
+  need not be settled now
+- 2026-08-07 — stage 1 finished: the transcript. Messages, attachment metadata,
+  per-recipient group deliveries and local pins, keyed by a `chat_id` that is a
+  peer account id or a group id without distinguishing — following the app,
+  where both are 21-character bech32m strings differing only in a version
+  marker, so stage 5 inherits working group transcripts and has only the signed
+  fact set left to add. Three rules the modelling turned up are in the design
+  doc: the transcript is read in arrival order and never by timestamp (the app
+  appends and never sorts, so a late-decrypted message stays where it arrived);
+  a `pending` send is settled to `failed` when the database is *opened* rather
+  than when it is read, since transcribing the app's load-time rule as a
+  read-time one would report a send genuinely in flight in this process as
+  already failed; and attachments, deliveries and pins cascade with their
+  message. 10 further tests, 27 in total. `local_state.dart` is now covered
+  except for `pendingGroupEvents`, `groupSnapshotDebts` and
+  `groupPeerStateHashes`, which are group coordination rather than storage and
+  belong with stage 5
+- 2026-08-07 — stage 2 begun (first slice): the signed HTTP transport in
+  `pkg/client`. All three auth modes (public, device-signed, and the federated
+  one that names the key by its base64 public key because a foreign server has
+  no row to look a device id up in), the error model, and
+  `GET /v1/server-status`. Everything takes a `context.Context` and the HTTP
+  client carries no timeout of its own, since the message stream is a long-lived
+  response and the context is the real deadline. Two things worth the design
+  doc: failures are split into `APIError` (a Freizone server refusing in its own
+  JSON) and `NotFreizoneServerError` (a host answering HTML or nothing), because
+  "the server said no" and "you typed the wrong address" need different words in
+  front of a user; and `ServerStatus` decodes through pointers so the two
+  capability silences that mean the opposite of Go's zero value —
+  `federation_enabled` absent is *true*, `max_blob_recipients` absent is *1* —
+  are applied rather than guessed. 13 tests, 39 in the package; the signature
+  test verifies with `pkg/httpsig`'s own `Verify` against a real `httptest`
+  server rather than restating the canonical string, so a disagreement about
+  what it covers surfaces here instead of in the field. Still to come in this
+  stage: the message endpoints, the SSE stream and the event channel
+- 2026-08-07 — stage 2 finished: message endpoints and the SSE stream.
+  `Client.Stream` returns one channel of a tagged union (connected, message,
+  disconnected, failed) rather than a channel per concern — in Go merely fine,
+  but right because the FFI wrapper can only offer a blocking "next event" call
+  and would otherwise have to multiplex on the side least able to test it.
+  Events drop when the buffer fills rather than blocking, since a consumer that
+  went away must not stall a connection the server cannot tell from a listening
+  one. The app's reconnect policy is reproduced whole, including its two
+  distinct regimes: a stream that came up and dropped retries in ~500ms with the
+  backoff *reset*, while one that never came up backs off 3s→30s with ±20%
+  jitter. Its per-attempt-client trick — which exists because a dead-but-routed
+  host otherwise leaves a SYN-SENT dial per retry — becomes a cancellable
+  context per attempt, with the deadline covering *reaching* the stream and not
+  reading from it, since a healthy stream is idle but for a heartbeat every 25s.
+  Also fixed a bug in the previous slice found while writing this one: the
+  transport probed for a JSON object to detect a non-Freizone host, which would
+  have misreported every `GET /v1/messages` (a bare array) as a wrong address.
+  `SendMessage` counts 409 as delivered and `AckMessage` counts 404 as success,
+  both for reasons the design doc records. 22 further tests, 50 in the package,
+  and the package is clean under `-race` — newly possible at all, since the race
+  detector needs cgo and the mingw toolchain only arrived with the Dart half of
+  stage 0
+- 2026-08-07 — FFI surface for the core, in freizone-app's `native/`
+  (`CoreOpen`/`CoreClose`/`CoreSetIdentity`/`CoreStreamStart`/`CoreStreamStop`/
+  `CorePoll`). Taken before stages 3-5 on purpose: the plan's own decision point
+  after stage 2 was to get the core genuinely running on the device rather than
+  spend another nine sessions with nothing shippable, and `SetIdentity` is what
+  makes that possible before the app's state layer has migrated — the identity
+  is handed across once and the core can then sign and stream on its own. The
+  bridge is a cgo-free file so the handle lifecycle and poll semantics are
+  covered by `go test`; `CorePoll` returns a batch rather than one event per
+  crossing; event kinds cross as strings so a version mismatch fails visibly;
+  and `disconnected` carries no error text, matching the app's rule that only a
+  failed connect attempt reaches the user. 9 tests, 40 in the native package.
+  This is also the commit where SQLite's dependencies actually land in the app
+  module. Next: the Dart bindings and replacing `sse_client.dart` in
+  `AppSession._startStream`, which is what puts the core on the Pixel
+- 2026-08-08 — `sse_client.dart` replaced by `CoreStream`: the message stream
+  now runs through the core over the FFI bridge, and `AppSession` changed by a
+  type name because `CoreStream` keeps the old class's shape deliberately. Four
+  host tests drive the whole chain — Dart to FFI to core to a real HTTP server
+  and back — and caught three defects none of which would have shown on a
+  device: the poll isolate opened the core with no library path (invisible on
+  Android, where it is found by name anyway), a throwing poll escaped as an
+  unhandled async error and killed the stream silently, and the database path
+  was not injectable so no plain `flutter test` could reach it. Verified that
+  the existing VS Code build/deploy tasks are unaffected: `build_android.ps1`
+  produces both ABIs in 25s and `flutter build apk --debug` succeeds.
+  **Size, now measured on the real core rather than estimated from a probe:
+  arm64-v8a 5.96 → 15.07 MB and x86_64 6.40 → 15.83 MB, so about +9.1 MB and
+  not the +7.04 MB the probe suggested** — a probe linking fewer packages than
+  the real thing understates the delta. Release APK lands around 87 MB, ~+12%
+- 2026-08-09 — stream reached the device, and two defects only real hardware
+  could show. The stream never opened: Go negotiates HTTP/2 by default and the
+  app's Dart client never did, so this was the first h2 stream against that
+  nginx, and the first request on a fresh h2 connection got no response headers.
+  h2 is now off, and a test asserts it stays off against a server that offers
+  it. Disabling the transport alone was not enough and briefly made it worse —
+  ALPN still offered h2, so the reply arrived as h2 frames an HTTP/1.1 transport
+  tried to read as a status line; the test that should have caught it had
+  substituted away the very field that was wrong. Connect failures now name the
+  layer that stalled, because the connect deadline was masking the diagnosis by
+  replacing whatever the stack was about to report
+- 2026-08-09 — **SQLite dropped for plain files, reversing the stage 1
+  decision.** `modernc.org/sqlite` cannot run on android/amd64 at all: its libc
+  emulation calls `lstat`, Android's seccomp kills the process, and the app died
+  at startup on every x86_64 device and emulator. The newest upstream still does
+  it and every other pure-Go driver is modernc underneath; the cgo driver works
+  but makes cgo mandatory for every consumer, which a planned Flutter desktop
+  client turns into a cross-compilation matrix. The original reasoning was the
+  weak part — "the server already uses SQLite" carried an answer across from
+  relational, queried, multi-tenant data to one account with a handful of chats
+  and no query at all. The replacement keeps one rule: nothing costs more as
+  history grows. Transcripts are append-only logs, sessions and conversation
+  metadata are one small file each, deletions and state changes are appended
+  records naming their message rather than edits to a line, and the chat-list
+  preview reads a bounded window instead of replaying. **All 27 stage-1 tests
+  passed unchanged** — they assert behaviour, not storage — with 26 more since.
+  Core is 15.09 → 9.10 MB on arm64-v8a, `native/go.mod` is back to one direct
+  and one indirect dependency from twelve, cgo is optional again, and the
+  emulator that SQLite killed runs
+- 2026-08-09 — stage 2 confirmed on real hardware: background resume reconnects
+  in under a second, live messages arrive, and the airplane-mode cycle
+  recovers. Verified from the device's own data and logs rather than only by
+  eye — core state directories present for every account, contact names
+  untouched, and the layered probe doing its job on the unreachable local test
+  accounts (`resolves to …; but tcp/18080 did not connect: i/o timeout`).
+- 2026-08-09 — closed a gap the device test exposed by *not* logging anything:
+  the stream had no idle timeout, so a connection that dies without saying so
+  — half-open socket, network handover, a proxy dropping it mid-flight — was
+  never noticed. The connect deadline is long over by then and a read that will
+  never return does not fail on its own; the symptom is "messages sometimes
+  just don't arrive" with nothing in any log. `sse_client.dart` had the same
+  gap, inherited faithfully, and it is closed now that the reconnect lives
+  somewhere testable. Safe because the server heartbeats every 25s, so a
+  healthy stream is never quiet longer than that: the default silence timeout
+  is 60s and every line resets it, keepalives included. Two tests, and the
+  second is the one that matters — a heartbeating idle stream must survive
+  several timeout periods, which the fix without that reset would fail while
+  looking entirely reasonable
+- 2026-08-09 — stage 3: the receive pipeline lands in `pkg/client`
+  (`receive.go`, `content.go`, `recovery.go`). **It passes all nine conformance
+  vectors** — against `cmd/devclient`'s four — so none of the four decisions
+  that client gets wrong were inherited by extracting it. Passing on the first
+  run being the least trustworthy green, each of those four was re-broken
+  deliberately to confirm the vectors bite here rather than merely load. No
+  `knownDivergences` list beside this runner: a failure has nowhere to go but a
+  fix, since this implementation has no history to stay compatible with. The
+  plaintext content model (v1 text, v2 receipt, v3 re-key, v4/v5 group) is
+  modelled once instead of one-and-a-half times across Dart and devclient, and
+  the automatic-recovery policy moved across as a pure function. The larger,
+  unvectored half — notification rules, blocked peers, receipt watermarks, the
+  re-key transcript marker — has its own tests, and two of the quietest were
+  negative-controlled too. Group envelopes are decrypted and handed back
+  undigested until stage 5 owns group state; that is the one seam left in the
+  receive path. Not yet wired into the app: the UI still reads Dart state, so
+  the Dart removal is its own slice
+- 2026-08-09 — stage 4: the send path lands in `pkg/client` (`send.go`,
+  `prekeys_api.go`, `peers_resolve.go`). The core can now hold a conversation
+  by itself — resolve an address, publish and claim prekeys, establish, send,
+  retry, confirm, re-key — and the tests run two real clients through a stub
+  server, so every round trip is an actual envelope opened by the actual
+  receive path rather than an asserted request body. That is what caught the
+  one real defect in the headline rule, which was mine: `Session` returns a
+  fresh value per call, so handing the same one to the rollback copy and to the
+  encryption meant the rollback restored the advance it existed to undo.
+  Nothing failed — the send worked, the retry worked, and the peer accumulated
+  a gap per failed attempt. Three decisions recorded: topping up re-asserts the
+  signed prekey rather than rotating it (devclient rotates on every upload); a
+  session established without a one-time prekey is reported rather than
+  refused; and the stale-device rule forgets the id and the session together.
+  Recovery is closed end to end — stage 3 could only report that a re-key was
+  due, since acting means sending. Attachments deliberately still out: the
+  blobs live elsewhere, so a retry refuses rather than re-send a caption alone.
+  Still not wired into the app
+- 2026-08-09 — stage 4b: attachments (`blobs.go`, `media.go`). Never scheduled
+  in the original plan, and done before groups because a group picture is
+  uploaded once with every member's device named on it — building the fan-out
+  on a blob-less send path would force it to reach outside itself mid-loop. The
+  key is per attachment and deliberately not derived from the ratchet: the
+  bytes outlive the message, so binding them to a session would make resetting
+  one destroy every picture already received. Inline preview and blob are
+  separated — the preview is written on arrival even on a background wake,
+  the blob only when somebody looks — and the sender's own copy is written
+  before the upload, which is what lets a retry finish an interrupted one. A
+  retry names an existing blob again rather than uploading a second copy.
+  `Options.MediaPath` makes the media directory movable, since pictures are the
+  one thing here that is large and platform-opinionated.
+- 2026-08-09 — the question that came with stage 4b turned up a real gap:
+  **blocking was never a rule, it was a screen.** The receive side was complete
+  and ported; the send side did not exist, because the Dart original says
+  outright that "sending is disabled in the UI while blocked". A background
+  retry, a queued receipt, a re-key signal or a bot with no interface would each
+  have gone on talking to a blocked contact. The guard now sits in `deliver`, so
+  it covers every path rather than every path a person starts — removing it
+  makes two envelopes reach a blocked contact in the test, both machinery
+- **Open**: a peer whose *account* no longer exists has no local state. The
+  dead-device/dead-account distinction is sharp (`IsStaleDevice`) and a dead
+  device heals itself on the next send, but an account an admin removed just
+  fails every retry forever. Dart handles it only in the group path, and only
+  because group facts cannot express "this member ceased to exist". Doing it for
+  one-to-one needs a decision about what the user is shown — Andreas' call, not
+  SRV-23's
+- 2026-08-09 — stage 5a: the receiving half of groups (`groups.go`,
+  `groupnarration.go`), which closes the last seam stage 3 left open — a group
+  envelope is folded here rather than handed up. It has to be: the ratchet has
+  advanced and the id is marked before the payload is even read, so an envelope
+  nobody folds loses its facts for good, and a background wake with nothing
+  attached still has to finish the job. Four rules, three of them quietly
+  wrong-able: a re-invitation is an invitation (the facts survive a removal, so
+  "is this group new" swallows every one); an event that overtook its genesis is
+  held to a bound, and only for the one rejection a later fact can change —
+  now `group.RejectNoGenesis` rather than a literal string both clients matched;
+  a blocked member's group message leaves one collapsed line, because a shared
+  transcript with invisible holes reads as delivery loss; and a snapshot's id
+  comes from its genesis, not from the sender's claim. Membership changes are
+  narrated from the before/after fold, so every device writes the same
+  transcript independently. One test proved nothing until its negative control
+  said so — it delivered a premature event and then a snapshot containing the
+  same fact, so holding was never exercised; fixed by capturing the snapshot
+  before the event exists
+- **Next**: stage 5b, the sending half of groups — fan-out, snapshot debt,
+  reconciliation against a peer's stated view, sync requests, per-member
+  receipts. `GroupOutcome` already reports what it needs; nothing acts on it yet
+- 2026-08-09 — stage 5b: the sending half of groups (`groupsend.go`,
+  `groupactions.go`), and with it **the core is complete** — found, invite,
+  accept, roles, remove, leave, dissolve, send, attach, repair. Tests drive
+  three real clients through the stub server, so every group envelope is
+  encrypted per member and folded by the code that has to fold it. Two rules
+  about failure pointing opposite ways: a ratchet advance is never rolled back
+  in a fan-out (a partial success means some peers moved on and some did not,
+  so the delivery record carries who is behind), but an *establishment* is — the
+  tests found that as a real defect, since a first copy that fails to post
+  leaves a session the peer never saw established and every later message to
+  them is then unopenable, silently and permanently. A rejected action is never
+  broadcast, which needed care: `State.Apply` only checks form and signature,
+  while *authority* is the fold's decision and the fold just ignores what it
+  will not honour, so the check is "did the fold change" rather than any error.
+  Self-healing in three parts, each covering what the others cannot: persisted
+  snapshot debt, reconciliation against the hash every envelope carries
+  (answered at most once per foreign hash, and persisted — a restart otherwise
+  re-opens the loop), and asking outright for the one case no hash can signal,
+  a member holding no facts at all. Batch delivery where advertised, one post
+  per message otherwise, and the same fallback when a batch is refused. Group
+  receipts are filed per member and never passed on. The cached peer device
+  moved off `Conversation` into `peers/<id>/device.json` — a group member is
+  addressed without necessarily having a chat with them
+- **Next**: the app swap. `pkg/client` now owns state, network, receive, send,
+  attachments and groups; the Dart side still holds the UI's state and would be
+  the last thing to move. Worth doing as one cut rather than three, and it needs
+  the data reset the design doc has planned since the start
+- 2026-08-09 — stage 6, first slice: the FFI surface. Two small additions here
+  (`IsGroupID`, `AttachmentPath`/`AttachmentThumbPath`) plus the whole surface
+  in freizone-app's `native/`. Two decisions shape it. **Attachment bytes travel
+  as paths, never through the boundary** — the shell has a file reader and an
+  image decoder that want a file anyway, so a multi-megabyte round trip through
+  a JSON envelope would cost more than the download did; and the attachment key
+  never crosses at all, which a test pins by searching the encoded response for
+  it. **One send call serves peers and groups**, because a chat id says which it
+  is: account and group ids differ by a version marker, so dispatching is exact
+  rather than a guess and the shell never has to track the distinction
+- 2026-08-09 — the remaining cut is specified in the design doc rather than
+  started: it is one indivisible piece (receive + read + send together, because
+  a bridge that rebuilds `AppState` from the core overwrites whatever the Dart
+  send path wrote), and half-applying it is the one state worse than either end.
+  The measurements are recorded so they need not be retaken — 83 `session.state`
+  call sites, which is why the screens do not change and `AppState` stays as the
+  view model, and 60 + 76 lines for `sendMessage`/`_deliver`. Step 5 is where
+  the data reset takes effect; the Pixel backup exists for exactly that moment
+
+### SRV-24 — Let a server move house
+Status: `planned` · Also affects: freizone-app, shared Go core
+
+An account's address names its server, so today a server is forever: an
+operator who wants to move to another host, another domain, or hand the whole
+thing to somebody else has no move that keeps their users reachable. Everyone
+who ever wrote the old address down — every peer's contact list, every group
+fact naming a member's server — keeps pointing at a machine that is gone.
+
+The shape suggested is HTTP redirection: the old host answers `301`/`302`
+pointing at the new one, and clients follow it and remember. Cheap for the
+operator and invisible to the user, which is the appeal. What it does not
+settle, and what the design has to:
+
+- **What actually moves.** A redirect only forwards requests; it does not
+  carry accounts. The new host has to already hold the root keys, device
+  certificates, prekeys and queues, or every redirected request 404s. So the
+  redirect is the last step of a migration, not the migration.
+- **Why a client should believe it.** A redirect is an unauthenticated
+  instruction to send someone's traffic elsewhere, and the thing it moves is
+  where messages for that account go. Following one blindly is a redirection
+  attack with a `Location` header. Something has to be signed — plausibly by
+  the old server's identity, or by each account's own root key — before a
+  client rewrites a stored address.
+- **Permanent vs temporary.** `301` and `302` mean different things to a
+  client that persists what it learns: one rewrites the address in the
+  contact list and the group facts, the other is followed for this request
+  and forgotten. Group facts are signed and grow-only, which makes rewriting
+  a member's server a fact-set question rather than a string replacement.
+- **When the old host stops answering.** A redirect only works while the old
+  address still resolves and serves. Anyone offline for longer than the old
+  domain lives never sees it, so there is probably also a need for the new
+  server to be discoverable from what a peer already holds.
+
+- 2026-08-11 — raised by Andreas while reviewing how the app words a failure
+  to reach a server. A server that is unreachable was noted to be ordinary
+  rather than exceptional in this architecture — down, switched off for good,
+  or reused for something else — and permanent relocation is the case worth
+  supporting properly instead of leaving accounts stranded. Filed as its own
+  item; nothing started

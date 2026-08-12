@@ -1,0 +1,45 @@
+{
+  "name": "authentication-failure-is-desync-evidence",
+  "description": "An envelope whose AEAD tag does not verify. Cryptographically this cannot happen by chance, so it is the desync symptom and must be classified as such -- the counterpart to the duplicate case, and the distinction an implementation that discards the ratchet's failure code cannot make.",
+  "reference": "SRV-03",
+  "receiver": {
+    "account_id": "fz1mmmm00000000000000000000000000receiver",
+    "dh_identity_priv": "JumIsV7me0gAgFOGsQZLP3YOwgFqb5rnp0p4+DTYigU=",
+    "signed_prekey_priv": "aF1ZwI/jmCwgVykI5/Ou6xvFAOsvotiJpZaKGlRp7pc=",
+    "sessions": {
+      "fz1zzzz000000000000000000000000000000peer": {
+        "role": "responder",
+        "ad": "Uo9I4eYjB7p7EqhQMJQkMnLwbw4/VHDyid2NstBUYS/V+nfrK83UZsKCMi5JJJApX+EmIjsDmouMeOnFWTIUAA==",
+        "dhs_priv": "upaE1jyZ7ZI30svYsr8DOLQpZdf8zJWmspE/IFNili4=",
+        "dhr_pub": "BqqHb9GYtHcKUhbUFy4UC0dg/SXKwabQzRTXRjhkkBw=",
+        "rk": "9ZGtpYdCJumOf8DiZyTRsOmoOgrftXWJ1yUDdVw9XOg=",
+        "cks": "Kqd2MFlBKrnzIfuhGvvQmKiCgH6FlbKLOpZwNrZbQ0I=",
+        "ckr": "qdC4kiGhj1JfWXf/Knr1LJ2hzUvJAVya6PRrU3hmL3Y=",
+        "ns": 0,
+        "nr": 1,
+        "pn": 0
+      }
+    }
+  },
+  "steps": [
+    {
+      "label": "corrupted ciphertext",
+      "message_id": "m1",
+      "sender_account_id": "fz1zzzz000000000000000000000000000000peer",
+      "payload": {
+        "header": {
+          "dh_pub": "BqqHb9GYtHcKUhbUFy4UC0dg/SXKwabQzRTXRjhkkBw=",
+          "pn": 0,
+          "n": 1
+        },
+        "ciphertext": "Oao66Z5zBn+zL9gd0RyECe3Qh4SF/2UKef1Nw0FALycx4uIFg+wVSt2zGtjwpAqG/RCMzuDTwaAyX7wT6rzgcr7LlcRHNg=="
+      },
+      "expect": {
+        "outcome": "undecryptable",
+        "failure_code": "authentication_failed",
+        "counts_as_desync_evidence": true,
+        "session_effect": "unchanged"
+      }
+    }
+  ]
+}

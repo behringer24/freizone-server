@@ -94,6 +94,23 @@ type ClaimedOneTimePrekey struct {
 	PubKey []byte
 }
 
+// DeleteOneTimePrekeys removes every unclaimed one-time prekey a device has
+// published, so a client whose local store and published pool have drifted
+// (see AddOneTimePrekeys and pkg/client.PurgeAndReplaceOneTimePrekeys) can
+// discard the whole pool and republish one it actually holds every private
+// half for.
+//
+// Safe unconditionally, and safe to call on an already-empty pool: a row
+// here has never been claimed -- ClaimOneTimePrekey deletes atomically the
+// moment it is -- so nothing has ever been built from it, and there is
+// nothing here for a peer to have relied on yet.
+func DeleteOneTimePrekeys(db DBTX, deviceID string) error {
+	if _, err := db.Exec(`DELETE FROM one_time_prekeys WHERE device_id = ?`, deviceID); err != nil {
+		return fmt.Errorf("store: deleting one-time prekeys: %w", err)
+	}
+	return nil
+}
+
 // CountOneTimePrekeys returns how many unclaimed one-time prekeys remain in
 // the device's pool, so a client (or the server, to decide whether to wake
 // a dormant device) can tell when it's running low.

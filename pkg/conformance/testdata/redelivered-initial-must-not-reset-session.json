@@ -1,0 +1,103 @@
+{
+  "name": "redelivered-initial-must-not-reset-session",
+  "description": "Delivery is at-least-once, so the very first envelope legitimately arrives twice -- via a reconnecting stream, or a push wake racing the live one. It must be recognised by message id and dropped: reprocessing re-decrypts a message the user has already seen, and rebuilds the responder session on top of the one that has since advanced, discarding its skipped-key state. Recognising the id is the only defence, because the rebuilt session decrypts this particular envelope perfectly well and looks entirely legitimate.\n\nNote what this vector does and does not prove. Step 4 shows the rewound session can still read a later message, because X3DH is deterministic and the receiver has sent nothing in between, so no DH ratchet step has happened -- the rewind is recoverable here. Turning that into permanent breakage requires the receiver to have sent something first, which needs send-side modelling this receive-only format cannot express.",
+  "reference": "PROTOCOL.md §5",
+  "receiver": {
+    "account_id": "fz1mmmm00000000000000000000000000receiver",
+    "dh_identity_priv": "/7aHbGsljiItWFlxkZxVLZWk/TdgKS8mrlRJMIdF9HY=",
+    "signed_prekey_priv": "cn3ENCb99IuPlppGwXsj1yHxClihR3YG7iL7LRNUkxs=",
+    "one_time_prekeys": {
+      "1": "2auH8o5dqsX56Dbs4CatCK55MC+YhCDEuO96M/EmNtM="
+    }
+  },
+  "steps": [
+    {
+      "label": "initial arrives",
+      "message_id": "m1",
+      "sender_account_id": "fz1aaaa000000000000000000000000000000peer",
+      "payload": {
+        "prekey": {
+          "sender_dh_identity_pub": "cahKUrPPOi+NWdh6ICe/RTWsTZfmtMqrsEe4Yv1bzwI=",
+          "sender_ephemeral_pub": "0HUo+eucpgIg2svanCOJRCLIg7v8mbkbIRX5sS8fG3s=",
+          "signed_prekey_id": 1,
+          "rekey": false
+        },
+        "header": {
+          "dh_pub": "/77VlnOxieT2okM3iOfaEoVx0SwsSWxOo/vrB1SFiHk=",
+          "pn": 0,
+          "n": 0
+        },
+        "ciphertext": "NoWg8ZmcoLXfR2+KejKjhuM25v/AHeEopR1bt6rqrF6KpOrgqTFvTH4u6UAe2u2AGkcOeXJZKUsCEOyEe6m99Z4="
+      },
+      "expect": {
+        "outcome": "decrypted",
+        "text": "first",
+        "session_effect": "established",
+        "one_time_prekeys_remaining": 1
+      }
+    },
+    {
+      "label": "ordinary follow-up advances the session",
+      "message_id": "m2",
+      "sender_account_id": "fz1aaaa000000000000000000000000000000peer",
+      "payload": {
+        "header": {
+          "dh_pub": "/77VlnOxieT2okM3iOfaEoVx0SwsSWxOo/vrB1SFiHk=",
+          "pn": 0,
+          "n": 1
+        },
+        "ciphertext": "qXT/j0WCISahHQJBXn1OVnH9sEKmzh5ExnH8WbCLsdzEHd+Xea8grez5o9nzYJV727fhFuHWrwVjzR6fr2zleclw"
+      },
+      "expect": {
+        "outcome": "decrypted",
+        "text": "second",
+        "session_effect": "unchanged",
+        "one_time_prekeys_remaining": 1
+      }
+    },
+    {
+      "label": "the initial is redelivered",
+      "message_id": "m1",
+      "sender_account_id": "fz1aaaa000000000000000000000000000000peer",
+      "payload": {
+        "prekey": {
+          "sender_dh_identity_pub": "cahKUrPPOi+NWdh6ICe/RTWsTZfmtMqrsEe4Yv1bzwI=",
+          "sender_ephemeral_pub": "0HUo+eucpgIg2svanCOJRCLIg7v8mbkbIRX5sS8fG3s=",
+          "signed_prekey_id": 1,
+          "rekey": false
+        },
+        "header": {
+          "dh_pub": "/77VlnOxieT2okM3iOfaEoVx0SwsSWxOo/vrB1SFiHk=",
+          "pn": 0,
+          "n": 0
+        },
+        "ciphertext": "NoWg8ZmcoLXfR2+KejKjhuM25v/AHeEopR1bt6rqrF6KpOrgqTFvTH4u6UAe2u2AGkcOeXJZKUsCEOyEe6m99Z4="
+      },
+      "expect": {
+        "outcome": "duplicate",
+        "counts_as_desync_evidence": false,
+        "session_effect": "unchanged",
+        "one_time_prekeys_remaining": 1
+      }
+    },
+    {
+      "label": "a later message still decrypts",
+      "message_id": "m3",
+      "sender_account_id": "fz1aaaa000000000000000000000000000000peer",
+      "payload": {
+        "header": {
+          "dh_pub": "/77VlnOxieT2okM3iOfaEoVx0SwsSWxOo/vrB1SFiHk=",
+          "pn": 0,
+          "n": 2
+        },
+        "ciphertext": "DrM5l4DoMWf8Fpm6xxxmkLuQz3jDkJ7y4Jk9nzmH/nNid+kOId9Cw6uDtVO4cVZR4NRHdA3b04kNE5gYNIu2k50="
+      },
+      "expect": {
+        "outcome": "decrypted",
+        "text": "third",
+        "session_effect": "unchanged",
+        "one_time_prekeys_remaining": 1
+      }
+    }
+  ]
+}

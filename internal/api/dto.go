@@ -261,6 +261,15 @@ type uploadPrekeysRequest struct {
 	DHIdentityCert *dhIdentityCertDTO `json:"dh_identity_cert,omitempty"`
 	SignedPrekey   signedPrekeyDTO    `json:"signed_prekey"`
 	OneTimePrekeys []oneTimePrekeyDTO `json:"one_time_prekeys,omitempty"`
+
+	// ReplaceOneTimePrekeys discards every unclaimed one-time prekey this
+	// device has previously published before adding OneTimePrekeys, instead
+	// of appending to them. False (append, the default) for an ordinary
+	// top-up; true for a client that has reason to believe its published
+	// pool contains ids it holds no private half for, and wants to publish
+	// only ones it actually does. Absent/false is a no-op change from every
+	// existing caller's point of view.
+	ReplaceOneTimePrekeys bool `json:"replace_one_time_prekeys,omitempty"`
 }
 
 type prekeyBundleResponse struct {

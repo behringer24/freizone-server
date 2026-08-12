@@ -1,0 +1,51 @@
+{
+  "name": "legacy-rekey-inferred-from-plaintext",
+  "description": "A sender predating SRV-17 leaves the prekey block unqualified. The re-key must then be inferred from the decrypted content being a re-key signal (v:3), because that sender threw its session away and can read nothing else -- applying the tie-break instead strands the conversation.",
+  "reference": "PROTOCOL.md §5",
+  "receiver": {
+    "account_id": "fz1mmmm00000000000000000000000000receiver",
+    "dh_identity_priv": "0FcmwPOmpPDRnkyywBWc2XSY1sbSDG462N5jSKY00RI=",
+    "signed_prekey_priv": "WhSg8czyjRPD2KQK0Fmby0yauIDH9ixBsYrGEnhzW4Q=",
+    "one_time_prekeys": {
+      "1": "SY0EOStAeDFUySwBPBOpEqY+fUlp1JWmDHVJyFIlndc="
+    },
+    "sessions": {
+      "fz1zzzz000000000000000000000000000000peer": {
+        "role": "initiator",
+        "ad": "4zdlCoOjTV7UtZPzHaJWDtayaL9v+wk8RRUEeNUnDR+o9WXSQn5F+SlKHjOSarHCDbiii5XAlowSkchVh4c1HQ==",
+        "dhs_priv": "aII3v3q9RcPBgRMrO8wv7aChE2OrrvHacOjrTeefzgQ=",
+        "dhr_pub": "ynreHKX8s/n7+6qkNCVWAEm2dDXBpOOZJrNGK1u33kI=",
+        "rk": "YuRltPWiVYE2pqwYLjoA9m+dmn3lij67AmgpLGilDzo=",
+        "cks": "NapZQv5uS23IKNiJFLZubDYKNf73w3aSwuqg14SvbJk=",
+        "ns": 0,
+        "nr": 0,
+        "pn": 0
+      }
+    }
+  },
+  "steps": [
+    {
+      "label": "peer's own initial arrives",
+      "message_id": "m1",
+      "sender_account_id": "fz1zzzz000000000000000000000000000000peer",
+      "payload": {
+        "prekey": {
+          "sender_dh_identity_pub": "qPVl0kJ+RfkpSh4zkmqxwg24oouVwJaMEpHIVYeHNR0=",
+          "sender_ephemeral_pub": "FQ9ZUQkWt/skOusjJ4OBnxJnFSOnBjckKt5/D4k2K3Y=",
+          "signed_prekey_id": 1,
+          "one_time_prekey_id": 1
+        },
+        "header": {
+          "dh_pub": "SgHAAM50R1yaq41ot/2WM2ZIg0nLoiCwLT+N5EqRJ2Y=",
+          "pn": 0,
+          "n": 0
+        },
+        "ciphertext": "C0Of1KWku4vAr0A/5Q2NCliIq1HEj2cLGYtJsaMIiqQC6gr7OGj83X84aTj1/FHmO6IoHeVmTApLGBzjijqyAnUV"
+      },
+      "expect": {
+        "outcome": "decrypted",
+        "session_effect": "adopted_peer"
+      }
+    }
+  ]
+}

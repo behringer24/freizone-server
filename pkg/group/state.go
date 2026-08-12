@@ -24,6 +24,15 @@ type State struct {
 	events     map[string]*Event
 }
 
+// RejectNoGenesis is the one rejection reason a later arrival can change: the
+// event is fine, but the genesis it rests on has not been seen yet. Delivery is
+// unordered, so this is routine rather than a fault -- a caller holds the event
+// and retries it when more facts arrive, where every other reason means drop it.
+//
+// Exported because it is a contract, not a message: both clients decide what to
+// retry by comparing against it, and one of them was matching the literal string.
+const RejectNoGenesis = "no genesis event yet"
+
 // Rejection explains why one event in a batch was not admitted.
 type Rejection struct {
 	// Index is the event's position in the submitted batch. It is the only
@@ -132,7 +141,7 @@ func (s *State) admit(index int, e *Event, result *ApplyResult) {
 		}
 	} else {
 		if s.groupID == "" {
-			reject("no genesis event yet")
+			reject(RejectNoGenesis)
 			return
 		}
 		if e.GroupID != s.groupID {
