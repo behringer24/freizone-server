@@ -160,6 +160,68 @@ func scanStatsSnapshot(rows *sql.Rows) (StatsSnapshot, error) {
 	return s, nil
 }
 
+// BlobExpiryBucket is how much stored attachment ciphertext expires on one
+// calendar day (UTC), for the storage forecast on the admin statistics page.
+type BlobExpiryBucket struct {
+	// Day is the UTC date the bytes expire on, as "2006-01-02".
+	Day   string
+	Bytes int64
+	Count int
+}
+
+// BlobExpiryBuckets reports what expires when, oldest first. Days already past
+// come back too: a blob whose window closed is still on disk until the cleanup
+// ticker's next pass, so leaving it out would understate what is stored.
+//
+// One grouped query rather than one per day: a blob expires within
+// BlobRetentionDays of its upload, so there are only ever about that many
+// distinct days to return, however many blobs there are. Grouping by the date
+// prefix works because expires_at is fixed-width RFC3339 in UTC throughout
+// (see formatTime) -- the same property ListExpiredBlobs' range comparison
+// already relies on.
+func BlobExpiryBuckets(db DBTX) ([]BlobExpiryBucket, error) {
+	rows, err := db.Query(
+		`SELECT substr(expires_at, 1, 10) AS day, COALESCE(SUM(size_bytes), 0), COUNT(1)
+		   FROM blobs
+		  GROUP BY day
+		  ORDER BY day ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: aggregating blob expiry: %w", err)
+	}
+	defer rows.Close()
+
+	var buckets []BlobExpiryBucket
+	for rows.Next() {
+		var b BlobExpiryBucket
+		if err := rows.Scan(&b.Day, &b.Bytes, &b.Count); err != nil {
+			return nil, fmt.Errorf("store: scanning blob expiry bucket: %w", err)
+		}
+		buckets = append(buckets, b)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: aggregating blob expiry: %w", err)
+	}
+	return buckets, nil
+}
+
+// BlobBytesCreatedSince reports how much attachment ciphertext was stored since
+// a point in time -- the measured upload rate the forecast extrapolates from.
+//
+// Exact only while the window is shorter than the retention period, because
+// nothing uploaded inside it can have expired yet; callers pick the window with
+// that in mind rather than assuming any span is safe.
+func BlobBytesCreatedSince(db DBTX, since time.Time) (int64, error) {
+	var bytes int64
+	if err := db.QueryRow(
+		`SELECT COALESCE(SUM(size_bytes), 0) FROM blobs WHERE created_at >= ?`,
+		formatTime(since),
+	).Scan(&bytes); err != nil {
+		return 0, fmt.Errorf("store: summing recently created blobs: %w", err)
+	}
+	return bytes, nil
+}
+
 // PruneStatsSnapshots deletes every snapshot captured before olderThan and
 // reports how many rows were removed. Run periodically by the snapshot
 // ticker (cmd/server/main.go) to bound the table to its retention window --

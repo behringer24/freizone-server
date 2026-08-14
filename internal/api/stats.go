@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/behringer24/freizone-server/internal/diskstat"
 	"github.com/behringer24/freizone-server/internal/store"
@@ -40,7 +41,113 @@ func (a *API) handleGetServerStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, serverStatsResponseFrom(snapshot))
+	// In the same response as the figures above, deliberately: the forecast
+	// starts at what is stored *now*, so a separate request would let an upload
+	// land in between and leave the chart's measured line and its projection
+	// starting at two different values -- a visible kink at the one point where
+	// the reader is being asked to trust the join.
+	forecast, err := a.storageForecast(snapshot)
+	if err != nil {
+		a.Logger.Error("computing storage forecast", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+		return
+	}
+
+	resp := serverStatsResponseFrom(snapshot)
+	resp.Forecast = forecast
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// storageForecast works out how the attachment storage in snapshot will drain,
+// and where it settles if uploads keep arriving at the rate they have been.
+//
+// The drain half is arithmetic on facts, not a prediction: every blob carries
+// its own expires_at, fixed at upload and never extended, and nothing else
+// removes one except a recipient releasing its claim (which only makes the real
+// curve fall faster). The inflow half is the one assumption, and it is a bounded
+// one -- with a fixed retention window the stored total cannot grow without
+// limit, it converges on inflow-per-day times the window.
+func (a *API) storageForecast(snapshot store.StatsSnapshot) (*storageForecastResponse, error) {
+	retentionDays := a.Config.BlobRetentionDays
+	if retentionDays <= 0 {
+		// Config validation rules this out; not worth dividing by it anyway.
+		return nil, nil
+	}
+
+	buckets, err := store.BlobExpiryBuckets(a.DB)
+	if err != nil {
+		return nil, err
+	}
+
+	// Half the retention window, capped at a week: long enough to average out a
+	// quiet day, and short enough that nothing inside it can have expired yet,
+	// which is what makes the measured figure exact rather than an undercount.
+	inflowWindowDays := retentionDays / 2
+	if inflowWindowDays > 7 {
+		inflowWindowDays = 7
+	}
+	if inflowWindowDays < 1 {
+		inflowWindowDays = 1
+	}
+	now := snapshot.CapturedAt
+	inflowBytes, err := store.BlobBytesCreatedSince(a.DB, now.AddDate(0, 0, -inflowWindowDays))
+	if err != nil {
+		return nil, err
+	}
+	inflowPerDay := inflowBytes / int64(inflowWindowDays)
+
+	// One point per day, one day past the window so the drain reaches zero and
+	// the projection lands on the level it converges to rather than stopping
+	// just short of it.
+	horizon := retentionDays + 1
+	drain := make([]storageForecastPoint, 0, horizon+1)
+	withInflow := make([]storageForecastPoint, 0, horizon+1)
+	for day := 0; day <= horizon; day++ {
+		at := now.AddDate(0, 0, day)
+		remaining := snapshot.BlobBytes
+		if day > 0 {
+			remaining = bytesStillStoredOn(buckets, at)
+		}
+		// New uploads live the same window, so after t days the ones still here
+		// are the last min(t, retention) days' worth.
+		newDays := int64(day)
+		if newDays > int64(retentionDays) {
+			newDays = int64(retentionDays)
+		}
+		drain = append(drain, storageForecastPoint{
+			At:    at.UTC().Format(time.RFC3339),
+			Bytes: remaining,
+		})
+		withInflow = append(withInflow, storageForecastPoint{
+			At:    at.UTC().Format(time.RFC3339),
+			Bytes: remaining + inflowPerDay*newDays,
+		})
+	}
+
+	return &storageForecastResponse{
+		RetentionDays:     retentionDays,
+		InflowWindowDays:  inflowWindowDays,
+		InflowBytesPerDay: inflowPerDay,
+		EquilibriumBytes:  inflowPerDay * int64(retentionDays),
+		Drain:             drain,
+		WithInflow:        withInflow,
+	}, nil
+}
+
+// bytesStillStoredOn sums the buckets that have not expired by at. Day zero is
+// deliberately not computed this way -- it reports everything stored, expired
+// -but-unswept bytes included, so the curve starts exactly on the figure the
+// rest of the response gives and the first step down is the sweep doing its
+// work rather than an unexplained gap.
+func bytesStillStoredOn(buckets []store.BlobExpiryBucket, at time.Time) int64 {
+	day := at.UTC().Format("2006-01-02")
+	var remaining int64
+	for _, b := range buckets {
+		if b.Day >= day {
+			remaining += b.Bytes
+		}
+	}
+	return remaining
 }
 
 // handleGetServerStatsHistory reports every recorded stats snapshot from

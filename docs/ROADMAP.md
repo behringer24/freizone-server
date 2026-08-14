@@ -924,3 +924,26 @@ to back up and migrate beside the SQLite file that already gets both.
   `internal/diskstat` — `syscall.Statfs` on linux/darwin, and a `0, 0` stub
   elsewhere meaning "unknown" rather than an error, so a Windows development
   build still starts
+- 2026-08-14 — **storage forecast**, the part the current readings could not
+  answer: not "how much is stored" but "where is this going". `GET
+  /v1/admin/stats` gained a `forecast` object with two series. The first is
+  arithmetic on facts rather than a prediction — every blob carries its own
+  `expires_at`, fixed at upload and never extended, so what is stored today has
+  a known decay (`store.BlobExpiryBuckets`, one grouped query: a blob expires
+  within the retention window of its upload, so there are only ever about that
+  many distinct days to return, however many blobs exist). The second adds
+  uploads continuing at the rate actually measured over the last
+  `min(7, retention/2)` days (`store.BlobBytesCreatedSince`) — a window kept
+  shorter than the retention period precisely so nothing inside it can have
+  expired yet, which is what makes the figure exact instead of an undercount.
+  Those new uploads live one window too, so the second series converges on
+  `inflow × retention` and stops there. That convergence is the useful answer to
+  "will this server run out of room": with a fixed retention window storage
+  *cannot* grow without limit, so a straight-line extrapolation of the recorded
+  history would have been alarming and wrong. The forecast rides in the same
+  response as the live figures rather than on a route of its own, because it
+  starts at the stored total that response reports and two requests would let an
+  upload land in between — leaving a chart's measured line and its projection
+  joined at two different values. The drain series is an *upper* bound, and
+  only became one again with 0.18.1: while nothing released a delivered blob it
+  was simply the normal case
