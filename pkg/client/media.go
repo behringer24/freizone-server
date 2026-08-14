@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // Where attachment bytes live on this device.
@@ -129,8 +130,31 @@ func (c *Client) EnsureAttachment(ctx context.Context, chatID, messageID, server
 	if err := c.WriteAttachmentFile(chatID, messageID, data); err != nil {
 		return nil, err
 	}
+
+	// The plaintext is on disk and fsynced (writeFileAtomic syncs before the
+	// rename), so the server copy has served its purpose: give up this
+	// device's claim now instead of leaving it to occupy the recipient's quota
+	// for the whole retention window. That is the contract docs/PROTOCOL.md
+	// §10 states -- "the recipient is expected to DELETE the blob once it has
+	// the plaintext safely on disk" -- with retention as the backstop for a
+	// recipient that never comes back. With several recipients only this
+	// device's claim goes; the file follows the last one.
+	//
+	// Its own context, not the caller's: that one arrives with whatever is
+	// left of a download deadline, and a nearly-spent one would make the
+	// release silently skip. Best effort either way -- nothing here may fail a
+	// download whose bytes are already safe, and this package has no logger to
+	// say so, which is precisely why the sweep exists.
+	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), blobReleaseTimeout)
+	defer cancel()
+	_ = c.DeleteBlob(releaseCtx, att.BlobID)
+
 	return data, nil
 }
+
+// blobReleaseTimeout bounds the best-effort claim release above. Generous:
+// missing it costs nothing but disk somebody's retention sweep will reclaim.
+const blobReleaseTimeout = 15 * time.Second
 
 // DeleteChatMedia removes everything stored for one chat. Called when a
 // transcript is cleared or a conversation deleted: the messages are gone, and

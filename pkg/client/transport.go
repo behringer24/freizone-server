@@ -53,6 +53,14 @@ type request struct {
 	server string
 
 	auth authMode
+
+	// noContent marks a route that answers 204 with an empty body, which
+	// decodeResponse would otherwise read as "this host is not a Freizone
+	// server" -- an empty page being exactly the tell it looks for. Opt-in
+	// per request rather than a blanket relaxation there: that check is what
+	// turns a mistyped address into a sentence a user can act on, and it
+	// should stay strict everywhere it can.
+	noContent bool
 }
 
 // httpClient has no timeout on purpose: the message stream is a long-lived
@@ -143,7 +151,28 @@ func (c *Client) do(ctx context.Context, r request, out any) error {
 	}
 	defer resp.Body.Close()
 
+	if r.noContent {
+		return statusOnlyResponse(resp)
+	}
 	return decodeResponse(resp, out)
+}
+
+// statusOnlyResponse judges a route that answers with no body at all. A
+// refusal still carries the usual JSON envelope, so that path is unchanged --
+// only success is allowed to be empty.
+func statusOnlyResponse(resp *http.Response) error {
+	if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
+		return nil
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("client: reading response body: %w", err)
+	}
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[') || !json.Valid(trimmed) {
+		return &NotFreizoneServerError{StatusCode: resp.StatusCode, Host: hostOf(resp)}
+	}
+	return apiErrorFrom(resp.StatusCode, trimmed)
 }
 
 func signRequest(req *http.Request, r request, body []byte, id Identity) error {

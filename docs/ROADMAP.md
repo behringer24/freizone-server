@@ -188,6 +188,18 @@ its existing end-to-end encryption.
   metadata, expiry and orphan sweeps
 - 2026-07-30 — complete once the app-side UI landed (freizone-app 0.12.0–0.12.3).
   Resumable uploads, originally listed here, became SRV-11
+- 2026-08-14 — **regression found and fixed: nothing had been releasing blobs
+  since 2026-08-10.** PROTOCOL §10 has the recipient `DELETE` its claim once the
+  plaintext is on disk, with retention only as the backstop; the SRV-23 cut moved
+  downloads out of the app's Dart path into `pkg/client` and left the release
+  behind, so every attachment held its recipient's quota for the full 14 days
+  instead of until it was read. Restored in `pkg/client`'s `EnsureAttachment` —
+  one place for app, `cmd/devclient` and a later bot. Noticed only while
+  designing the storage forecast for SRV-25, which is worth recording: the gap
+  was invisible from the outside, because a best-effort call that stops being
+  made looks exactly like one that succeeds. It now has tests, including one for
+  `DeleteBlob`'s own return value (the route answers `204` with an empty body,
+  which the client used to read as "not a Freizone server")
 
 ### SRV-08 — Moderator global block/unblock via Server Admin
 Status: `done` · Also affects: freizone-app

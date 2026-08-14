@@ -95,14 +95,137 @@ func TestAPictureTravelsEncryptedAndArrivesWhole(t *testing.T) {
 		t.Fatalf("the picture came back different: %d bytes vs %d", len(fetched), len(original))
 	}
 
-	// Asking again is free: it finds the file rather than downloading twice.
-	srv.set(func(s *fakeServer) { delete(s.blobs, att.BlobID) })
+	// Asking again is free: it finds the file rather than downloading twice --
+	// which it has to, because the fetch above already released the claim and
+	// there is nothing on the server left to ask for (see
+	// TestFetchingAnAttachmentReleasesItsClaim).
 	again, err := bob.EnsureAttachment(t.Context(), aliceID, got[0].StoredMessageID, "", att)
 	if err != nil {
 		t.Fatalf("a cached attachment must not need the server: %v", err)
 	}
 	if !bytes.Equal(again, original) {
 		t.Error("the cached copy differs from what was downloaded")
+	}
+}
+
+// sendPictureTo delivers one picture from alice to bob and returns what bob
+// needs to fetch it: the attachment, its stored message id, and alice's id.
+func sendPictureTo(t *testing.T, srv *fakeServer, alice, bob *Client) (Attachment, string, string) {
+	t.Helper()
+	aliceID := identityOf(t, alice).AccountID
+	bobID := identityOf(t, bob).AccountID
+	if _, err := alice.StartConversation(t.Context(), bobID, ""); err != nil {
+		t.Fatalf("StartConversation: %v", err)
+	}
+	if _, err := alice.SendText(t.Context(), bobID, "look at this", SendOptions{
+		Media: &OutgoingMedia{Bytes: imageBytes(), MimeType: "image/jpeg", Thumb: []byte("tiny")},
+	}); err != nil {
+		t.Fatalf("SendText: %v", err)
+	}
+	got := deliverTo(t, bob)
+	if len(got) != 1 || len(got[0].Content.Attachments) != 1 {
+		t.Fatalf("bob did not receive the picture: %+v", got)
+	}
+	return got[0].Content.Attachments[0], got[0].StoredMessageID, aliceID
+}
+
+// The contract from docs/PROTOCOL.md §10: a recipient gives up its claim once
+// the plaintext is on disk, so storage is freed on delivery rather than held
+// for the whole retention window. This is what regressed silently when the app
+// moved its downloads into this package -- the release lived in the Dart path
+// that stopped being called, and nothing here noticed.
+func TestFetchingAnAttachmentReleasesItsClaim(t *testing.T) {
+	srv := newFakeServer(t)
+	alice := srv.account(t, "alice")
+	bob := srv.account(t, "bob")
+	att, messageID, aliceID := sendPictureTo(t, srv, alice, bob)
+
+	if got := srv.blobRecipientsFor(att.BlobID); len(got) != 1 {
+		t.Fatalf("before fetching, the blob is claimed by bob's device alone, got %v", got)
+	}
+
+	if _, err := bob.EnsureAttachment(t.Context(), aliceID, messageID, "", att); err != nil {
+		t.Fatalf("EnsureAttachment: %v", err)
+	}
+
+	if got := srv.blobRecipientsFor(att.BlobID); len(got) != 0 {
+		t.Errorf("the claim must be given up once the plaintext is stored, still held by %v", got)
+	}
+	if got := srv.blobCount(); got != 0 {
+		t.Errorf("bob was the only recipient, so the ciphertext should be gone, got %d blobs", got)
+	}
+	// The local copy is what the release traded the server copy for.
+	file, err := bob.AttachmentFile(aliceID, messageID)
+	if err != nil || !bytes.Equal(file, imageBytes()) {
+		t.Fatalf("the local copy must survive the release (%d bytes, %v)", len(file), err)
+	}
+}
+
+// DeleteBlob has to survive the answer it actually gets. The route is the only
+// one in the server that replies 204 with an empty body, and decodeResponse
+// reads a bodyless reply as "this host is not a Freizone server" -- so without
+// the no-content path this reported failure on every successful release. Worth
+// its own test because EnsureAttachment discards the error: every other test
+// here would pass with this broken.
+func TestDeleteBlobAcceptsAnEmptyResponse(t *testing.T) {
+	srv := newFakeServer(t)
+	alice := srv.account(t, "alice")
+	bob := srv.account(t, "bob")
+	att, _, _ := sendPictureTo(t, srv, alice, bob)
+
+	if err := bob.DeleteBlob(t.Context(), att.BlobID); err != nil {
+		t.Fatalf("a 204 with no body is success, got %v", err)
+	}
+	// And again: nothing of ours left to drop is the state being asked for, so
+	// the 404 that follows is success too (same rule as AckMessage).
+	if err := bob.DeleteBlob(t.Context(), att.BlobID); err != nil {
+		t.Errorf("deleting an already-released claim must be success, got %v", err)
+	}
+}
+
+// A download that fails must not release anything: the bytes never reached
+// disk, so the server copy is still the only one there is.
+func TestAFailedDownloadKeepsTheClaim(t *testing.T) {
+	srv := newFakeServer(t)
+	alice := srv.account(t, "alice")
+	bob := srv.account(t, "bob")
+	att, messageID, aliceID := sendPictureTo(t, srv, alice, bob)
+
+	// Arrives, but will not open -- the ciphertext is damaged in place, so the
+	// GET succeeds and the decrypt is what fails.
+	srv.set(func(s *fakeServer) {
+		damaged := append([]byte(nil), s.blobs[att.BlobID]...)
+		damaged[len(damaged)-1] ^= 0xff
+		s.blobs[att.BlobID] = damaged
+	})
+
+	if _, err := bob.EnsureAttachment(t.Context(), aliceID, messageID, "", att); err == nil {
+		t.Fatal("a blob that does not open must be an error, not silent success")
+	}
+	if got := srv.blobRecipientsFor(att.BlobID); len(got) != 1 {
+		t.Errorf("nothing was stored, so the claim must remain, got %v", got)
+	}
+}
+
+// A cache hit never touches the server, so it cannot release a claim either --
+// including the claim of some *other* device, which is what asking blindly
+// would risk.
+func TestACachedAttachmentReleasesNothing(t *testing.T) {
+	srv := newFakeServer(t)
+	alice := srv.account(t, "alice")
+	bob := srv.account(t, "bob")
+	att, messageID, aliceID := sendPictureTo(t, srv, alice, bob)
+
+	// Already on disk, as it would be for a sender or after an earlier fetch.
+	if err := bob.WriteAttachmentFile(aliceID, messageID, imageBytes()); err != nil {
+		t.Fatalf("WriteAttachmentFile: %v", err)
+	}
+
+	if _, err := bob.EnsureAttachment(t.Context(), aliceID, messageID, "", att); err != nil {
+		t.Fatalf("EnsureAttachment: %v", err)
+	}
+	if got := srv.blobRecipientsFor(att.BlobID); len(got) != 1 {
+		t.Errorf("a cache hit must leave the server alone, claims now %v", got)
 	}
 }
 

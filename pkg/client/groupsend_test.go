@@ -568,28 +568,48 @@ func TestAGroupPictureIsUploadedOnce(t *testing.T) {
 		t.Errorf("the sender's line should hold no blob id, got %q", got)
 	}
 
+	// Both members receive before anybody fetches: fetching releases the
+	// fetching device's own claim (PROTOCOL §10), so "granted to every
+	// member" is only observable while the picture is still unread.
+	type receivedPicture struct {
+		member    *Client
+		att       Attachment
+		messageID string
+	}
+	var received []receivedPicture
 	for _, member := range []*Client{bob, carol} {
-		results := syncGroups(t, member)
-		var att Attachment
-		var messageID string
-		for _, res := range results {
+		got := receivedPicture{member: member}
+		for _, res := range syncGroups(t, member) {
 			if len(res.Content.Attachments) == 1 {
-				att, messageID = res.Content.Attachments[0], res.StoredMessageID
+				got.att, got.messageID = res.Content.Attachments[0], res.StoredMessageID
 			}
 		}
-		if messageID == "" {
+		if got.messageID == "" {
 			t.Fatal("a member did not receive the picture")
 		}
-		if got := srv.blobRecipientsFor(att.BlobID); len(got) != 2 {
-			t.Errorf("the blob must be granted to every member's device on that server, got %d", len(got))
-		}
-		fetched, err := member.EnsureAttachment(t.Context(), groupID, messageID, "", att)
+		received = append(received, got)
+	}
+	if got := srv.blobRecipientsFor(received[0].att.BlobID); len(got) != 2 {
+		t.Errorf("the blob must be granted to every member's device on that server, got %d", len(got))
+	}
+
+	// And one member fetching must not take the picture away from the other:
+	// each fetch drops one claim, the file goes with the last.
+	for i, r := range received {
+		fetched, err := r.member.EnsureAttachment(t.Context(), groupID, r.messageID, "", r.att)
 		if err != nil {
 			t.Fatalf("EnsureAttachment: %v", err)
 		}
 		if !bytes.Equal(fetched, original) {
 			t.Error("the picture came back different")
 		}
+		if got, want := len(srv.blobRecipientsFor(r.att.BlobID)), len(received)-i-1; got != want {
+			t.Errorf("after %d of %d members fetched, %d claims remain, want %d",
+				i+1, len(received), got, want)
+		}
+	}
+	if got := srv.blobCount(); got != 0 {
+		t.Errorf("every member has the picture, so nothing should be left on the server, got %d blobs", got)
 	}
 }
 
