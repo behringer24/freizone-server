@@ -14,6 +14,28 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+## [0.18.1] — 2026-08-14
+
+### Fixed
+
+* **Delivered attachments are freed again (`SRV-07`).** A recipient gives up its
+  claim on a blob once the plaintext is on its own disk, which is what
+  `docs/PROTOCOL.md` §10 has always specified, with retention as the backstop
+  rather than the normal path. That release stopped happening on 2026-08-10:
+  it lived in the app's Dart download path, the `SRV-23` cut moved downloads
+  into `pkg/client`, and nothing there called it. Since then every attachment
+  held its recipient's quota — and this server's disk — for the full retention
+  window even after everybody had it. Restored in `pkg/client`'s
+  `EnsureAttachment`, so the app, `cmd/devclient` and a later bot all honour it
+  from one place. In a group only the reading member's claim goes; the file
+  follows the last one, unchanged
+* **`Client.DeleteBlob` could never report success.** `DELETE /v1/blobs/{id}` is
+  the only route answering `204` with an empty body, and the client reads a
+  bodyless reply as "this host is not a Freizone server" — the tell for a
+  mistyped address. A request may now declare that it expects no body, which is
+  opt-in rather than a blanket relaxation of that check, and a `404` counts as
+  success the way `AckMessage`'s already does
+
 ## [0.18.0] — 2026-08-14
 
 An operator could not see the state of their own server without a shell on the
