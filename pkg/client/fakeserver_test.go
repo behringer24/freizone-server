@@ -526,8 +526,36 @@ func (s *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		}
 
 	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/v1/blobs/"):
-		delete(s.blobs, strings.TrimPrefix(path, "/v1/blobs/"))
-		s.writeJSON(w, map[string]any{"status": "deleted"})
+		// Mirrors store.DeleteBlobForDevice rather than dropping the blob
+		// outright: a DELETE gives up the calling device's own claim, and the
+		// ciphertext goes only with the last one -- so one group member
+		// deleting cannot take the picture away from the rest. Deleting
+		// globally here made the stub agree with a server that does not exist,
+		// and would have hidden exactly that.
+		//
+		// 204 with an empty body, like the real route (the only one that
+		// answers so), which is what a client's no-body path has to survive.
+		blobID := strings.TrimPrefix(path, "/v1/blobs/")
+		device := r.Header.Get(httpsig.HeaderKeyID)
+		remaining := make([]string, 0, len(s.blobRecipients[blobID]))
+		claimed := false
+		for _, recipient := range s.blobRecipients[blobID] {
+			if recipient == device {
+				claimed = true
+				continue
+			}
+			remaining = append(remaining, recipient)
+		}
+		if !claimed {
+			s.writeError(w, http.StatusNotFound, "unknown_blob")
+			return
+		}
+		s.blobRecipients[blobID] = remaining
+		if len(remaining) == 0 {
+			delete(s.blobs, blobID)
+			delete(s.blobRecipients, blobID)
+		}
+		w.WriteHeader(http.StatusNoContent)
 
 	case r.Method == http.MethodGet && path == "/v1/messages":
 		deviceID := r.Header.Get(httpsig.HeaderKeyID)
