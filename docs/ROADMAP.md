@@ -873,3 +873,42 @@ settle, and what the design has to:
   or reused for something else — and permanent relocation is the case worth
   supporting properly instead of leaving accounts stranded. Filed as its own
   item; nothing started
+
+### SRV-25 — Server statistics for admins
+Status: `done` · Also affects: freizone-app (APP-24)
+
+An operator has no way to see how their own server is doing. Whether it is
+filling its disk, whether registrations are climbing, whether a queue is
+backing up — all of it sits in the database and none of it is readable
+without a shell on the host. The figures are also exactly the kind that must
+not be public: `SRV-22`'s reasoning applies unchanged, so this is admin-only
+and stays off `GET /v1/server-status` and the landing page.
+
+Current readings answer "is it healthy now". They cannot answer "is it
+getting worse", because the tables they are computed from forget: a blocked
+account, an expired blob and a delivered message all leave no trace behind,
+so last month's size is not recoverable from today's state. Growth therefore
+needs a recorded history of its own rather than a cleverer query. A
+round-robin database (RRDtool's model) was considered and dropped: the pure-Go
+ports are either unmaintained (`tgres`) or bring their own on-disk format and
+one file per metric (`go-whisper`), which for a dozen gauges is a second thing
+to back up and migrate beside the SQLite file that already gets both.
+
+- 2026-08-14 — shipped. `stats_snapshots` (migration `0014`) and
+  `internal/store/stats.go`: `ComputeCurrentStats` aggregates accounts,
+  devices, blob count/bytes, queued messages and the federation blocklist,
+  while `InsertStatsSnapshot` / `StatsHistory` / `PruneStatsSnapshots` keep the
+  recorded series. Admin-only `GET /v1/admin/stats` (live) and `GET
+  /v1/admin/stats/history?days=N` (`internal/api/stats.go`), both behind
+  `requireAdmin` rather than `requireAdminOrModerator`, matching `GET
+  /v1/admin/license`. A ticker in `cmd/server/main.go` records a snapshot
+  every six hours — four a day, enough to resolve a same-day spike without
+  filling the table — plus one immediately at startup so a fresh install has a
+  first point rather than an empty chart, and prunes past two years, since
+  nothing else ever deletes from that table. Blob bytes are read from
+  `blobs.size_bytes`, not by walking the blob directory: the column is written
+  from the bytes actually stored, so the walk would cost a full traversal per
+  request for a figure already in the database. Disk space comes from a new
+  `internal/diskstat` — `syscall.Statfs` on linux/darwin, and a `0, 0` stub
+  elsewhere meaning "unknown" rather than an error, so a Windows development
+  build still starts
