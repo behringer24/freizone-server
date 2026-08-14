@@ -54,3 +54,19 @@ encrypt, upload to the recipient's server, render in the bubble, view
 full-screen, and delete the blob once it is stored locally. The one item
 originally listed as still open here — resumable/chunked uploads — is only
 needed once video lands and now has its own entry, **SRV-11**.
+
+**Correction, 2026-08-14.** The last item in that list — deleting the blob once
+it is stored locally — stopped happening on 2026-08-10 and this paragraph went
+on claiming it for four days. The release lived in the app's Dart download path
+(`AppSession.ensureAttachmentDownloaded`); the SRV-23 cut moved downloads into
+`pkg/client` and nothing there called it, so every attachment occupied its
+recipient's quota for the full retention window instead of until it was read.
+Restored the same day in `pkg/client`'s `EnsureAttachment`, which is where the
+download now lives — so the app, `cmd/devclient` and a later bot all honour the
+contract from one place. Two things had to be fixed first: `Client.DeleteBlob`
+could never report success, because this is the only route answering `204` with
+an empty body and the client reads a bodyless reply as "not a Freizone server";
+and the test stub deleted blobs outright rather than per claim, which would have
+let one group member's read take the picture from the rest. Both now have tests
+of their own — a release that is discarded best-effort is invisible when it
+breaks, which is how it stayed unnoticed the first time.

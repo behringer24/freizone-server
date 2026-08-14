@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -153,15 +154,30 @@ func (c *Client) DownloadAttachment(ctx context.Context, server string, att Atta
 	return plaintext, nil
 }
 
-// DeleteBlob removes an attachment we uploaded. Best effort by nature: the
-// server expires blobs on its own, so failing to delete one costs storage
-// somebody else is already accounting for.
+// DeleteBlob gives up this device's claim on an attachment it received, which
+// is what frees the ciphertext once every recipient has it (see
+// docs/PROTOCOL.md §10). Not a sender operation: only a named recipient may
+// touch a blob at all, so a sender cannot remove what it uploaded.
+//
+// With several recipients only the caller's own claim goes; the file follows
+// the last one. Best effort by nature -- the server expires blobs on its own,
+// so a failure here costs storage until the retention sweep, nothing more --
+// and a 404 counts as success, since "no claim of mine" is the state being
+// asked for.
 func (c *Client) DeleteBlob(ctx context.Context, blobID string) error {
-	return c.do(ctx, request{
+	err := c.do(ctx, request{
 		method: http.MethodDelete,
 		path:   "/v1/blobs/" + blobID,
 		auth:   authDevice,
+		// The server answers 204 with nothing in it, the one route that does.
+		noContent: true,
 	}, nil)
+
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	return err
 }
 
 const blobAlgorithm = "aes-256-gcm"
