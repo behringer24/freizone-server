@@ -14,6 +14,36 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-08-14
+
+An operator could not see the state of their own server without a shell on the
+host. This release adds the figures — and, because the tables they come from
+forget what they used to hold, a recorded history to read growth from
+(`SRV-25`).
+
+### Added
+
+* **Admin-only server statistics (`SRV-25`).** `GET /v1/admin/stats` reports
+  the current size and load: accounts (total and active), devices, stored
+  attachments and their bytes, the SQLite file's size, free disk space, queued
+  messages, and whether federation is on together with how many senders are
+  blocked. `GET /v1/admin/stats/history?days=N` returns the same shape as a
+  series, oldest first, for a growth chart. Both sit behind `requireAdmin` —
+  not `requireAdminOrModerator` — and are deliberately absent from `GET
+  /v1/server-status` and the landing page, for the reason `SRV-22` states: a
+  usage figure turns "a server exists" into "a server worth attacking"
+* **A recorded history to read growth from.** A background ticker writes one
+  `stats_snapshots` row every six hours, plus one at startup so a fresh install
+  has a data point immediately instead of an empty chart, and prunes anything
+  older than two years — nothing else ever deletes from that table. None of it
+  is derivable after the fact: a blocked account, an expired blob and a
+  delivered message all leave the tables that would otherwise be counted, so
+  last month's size only exists if it was written down at the time
+* **`internal/diskstat`**, free and total space for the volume holding the data
+  directory: `syscall.Statfs` on linux/darwin, and `0, 0` meaning "unknown" —
+  never an error — anywhere else, so a non-Unix development build still starts
+  rather than failing over a figure that is only ever displayed
+
 ## [0.17.0] — 2026-08-12
 
 The protocol was implemented twice — once here in `cmd/devclient`, once in
