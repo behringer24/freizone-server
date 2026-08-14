@@ -14,6 +14,40 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-08-14
+
+The statistics from 0.18.0 said how much is stored. This adds where it is going
+(`SRV-25`) — and, because a fixed retention window means storage converges
+rather than grows, an actual ceiling instead of an extrapolation.
+
+### Added
+
+* **A storage forecast on `GET /v1/admin/stats`.** A `forecast` object with two
+  series continuing past today. `drain` is arithmetic on facts, not a
+  prediction: every blob carries its own `expires_at`, fixed at upload and never
+  extended, so what is stored now has a known decay — and it is an *upper*
+  bound, since a recipient releasing its claim after fetching only makes the
+  real curve fall faster. `with_inflow` adds uploads continuing at
+  `inflow_bytes_per_day`, which live one retention window as well, so it
+  flattens out on `equilibrium_bytes`
+* **`equilibrium_bytes`, the figure worth acting on.** With a fixed retention
+  window storage cannot grow without limit: it converges on inflow × window.
+  That is the honest answer to "will this server run out of room", where a
+  straight-line extrapolation of the recorded history ignores everything about
+  to expire and produces a number that is alarming and false
+* **`inflow_bytes_per_day` is measured, not guessed** — the ciphertext actually
+  stored over `inflow_window_days`, which is `min(7, retention/2)` so that
+  nothing inside the window can have expired yet, making the figure exact rather
+  than an undercount. Backed by one grouped query over the expiry dates
+  (`store.BlobExpiryBuckets`): a blob expires within the retention window of its
+  upload, so there are only ever about that many distinct days to return,
+  however many blobs a server holds
+
+The forecast rides in the same response as the live figures rather than on a
+route of its own: both series start at the stored total that response reports,
+and two requests would let an upload land in between — leaving a chart's
+measured line and its projection joined at two different values.
+
 ## [0.18.1] — 2026-08-14
 
 ### Fixed
