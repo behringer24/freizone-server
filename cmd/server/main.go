@@ -45,6 +45,19 @@ const (
 	// files with no metadata row -- orphans only arise from a crash, so this
 	// need not run every tick.
 	blobOrphanSweepInterval = 24 * time.Hour
+
+	// statsSnapshotInterval is how often a server-stats history point is
+	// recorded for the admin statistics page's growth charts. Four a day
+	// (every six hours) resolves same-day load spikes without generating
+	// more rows than the point of a long-range trend chart justifies.
+	statsSnapshotInterval = 6 * time.Hour
+	// statsSnapshotRetention bounds the stats_snapshots table -- unlike
+	// every other cleanup ticker here, nothing else ever deletes from it, so
+	// without a retention window it would grow forever. Two years gives the
+	// admin page a long runway to look back on (at 4/day that is still only
+	// ~2900 rows, trivial for SQLite) even right before the oldest point
+	// ages out.
+	statsSnapshotRetention = 2 * 365 * 24 * time.Hour
 )
 
 func main() {
@@ -181,6 +194,7 @@ func run() error {
 	messageCleanupDone := runMessageCleanup(ctx, db, logger)
 	blobCleanupDone := runBlobCleanup(ctx, db, blobs, logger)
 	inviteCleanupDone := runInviteCleanup(ctx, db, logger)
+	statsSnapshotDone := runStatsSnapshot(ctx, a, logger)
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.ListenAndServe() }()
@@ -206,6 +220,7 @@ func run() error {
 	<-messageCleanupDone
 	<-blobCleanupDone
 	<-inviteCleanupDone
+	<-statsSnapshotDone
 	return nil
 }
 
@@ -478,6 +493,53 @@ func runInviteCleanup(ctx context.Context, db *sql.DB, logger *slog.Logger) <-ch
 		}
 	}()
 	return done
+}
+
+// runStatsSnapshot starts a background goroutine that records one server
+// stats snapshot (internal/api's CurrentStatsSnapshot -- the same figures
+// GET /v1/admin/stats reports live) immediately, so the admin statistics
+// page has a first data point right after startup instead of waiting a full
+// statsSnapshotInterval, and then one more every statsSnapshotInterval
+// after that, pruning anything past statsSnapshotRetention on each tick.
+// The returned channel is closed once the goroutine has exited.
+func runStatsSnapshot(ctx context.Context, a *api.API, logger *slog.Logger) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		takeStatsSnapshot(a, logger)
+
+		ticker := time.NewTicker(statsSnapshotInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				takeStatsSnapshot(a, logger)
+			}
+		}
+	}()
+	return done
+}
+
+// takeStatsSnapshot computes and records one stats_snapshots row, then
+// prunes anything past statsSnapshotRetention. Failures are logged, never
+// fatal -- a missed snapshot just leaves a gap in the history chart.
+func takeStatsSnapshot(a *api.API, logger *slog.Logger) {
+	snapshot, err := a.CurrentStatsSnapshot()
+	if err != nil {
+		logger.Warn("computing server stats snapshot failed", "error", err)
+		return
+	}
+	if err := store.InsertStatsSnapshot(a.DB, snapshot); err != nil {
+		logger.Warn("recording server stats snapshot failed", "error", err)
+		return
+	}
+	if n, err := store.PruneStatsSnapshots(a.DB, snapshot.CapturedAt.Add(-statsSnapshotRetention)); err != nil {
+		logger.Warn("pruning old server stats snapshots failed", "error", err)
+	} else if n > 0 {
+		logger.Info("pruned old server stats snapshots", "count", n)
+	}
 }
 
 func runMessageCleanup(ctx context.Context, db *sql.DB, logger *slog.Logger) <-chan struct{} {

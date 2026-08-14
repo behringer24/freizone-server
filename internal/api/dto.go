@@ -459,3 +459,88 @@ type blobRecipientResult struct {
 	RecipientDeviceID string `json:"recipient_device_id"`
 	Status            string `json:"status"`
 }
+
+// serverStatsResponse is the GET /v1/admin/stats payload: the server's
+// current size and load. Deliberately never reachable from GET
+// /v1/server-status or the landing page, for the same reason
+// licenseStatusResponse isn't -- see stats.go's handler doc comment.
+type serverStatsResponse struct {
+	CapturedAt string `json:"captured_at"`
+
+	AccountCount       int `json:"account_count"`
+	ActiveAccountCount int `json:"active_account_count"`
+	DeviceCount        int `json:"device_count"`
+
+	BlobCount int   `json:"blob_count"`
+	BlobBytes int64 `json:"blob_bytes"`
+	DBBytes   int64 `json:"db_bytes"`
+
+	PendingMessageCount int `json:"pending_message_count"`
+
+	// DiskFreeBytes/DiskTotalBytes are both 0 when the host platform has no
+	// way to report them wired up (internal/diskstat) -- a client should
+	// read "0 and 0" as "unknown", not "completely full".
+	DiskFreeBytes  int64 `json:"disk_free_bytes"`
+	DiskTotalBytes int64 `json:"disk_total_bytes"`
+
+	FederationEnabled         bool `json:"federation_enabled"`
+	FederationBlocklistCount int  `json:"federation_blocklist_count"`
+}
+
+func serverStatsResponseFrom(s store.StatsSnapshot) serverStatsResponse {
+	return serverStatsResponse{
+		CapturedAt:               s.CapturedAt.UTC().Format(time.RFC3339),
+		AccountCount:             s.AccountCount,
+		ActiveAccountCount:       s.ActiveAccountCount,
+		DeviceCount:              s.DeviceCount,
+		BlobCount:                s.BlobCount,
+		BlobBytes:                s.BlobBytes,
+		DBBytes:                  s.DBBytes,
+		PendingMessageCount:      s.PendingMessageCount,
+		DiskFreeBytes:            s.DiskFreeBytes,
+		DiskTotalBytes:           s.DiskTotalBytes,
+		FederationEnabled:        s.FederationEnabled,
+		FederationBlocklistCount: s.FederationBlocklistCount,
+	}
+}
+
+// serverStatsPointResponse is one entry of GET /v1/admin/stats/history --
+// the same fields as serverStatsResponse, kept as a separate type (rather
+// than reusing it) so the two endpoints can diverge later without one's
+// shape constraining the other.
+type serverStatsPointResponse struct {
+	CapturedAt string `json:"captured_at"`
+
+	AccountCount       int `json:"account_count"`
+	ActiveAccountCount int `json:"active_account_count"`
+	DeviceCount        int `json:"device_count"`
+
+	BlobCount int   `json:"blob_count"`
+	BlobBytes int64 `json:"blob_bytes"`
+	DBBytes   int64 `json:"db_bytes"`
+
+	PendingMessageCount int `json:"pending_message_count"`
+
+	DiskFreeBytes  int64 `json:"disk_free_bytes"`
+	DiskTotalBytes int64 `json:"disk_total_bytes"`
+
+	FederationEnabled         bool `json:"federation_enabled"`
+	FederationBlocklistCount int  `json:"federation_blocklist_count"`
+}
+
+func serverStatsPointResponseFrom(s store.StatsSnapshot) serverStatsPointResponse {
+	return serverStatsPointResponse{
+		CapturedAt:               s.CapturedAt.UTC().Format(time.RFC3339),
+		AccountCount:             s.AccountCount,
+		ActiveAccountCount:       s.ActiveAccountCount,
+		DeviceCount:              s.DeviceCount,
+		BlobCount:                s.BlobCount,
+		BlobBytes:                s.BlobBytes,
+		DBBytes:                  s.DBBytes,
+		PendingMessageCount:      s.PendingMessageCount,
+		DiskFreeBytes:            s.DiskFreeBytes,
+		DiskTotalBytes:           s.DiskTotalBytes,
+		FederationEnabled:        s.FederationEnabled,
+		FederationBlocklistCount: s.FederationBlocklistCount,
+	}
+}

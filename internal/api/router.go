@@ -98,6 +98,8 @@ func (a *API) Router() http.Handler {
 	mux.Handle("GET /v1/admin/federation", a.Auth.Require(http.HandlerFunc(a.handleGetFederationEnabled)))
 	mux.Handle("PUT /v1/admin/federation", a.Auth.Require(http.HandlerFunc(a.handleSetFederationEnabled)))
 	mux.Handle("GET /v1/admin/license", a.Auth.Require(http.HandlerFunc(a.handleGetLicenseStatus)))
+	mux.Handle("GET /v1/admin/stats", a.Auth.Require(http.HandlerFunc(a.handleGetServerStats)))
+	mux.Handle("GET /v1/admin/stats/history", a.Auth.Require(http.HandlerFunc(a.handleGetServerStatsHistory)))
 
 	mux.Handle("GET /v1/admin/federation-blocklist", a.Auth.Require(http.HandlerFunc(a.handleListFederationBlocklist)))
 	mux.Handle("POST /v1/admin/federation-blocklist", a.Auth.Require(http.HandlerFunc(a.handleBlockFederationSender)))
