@@ -485,6 +485,54 @@ type serverStatsResponse struct {
 
 	FederationEnabled         bool `json:"federation_enabled"`
 	FederationBlocklistCount int  `json:"federation_blocklist_count"`
+
+	// Forecast is how the stored attachments will drain and where they settle.
+	// Omitted rather than empty when there is nothing to say, so a client can
+	// tell "this server does not report it" from "it reports zeroes".
+	Forecast *storageForecastResponse `json:"forecast,omitempty"`
+}
+
+// storageForecastResponse rides along with GET /v1/admin/stats rather than
+// living on its own route: [Drain] starts at the same stored total the response
+// reports, and computing the two in separate requests would let an upload land
+// between them -- leaving a chart's measured line and its projection joined at
+// two different values.
+type storageForecastResponse struct {
+	// RetentionDays is the window an attachment is kept for
+	// (FREIZONE_BLOB_RETENTION_DAYS), which is both the horizon of the series
+	// below and the multiplier in EquilibriumBytes.
+	RetentionDays int `json:"retention_days"`
+
+	// InflowBytesPerDay is measured, not guessed: the ciphertext actually
+	// stored over the last InflowWindowDays, divided by those days. The window
+	// is kept shorter than the retention period so nothing inside it can have
+	// expired yet, which is what makes the figure exact.
+	InflowWindowDays  int   `json:"inflow_window_days"`
+	InflowBytesPerDay int64 `json:"inflow_bytes_per_day"`
+
+	// EquilibriumBytes is where storage settles if uploads keep arriving at
+	// that rate: with a fixed retention window the total cannot grow without
+	// limit, it converges on inflow times the window. The useful answer to "is
+	// this server going to run out of room", in place of a straight-line
+	// extrapolation that ignores everything expiring.
+	EquilibriumBytes int64 `json:"equilibrium_bytes"`
+
+	// Drain is what is stored now, expiring: arithmetic on each blob's own
+	// expires_at, not a prediction. It is an upper bound -- a recipient
+	// releasing its claim after fetching (PROTOCOL §10) only makes the real
+	// curve fall faster -- and it reaches zero one day past RetentionDays.
+	//
+	// WithInflow adds the uploads expected to arrive at InflowBytesPerDay,
+	// which themselves live RetentionDays, so it flattens out on
+	// EquilibriumBytes. The first point of both is now, and equals the stored
+	// total the enclosing response reports.
+	Drain      []storageForecastPoint `json:"drain"`
+	WithInflow []storageForecastPoint `json:"with_inflow"`
+}
+
+type storageForecastPoint struct {
+	At    string `json:"at"`
+	Bytes int64  `json:"bytes"`
 }
 
 func serverStatsResponseFrom(s store.StatsSnapshot) serverStatsResponse {

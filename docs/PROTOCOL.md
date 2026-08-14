@@ -709,6 +709,37 @@ active admins.
   `disk_free_bytes`/`disk_total_bytes` are both `0` when the server's host
   platform has no way to report them (`internal/diskstat` only covers
   Linux/Darwin) — read that as "unknown", not "completely full".
+
+  The response also carries a `forecast` object (omitted, rather than sent
+  empty, by a server that does not compute one) saying how the stored
+  attachments will drain and where they settle:
+  ```json
+  {
+    "retention_days": 14,
+    "inflow_window_days": 7,
+    "inflow_bytes_per_day": 8400000,
+    "equilibrium_bytes": 117600000,
+    "drain":       [{"at": "2026-08-14T20:46:42Z", "bytes": 512000000}, "..."],
+    "with_inflow": [{"at": "2026-08-14T20:46:42Z", "bytes": 512000000}, "..."]
+  }
+  ```
+  `drain` is arithmetic on facts rather than a prediction: every blob carries
+  its own `expires_at`, fixed at upload and never extended (§10), so what is
+  stored today has a known decay. It is an *upper* bound — a recipient
+  releasing its claim after fetching makes the real curve fall faster — and it
+  reaches `0` one day past `retention_days`. `with_inflow` adds uploads
+  continuing at the measured `inflow_bytes_per_day`; those live one retention
+  window too, so it flattens out on `equilibrium_bytes`. That figure is the
+  useful answer to "will this server run out of room", because a fixed
+  retention window means storage cannot grow without limit: it converges on
+  inflow × window, whatever the current total happens to be.
+
+  `inflow_bytes_per_day` is measured, not guessed — the ciphertext actually
+  stored over `inflow_window_days`, which is deliberately kept shorter than the
+  retention period so nothing inside the window can have expired yet. Both
+  series start at the same instant and value the enclosing response reports, so
+  a chart can join its measured line to them without a step; that is also why
+  the forecast rides in this response instead of a route of its own.
 - **`GET /v1/admin/stats/history?days=N`** (signed, admin only) — every
   `GET /v1/admin/stats`-shaped snapshot recorded in the last `N` days
   (default 90, capped at the 2-year retention window a background ticker
