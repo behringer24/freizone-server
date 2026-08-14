@@ -683,6 +683,42 @@ active admins.
   protocol: nothing rejects a registration or blocks an account because of
   it, the same way an expired attestation only warns rather than refusing to
   boot.
+- **`GET /v1/admin/stats`** (signed, admin only) — this server's current
+  size and load: accounts, devices, stored attachments and their disk
+  usage, queued messages, federation status. Deliberately not on
+  `GET /v1/server-status` or the landing page, for the same reason
+  `GET /v1/admin/license` isn't — usage figures are attack-surface
+  information, not something an unauthenticated caller needs.
+  `200`:
+  ```json
+  {
+    "captured_at": "2026-08-13T20:46:42Z",
+    "account_count": 214,
+    "active_account_count": 209,
+    "device_count": 331,
+    "blob_count": 1842,
+    "blob_bytes": 512000000,
+    "db_bytes": 41943040,
+    "pending_message_count": 12,
+    "disk_free_bytes": 21474836480,
+    "disk_total_bytes": 107374182400,
+    "federation_enabled": true,
+    "federation_blocklist_count": 2
+  }
+  ```
+  `disk_free_bytes`/`disk_total_bytes` are both `0` when the server's host
+  platform has no way to report them (`internal/diskstat` only covers
+  Linux/Darwin) — read that as "unknown", not "completely full".
+- **`GET /v1/admin/stats/history?days=N`** (signed, admin only) — every
+  `GET /v1/admin/stats`-shaped snapshot recorded in the last `N` days
+  (default 90, capped at the 2-year retention window a background ticker
+  prunes to), oldest first, for a growth chart (is storage climbing, are
+  registrations climbing). A snapshot is taken four times a day, every six
+  hours (plus one immediately on server start) — this is a history of
+  point-in-time measurements, not a log of every change, and the
+  current-account/blob tables it's computed from get rows deleted (blocked
+  accounts, expired blobs) that this history alone still remembers.
+  `200`: a JSON array of the same object shape as `GET /v1/admin/stats`.
 
 ### `POST /v1/devices/{device_id}/prekeys` (signed, caller must be that device)
 Uploads/replaces a device's X3DH key material. `dh_identity_cert` is
