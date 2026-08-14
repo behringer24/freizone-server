@@ -85,6 +85,73 @@ func TestComputeCurrentStatsOnEmptyDatabase(t *testing.T) {
 	}
 }
 
+// The forecast's raw material: what expires when, and what arrived recently.
+func TestBlobExpiryBucketsAndInflow(t *testing.T) {
+	db := newTestDB(t)
+	mustCreateAccount(t, db, "acct1")
+	if err := CreateDevice(db, testDevice("acct1", "device1")); err != nil {
+		t.Fatalf("CreateDevice() error = %v", err)
+	}
+
+	now := time.Now().UTC()
+	// Two expiring the same day, one a day later, one already overdue: an
+	// expired-but-unswept blob still occupies the disk, so it has to be
+	// reported rather than dropped.
+	blobs := []struct {
+		id        string
+		size      int64
+		createdAt time.Time
+		expiresAt time.Time
+	}{
+		{"blobA", 100, now, now.AddDate(0, 0, 5)},
+		{"blobB", 250, now, now.AddDate(0, 0, 5)},
+		{"blobC", 400, now.AddDate(0, 0, -1), now.AddDate(0, 0, 6)},
+		{"blobOverdue", 30, now.AddDate(0, 0, -20), now.AddDate(0, 0, -2)},
+	}
+	for _, b := range blobs {
+		if err := CreateBlob(db, Blob{
+			BlobID: b.id, SizeBytes: b.size, CreatedAt: b.createdAt, ExpiresAt: b.expiresAt,
+		}, []string{"device1"}); err != nil {
+			t.Fatalf("CreateBlob(%s) error = %v", b.id, err)
+		}
+	}
+
+	buckets, err := BlobExpiryBuckets(db)
+	if err != nil {
+		t.Fatalf("BlobExpiryBuckets() error = %v", err)
+	}
+	if len(buckets) != 3 {
+		t.Fatalf("want a bucket per distinct expiry day (overdue included), got %d: %+v", len(buckets), buckets)
+	}
+	// Oldest first, so the overdue day leads.
+	if buckets[0].Day != now.AddDate(0, 0, -2).Format("2006-01-02") || buckets[0].Bytes != 30 {
+		t.Errorf("first bucket = %+v, want the overdue 30 bytes", buckets[0])
+	}
+	var total int64
+	for _, b := range buckets {
+		total += b.Bytes
+	}
+	if total != 780 {
+		t.Errorf("buckets sum to %d, want every stored byte (780)", total)
+	}
+	// The two sharing a day are summed into one bucket, not listed twice.
+	sameDay := now.AddDate(0, 0, 5).Format("2006-01-02")
+	for _, b := range buckets {
+		if b.Day == sameDay && (b.Bytes != 350 || b.Count != 2) {
+			t.Errorf("bucket %s = (%d bytes, %d blobs), want (350, 2)", b.Day, b.Bytes, b.Count)
+		}
+	}
+
+	// Inflow counts what was stored inside the window and nothing older.
+	inflow, err := BlobBytesCreatedSince(db, now.AddDate(0, 0, -2))
+	if err != nil {
+		t.Fatalf("BlobBytesCreatedSince() error = %v", err)
+	}
+	if inflow != 750 {
+		t.Errorf("inflow = %d, want 750 (the 20-day-old upload is outside the window)", inflow)
+	}
+}
+
 func testStatsSnapshot(capturedAt time.Time) StatsSnapshot {
 	return StatsSnapshot{
 		CapturedAt:               capturedAt,
