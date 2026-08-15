@@ -97,6 +97,22 @@ type Config struct {
 	// batches to fit rather than discovering the limit by being rejected.
 	MaxBatchMessages int
 
+	// MaxStreamsPerDevice caps how many concurrent SSE stream subscribers one
+	// device may hold (internal/api/broker.go's subscribe, enforced by
+	// handleMessageStream). Nothing bounded this before (SRV-28): the
+	// subscriber map only ever grew, so a client with a reconnect bug
+	// accumulated streams until the process ran out of file descriptors --
+	// a ceiling inherited from whatever the Docker daemon defaults to rather
+	// than a decision made here.
+	//
+	// Per device rather than server-wide, because that is where the runaway
+	// actually happens and it is the only bound that cannot be tripped by
+	// unrelated users: a server-wide cap turns one misbehaving client into an
+	// outage for everybody, which is worse than the condition it prevents. A
+	// handful is generous -- a device legitimately holds one, briefly two
+	// across a reconnect that overlaps its predecessor.
+	MaxStreamsPerDevice int
+
 	// BlobsEnabled controls whether the encrypted blob transport
 	// (internal/api/blobs.go, SRV-07) accepts uploads at all -- the same
 	// kind of operator kill switch FederationEnabled is for federation.
@@ -175,6 +191,7 @@ const (
 	envMaxRequestBodyBytes  = "FREIZONE_MAX_REQUEST_BODY_BYTES"
 	envMaxQueuedMessages    = "FREIZONE_MAX_QUEUED_MESSAGES_PER_DEVICE"
 	envMaxBatchMessages     = "FREIZONE_MAX_BATCH_MESSAGES"
+	envMaxStreamsPerDevice  = "FREIZONE_MAX_STREAMS_PER_DEVICE"
 	envLogLevel             = "FREIZONE_LOG_LEVEL"
 
 	envBlobsEnabled          = "FREIZONE_BLOBS_ENABLED"
@@ -215,6 +232,13 @@ const defaultMaxQueuedMessagesPerDevice = 1000
 // bounded. A sender that needs more splits the batch, which it must be able
 // to do anyway to stay under MaxRequestBodyBytes.
 const defaultMaxBatchMessages = 100
+
+// defaultMaxStreamsPerDevice (4) is well above legitimate use and well below
+// anything that costs the process something. One device holds one stream;
+// two briefly, when a reconnect overlaps the connection it replaces and the
+// old one has not yet noticed it is gone. Four leaves room for that to happen
+// twice over before anything is refused.
+const defaultMaxStreamsPerDevice = 4
 
 // defaultMaxBlobBytes (8 MiB) comfortably fits a client-compressed photo
 // (clients downscale to roughly 1600px before uploading, landing well under
@@ -326,6 +350,16 @@ func Load(getenv func(string) string) (*Config, error) {
 		maxBatchMessages = parsed
 	}
 	cfg.MaxBatchMessages = maxBatchMessages
+
+	maxStreamsPerDevice := defaultMaxStreamsPerDevice
+	if v := getenv(envMaxStreamsPerDevice); v != "" {
+		parsed, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: invalid value %q (must be a whole number): %w", envMaxStreamsPerDevice, v, err)
+		}
+		maxStreamsPerDevice = parsed
+	}
+	cfg.MaxStreamsPerDevice = maxStreamsPerDevice
 
 	blobsEnabled := true
 	if v := getenv(envBlobsEnabled); v != "" {
@@ -451,6 +485,10 @@ func (c *Config) validate() error {
 
 	if c.MaxBatchMessages <= 0 {
 		return fmt.Errorf("%s must be a positive number, got %d", envMaxBatchMessages, c.MaxBatchMessages)
+	}
+
+	if c.MaxStreamsPerDevice <= 0 {
+		return fmt.Errorf("%s must be a positive number, got %d", envMaxStreamsPerDevice, c.MaxStreamsPerDevice)
 	}
 
 	if c.MaxBlobBytes <= 0 {

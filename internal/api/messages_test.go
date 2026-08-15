@@ -266,6 +266,133 @@ func TestHandleMessageStreamLivePush(t *testing.T) {
 	}
 }
 
+// SRV-28: a device may hold only so many streams at once, and being refused
+// has to say so rather than hand back a stream that ends immediately -- the
+// subscription is therefore taken before the SSE headers are written.
+func TestHandleMessageStreamCapsConcurrentStreamsPerDevice(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+	a.Config.MaxStreamsPerDevice = 2
+	bob := registerAccount(t, a)
+	carol := registerAccount(t, a)
+
+	ts := httptest.NewServer(a.Router())
+	defer ts.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	open := func(who identityKeys) *http.Response {
+		t.Helper()
+		req := newSignedHTTPRequest(t, http.MethodGet, ts.URL+"/v1/messages/stream", nil, who.deviceID, who.devicePriv)
+		resp, err := ts.Client().Do(req.WithContext(ctx))
+		if err != nil {
+			t.Fatalf("opening stream: %v", err)
+		}
+		return resp
+	}
+
+	first := open(bob)
+	defer first.Body.Close()
+	second := open(bob)
+	defer second.Body.Close()
+	if first.StatusCode != http.StatusOK || second.StatusCode != http.StatusOK {
+		t.Fatalf("the first two streams are within the cap, got %d and %d", first.StatusCode, second.StatusCode)
+	}
+
+	third := open(bob)
+	defer third.Body.Close()
+	if third.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("third stream status = %d, want 429", third.StatusCode)
+	}
+	// A refusal is a JSON error, not an empty event stream: a client that has
+	// lost track of its own connections has to be able to tell which happened.
+	if ct := third.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Errorf("a refused stream should answer as a JSON error, got Content-Type %q", ct)
+	}
+
+	// One device's runaway must not cost anybody else their stream.
+	other := open(carol)
+	defer other.Body.Close()
+	if other.StatusCode != http.StatusOK {
+		t.Errorf("another device has its own allowance, got %d", other.StatusCode)
+	}
+}
+
+// The regression that a server-wide WriteTimeout would have caused (SRV-28):
+// a healthy but quiet stream must survive past the point such a timeout would
+// have cut it. Measured against a real connection rather than reasoned about,
+// because the failure is invisible from the handler's side -- its writes go on
+// reporting success while the client has already seen the connection end.
+//
+// Deliberately not driven by wall-clock heartbeats, which would make this a
+// slow test: the pending flush proves the stream is up, and a message sent
+// well after any per-write deadline would have elapsed proves it is still
+// carrying traffic.
+func TestAQuietStreamIsNotCutByAWriteDeadline(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+	alice := registerAccount(t, a)
+	bob := registerAccount(t, a)
+
+	ts := httptest.NewServer(a.Router())
+	defer ts.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	streamReq := newSignedHTTPRequest(t, http.MethodGet, ts.URL+"/v1/messages/stream", nil, bob.deviceID, bob.devicePriv)
+	resp, err := ts.Client().Do(streamReq.WithContext(ctx))
+	if err != nil {
+		t.Fatalf("opening stream: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("stream status = %d, want 200", resp.StatusCode)
+	}
+
+	lines := make(chan string, 4)
+	go func() {
+		reader := bufio.NewReader(resp.Body)
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				close(lines)
+				return
+			}
+			if strings.HasPrefix(line, "data: ") {
+				lines <- line
+			}
+		}
+	}()
+
+	// Sit idle, writing nothing, then send. A per-response deadline set once
+	// would have expired across this gap; a per-write one is refreshed by the
+	// write itself and is unaffected.
+	time.Sleep(300 * time.Millisecond)
+
+	sendReq := newSignedHTTPRequest(t, http.MethodPost, ts.URL+"/v1/messages", sendMessageBody(t, "afterquiet", bob.deviceID, `{"ciphertext":"still here"}`), alice.deviceID, alice.devicePriv)
+	sendResp, err := ts.Client().Do(sendReq)
+	if err != nil {
+		t.Fatalf("sending after the quiet period: %v", err)
+	}
+	sendResp.Body.Close()
+
+	select {
+	case line, ok := <-lines:
+		if !ok {
+			t.Fatal("the stream was closed during the quiet period instead of carrying the message")
+		}
+		var got messageResponse
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(strings.TrimSpace(line), "data: ")), &got); err != nil {
+			t.Fatalf("decoding SSE data line %q: %v", line, err)
+		}
+		if got.MessageID != "afterquiet" {
+			t.Errorf("MessageID = %q, want afterquiet", got.MessageID)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out: a quiet stream stopped delivering")
+	}
+}
+
 func TestHandleMessageStreamFlushesPending(t *testing.T) {
 	a, _ := newTestAPI(t, config.PolicyOpen)
 	alice := registerAccount(t, a)

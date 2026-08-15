@@ -1039,7 +1039,7 @@ may only restate facts the page already prints in words.
   that leaves is dropped with it
 
 ### SRV-27 — A full subscriber buffer swallows its own push wake
-Status: `planned`
+Status: `done`
 
 `queueAndNotify` (`internal/api/messages.go:236-242`) publishes to the
 broker, then wakes the device only if it has no subscriber:
@@ -1074,9 +1074,22 @@ silently stopped receiving went on believing it was connected.
 - 2026-08-15 — found while answering a question about how many concurrent
   stream subscribers a server holds. Not observed in the wild: it needs 16
   messages to a device faster than its stream drains them
+- 2026-08-15 — **fixed**, by deleting the second question rather than
+  repairing it. `publish` now reports whether any subscriber actually took
+  the message, and `queueAndNotify` wakes the device unless it did — so the
+  code that knows the answer is the code that gives it, instead of a caller
+  re-deriving it from a weaker predicate that could not distinguish "being
+  delivered to" from "connected". The prekey path (`prekeys.go`) genuinely
+  does want the predicate, since it publishes nothing, so it keeps one —
+  but sharpened to `hasResponsiveSubscriber`: a subscriber whose buffer is
+  full is not draining and is therefore evidence of nothing. Both directions
+  of error were weighed and the cheap one chosen deliberately: a redundant
+  wake costs a sync that finds nothing, a suppressed one costs the delivery.
+  Four tests, negative-controlled by reverting each half and watching them
+  fail
 
 ### SRV-28 — Nothing bounds or sheds SSE subscribers
-Status: `planned`
+Status: `done`
 
 There is no cap on concurrent stream subscribers — not in total, not per
 account, device or IP. `internal/api/broker.go:24-29` appends to a map that
@@ -1107,3 +1120,34 @@ is discovered by falling over, and that a `WriteTimeout` and a
 - 2026-08-15 — raised alongside `SRV-27`, from the same question. No
   incident behind it; both are things the code permits rather than things
   that have happened
+- 2026-08-15 — **fixed, and the note above was wrong about the how.** It
+  called a `WriteTimeout` cheap insurance; it would have been an outage.
+  `http.Server.WriteTimeout` is reset only when a *new request header* is
+  read, and a stream never reads another one, so it expires mid-stream and
+  cuts every connection at the timeout however healthy — the whole live
+  delivery path, on a value chosen to protect it. Measured before writing
+  anything, and the measurement was worse than the reasoning: with a 300ms
+  timeout the handler's own writes went on **reporting success** for two
+  beats after the client had already seen `unexpected EOF`. A cleanup that
+  stops happening looks exactly like one that succeeds — the same shape as
+  the five cut regressions this week, in the opposite direction.
+  What shipped instead: `ReadHeaderTimeout` (15s, the Slowloris bound) and
+  `IdleTimeout` (150s) on every `http.Server`, both safe because neither can
+  fire during a request this server serves; **no** `ReadTimeout` or
+  `WriteTimeout`, since a slow blob upload and a long-lived stream each
+  legitimately outlast any useful value, with the reasoning written into
+  `internal/server/server.go` so the next reader does not helpfully add them.
+  The bound that was actually wanted lives per write instead, as
+  `http.NewResponseController(w).SetWriteDeadline` before each SSE write
+  (`sseWriteTimeout`, 30s): a peer that has stopped reading now fails the
+  write rather than parking the handler's goroutine and its subscriber slot
+  indefinitely. Plus the cap the item asked for —
+  `FREIZONE_MAX_STREAMS_PER_DEVICE` (default 4), checked and taken under one
+  lock so two simultaneous reconnects cannot both claim the last slot, and
+  refused with `429` *before* the SSE headers go out, so a client is told
+  rather than handed a stream that ends at once. Per device, not
+  server-wide: a global cap turns one client's runaway into everybody's
+  outage, which is worse than the condition it prevents. Six tests, the two
+  that matter driving a real HTTP connection — a quiet stream must survive
+  past where a per-response deadline would have cut it, and one device's
+  refusal must not touch another's

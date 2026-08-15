@@ -49,6 +49,7 @@ func newTestAPI(t *testing.T, policy config.RegistrationPolicy) (*API, *sql.DB) 
 		FederationEnabled:          true,
 		MaxQueuedMessagesPerDevice: 1000,
 		MaxBatchMessages:           100,
+		MaxStreamsPerDevice:        4,
 		BlobsEnabled:               true,
 		MaxBlobBytes:               8 * 1024 * 1024,
 		MaxBlobBytesPerDevice:      128 * 1024 * 1024,
