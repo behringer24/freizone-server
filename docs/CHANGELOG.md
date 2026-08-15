@@ -14,6 +14,11 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-08-15
+
+What the stream endpoint never bounded, now bounded (`SRV-27`, `SRV-28`), plus
+a pass over the landing page's light theme.
+
 ### Added
 
 * **A cap on concurrent message streams per device (`SRV-28`).**
@@ -46,6 +51,23 @@ terser than what follows — the tag was the changelog at the time.
   in the queue; what went missing was any signal to go and fetch it, until
   the device happened to reconnect. Publishing now reports whether the
   message actually landed, and that is what decides the wake
+
+### Changed
+
+* **The landing page's light theme, which had almost no contrast in it
+  (`SRV-26`).** The page, the pattern, the constellation and the card all sat
+  within a few percent of each other and read as one flat sheet, so the ground
+  goes down to `#e4ebe9` and the layers above it come up to meet it. The card
+  is frosted rather than opaque — translucent with the backdrop blurred, so
+  what is underneath carries through instead of being cut out by a rectangle,
+  with the opaque colour kept as the fallback where `backdrop-filter` is not
+  supported. A vignette settles the far edges; the first attempt was sized so
+  that the screen's corner fell at 65.9% of the gradient at every resolution,
+  which made it invisible, and it is now sized to the corner. And the logo,
+  pale line-art drawn for a dark ground and measuring 1.06:1 against a light
+  page, sits on a deep teal disc in light mode rather than shipping a second,
+  recoloured copy of itself. Body text stays above 13:1 throughout, and the
+  page is still one request
 
 ## [0.21.1] — 2026-08-15
 
