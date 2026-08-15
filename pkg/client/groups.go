@@ -79,6 +79,18 @@ type GroupOutcome struct {
 	// because a receipt travels over a conversation: reporting a group anchor
 	// through that field would confirm the member.s unrelated direct messages.
 	DeliveredUpTo *time.Time
+
+	// ReadUpTo is the same watermark again, set only when the message landed
+	// in the chat the user is looking at -- which makes it read on arrival,
+	// with nobody left to open anything.
+	//
+	// Stated here rather than left for the caller to work out from
+	// ReceiveOptions.OpenChatID, because this side has already acted on that
+	// same fact by not marking the chat unread. Two places deciding it
+	// separately is exactly how the two halves came apart: the flag was
+	// skipped, no receipt was ever sent, and opening the chat later found no
+	// unread flag to act on, so the author was never told.
+	ReadUpTo *time.Time
 }
 
 // groupPeers is what each member last told us about their own view, and what

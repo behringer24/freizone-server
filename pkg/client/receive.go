@@ -86,6 +86,12 @@ type ReceiveResult struct {
 	// clock the sender used. Nil when there is nothing to confirm.
 	DeliveredUpTo *time.Time
 
+	// ReadUpTo is that same watermark again, set only when the message landed
+	// in the chat on screen, which makes it read on arrival. See
+	// GroupOutcome.ReadUpTo for why this side states it rather than leaving
+	// the caller to infer it from ReceiveOptions.OpenChatID.
+	ReadUpTo *time.Time
+
 	// AdoptedPeerSession: the peer re-keyed, or won the tie-break, and their
 	// session is now the one this side sends on.
 	AdoptedPeerSession bool
@@ -353,6 +359,13 @@ func (c *Client) receive(msg IncomingMessage, opts ReceiveOptions, now time.Time
 		} else {
 			at := now
 			res.Group.DeliveredUpTo = &at
+		}
+		// Looking at the chat is reading it. The same fact that kept
+		// HasUnread clear a few lines up in storeGroupMessage, said out loud
+		// so the caller can confirm it -- otherwise nothing ever does: read
+		// receipts are sent when a chat is *opened*, and this one already was.
+		if opts.OpenChatID == dec.content.GroupID {
+			res.Group.ReadUpTo = res.Group.DeliveredUpTo
 		}
 		return res, nil
 
@@ -818,6 +831,11 @@ func (c *Client) storeIncomingText(res ReceiveResult, msg IncomingMessage, conte
 		upTo = *content.SentAt
 	}
 	res.DeliveredUpTo = &upTo
+	// Same rule as the group path: the chat being on screen is what kept
+	// HasUnread clear above, and it is equally what makes this read.
+	if peer == opts.OpenChatID {
+		res.ReadUpTo = &upTo
+	}
 	return res, nil
 }
 

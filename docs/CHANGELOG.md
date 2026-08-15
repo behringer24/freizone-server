@@ -14,6 +14,23 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+### Fixed
+
+* **A message arriving in the chat on screen is now confirmed read.** Read
+  receipts only ever went out when a chat was *opened*, and a message landing
+  in an already-open one is never opened again: the receive path skips its
+  unread flag precisely because the user is looking at it, so the next open
+  found nothing to act on and returned early. Nothing else ever sent one, so
+  the sender stayed on "Received" permanently — reported as a group counter
+  stuck at "Read by 2 of 3" with the third member's row reading *Received*
+  rather than *Read*. `GroupOutcome` and `ReceiveResult` gained a `ReadUpTo`
+  watermark, set only when the message's own chat was the one on screen, so
+  the side that already decided "not unread" is the side that says "and
+  therefore read" — rather than leaving a caller to re-derive it from
+  `ReceiveOptions.OpenChatID`, which is how the two halves came apart in the
+  first place. A chat nobody is looking at still confirms nothing: claiming a
+  read that never happened is worse than a counter that lags
+
 ## [0.20.0] — 2026-08-15
 
 Two unrelated things. `Client.ForgetGroup` (`SRV-23`) is what finally takes a
