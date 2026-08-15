@@ -14,6 +14,14 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-08-15
+
+One fix, traced from a group counter that would not reach three of three. It
+turned out not to be about groups, or about counting: a message arriving in a
+chat that is already on screen was never confirmed read at all, in any chat,
+and could not be later either — the unread flag it would have needed is
+deliberately never set for a chat the user is already looking at.
+
 ### Fixed
 
 * **A message arriving in the chat on screen is now confirmed read.** Read
