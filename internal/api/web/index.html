@@ -147,12 +147,14 @@
      Guarded, and the opaque --card above is the fallback -- without
      backdrop-filter the same transparency would leave the text sitting
      directly on a moving background, which is the one outcome worth avoiding.
-     saturate lifts the tint back up, since blurring alone washes it out. */
+     A small radius on purpose: enough to soften what passes underneath
+     without turning it to mush, and cheap -- the constellation animates back
+     there, so the backdrop is invalidated and re-filtered every frame. */
   @supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
     .card {
       background: var(--card-glass);
-      -webkit-backdrop-filter: blur(14px) saturate(1.4);
-              backdrop-filter: blur(14px) saturate(1.4);
+      -webkit-backdrop-filter: blur(2px) saturate(1.4);
+              backdrop-filter: blur(2px) saturate(1.4);
     }
   }
   .badge {
