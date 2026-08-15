@@ -1007,3 +1007,20 @@ may only restate facts the page already prints in words.
   already forbade subresources needed no change, and a test now pins both
   that and the page's size ceiling. The page grew 21 KB → 43 KB, which is
   also why `handleLanding` finally got an `ETag` and revalidation
+- 2026-08-15 — tuned after seeing it on a real screen. Edges and nodes were
+  too faint to register and the drift was imperceptible, so both went up
+  (roughly 1.5× on the alphas, 2× on the drift amplitude over a shorter
+  period). More consequentially, the graph is now guaranteed to be *one*
+  graph: proximity alone reliably stranded the odd node and split the field
+  into islands, which reads as a picture that failed to finish loading
+  rather than as a network. A nearest-neighbour spanning tree over the
+  resting positions is now always drawn beneath the proximity edges, with a
+  floor under its weight so a long span cannot fade out and appear to break;
+  arrivals hang off whoever admitted them, which for invite-only is the node
+  that just reached out. Checking that mechanically — connected components
+  over the edges actually drawn — turned up a frame-ordering bug the eye
+  would have struggled to catch: `edges()` ran before the join/leave step,
+  so a newcomer spent its first frame drawn with no edge attached, and a
+  departure left the edge list pointing at a node already gone. Membership
+  is now settled before edges are computed, and a packet in flight to a node
+  that leaves is dropped with it

@@ -20,9 +20,9 @@
     --pattern-tint: rgba(0, 42, 38, .06);
     /* The constellation has to sit above the pattern but well below the
        text. These three are the dials to turn if it ever reads too loud. */
-    --net-edge: rgba(12, 133, 119, .13);
-    --net-node: rgba(12, 133, 119, .28);
-    --net-pulse: rgba(12, 133, 119, .5);
+    --net-edge: rgba(12, 133, 119, .2);
+    --net-node: rgba(12, 133, 119, .42);
+    --net-pulse: rgba(12, 133, 119, .62);
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -35,9 +35,9 @@
       --accent-ink: #06201c;
       --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 16px 40px rgba(0, 0, 0, .35);
       --pattern-tint: rgba(218, 242, 239, .1);
-      --net-edge: rgba(63, 191, 173, .14);
-      --net-node: rgba(63, 191, 173, .3);
-      --net-pulse: rgba(63, 191, 173, .55);
+      --net-edge: rgba(63, 191, 173, .22);
+      --net-node: rgba(63, 191, 173, .45);
+      --net-pulse: rgba(63, 191, 173, .66);
     }
   }
   /* The chat background's motif vocabulary -- paper cranes, speech bubbles,
@@ -334,8 +334,8 @@
     var motionQ = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)');
     var darkQ = window.matchMedia && matchMedia('(prefers-color-scheme: dark)');
 
-    var w = 0, h = 0, vw = -1, vh = -1;
-    var nodes = [], pulses = [], reaching = null;
+    var w = 0, h = 0, vw = -1, vh = -1, nextId = 0;
+    var nodes = [], pulses = [], trunk = [], trunkSet = {}, reaching = null;
     var reach = 0, clock = 0, last = 0, raf = 0, resizeTimer = 0;
     var nextPulse = 4000, nextJoin = 10000;
     var colors = { edge: '', node: '', pulse: '' };
@@ -379,15 +379,17 @@
 
     function node(x, y, rand) {
       return {
+        id: nextId++,
         bx: x, by: y, x: x, y: y,
-        ax: 5 + rand() * 8, ay: 5 + rand() * 8,
-        // One drift cycle per 20-40s, so it reads as a tide rather than as
-        // movement. Nobody should catch this page fidgeting.
-        wx: 6.2832 / (20000 + rand() * 20000),
-        wy: 6.2832 / (20000 + rand() * 20000),
+        // Drift of 10-22px over 14-26s. Still a tide rather than movement,
+        // but far enough to be noticed -- at half this it read as a static
+        // image that happened to be a canvas.
+        ax: 10 + rand() * 12, ay: 10 + rand() * 12,
+        wx: 6.2832 / (14000 + rand() * 12000),
+        wy: 6.2832 / (14000 + rand() * 12000),
         px: rand() * 6.2832, py: rand() * 6.2832,
         r: 1.5 + rand() * 1.7,
-        fade: 1, joined: false, dying: false, anchor: null
+        fade: 1, joined: false, dying: false, anchor: null, link: null
       };
     }
 
@@ -415,6 +417,8 @@
         }
       }
 
+      buildTrunk(nodes.slice());
+
       // Federation peers sit outside the frame on purpose: all you ever see
       // of one is an edge running off the side of the page. Each is pinned
       // to a node inside rather than left to the proximity test, so that
@@ -430,6 +434,45 @@
         );
         p.anchor = nodes[Math.floor(rand() * inner)];
         nodes.push(p);
+      }
+    }
+
+    function pairKey(a, b) {
+      return a.id < b.id ? a.id + ':' + b.id : b.id + ':' + a.id;
+    }
+
+    function span(a, b) {
+      var dx = a.x - b.x, dy = a.y - b.y;
+      return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    // A spanning tree over the resting positions, drawn unconditionally
+    // afterwards. Proximity alone is not enough to make a *network*: it
+    // reliably strands the odd node and splits the field into islands, which
+    // reads as a picture that failed to finish loading. The tree is the
+    // backbone that guarantees one connected figure; the proximity edges on
+    // top are what still make it look grown rather than constructed.
+    // Nearest-neighbour (Prim) on a couple of dozen points -- the O(n^2) is
+    // free at this size and it runs once per layout, not per frame.
+    function buildTrunk(pool) {
+      trunk = [];
+      trunkSet = {};
+      if (pool.length < 2) return;
+
+      var reached = [pool.shift()];
+      while (pool.length) {
+        var bi = 0, bj = 0, best = Infinity;
+        for (var i = 0; i < reached.length; i++) {
+          for (var j = 0; j < pool.length; j++) {
+            var dx = reached[i].bx - pool[j].bx, dy = reached[i].by - pool[j].by;
+            var d = dx * dx + dy * dy;
+            if (d < best) { best = d; bi = i; bj = j; }
+          }
+        }
+        var next = pool.splice(bj, 1)[0];
+        trunk.push([reached[bi], next]);
+        trunkSet[pairKey(reached[bi], next)] = true;
+        reached.push(next);
       }
     }
 
@@ -458,8 +501,20 @@
       colors.pulse = cs.getPropertyValue('--net-pulse').trim() || 'rgba(12,133,119,.5)';
     }
 
+    // Weight for an edge that must stay visible however far apart its ends
+    // drift: without the floor a long span fades to nothing and the net
+    // appears to come apart at exactly the joins holding it together.
+    function held(a, b) {
+      return Math.max(0.42, 1 - span(a, b) / reach);
+    }
+
     function edges() {
       var out = [], i, j, a, b;
+
+      for (i = 0; i < trunk.length; i++) {
+        out.push([trunk[i][0], trunk[i][1], held(trunk[i][0], trunk[i][1])]);
+      }
+
       for (i = 0; i < nodes.length; i++) {
         a = nodes[i];
         if (a.anchor) {
@@ -468,11 +523,16 @@
           if (state.federation) out.push([a, a.anchor, 0.8]);
           continue;
         }
+        // Newcomers hang off whoever brought them in, so an arrival is never
+        // left floating on its own waiting for the drift to bring a
+        // neighbour into range.
+        if (a.link) out.push([a, a.link, held(a, a.link)]);
+
         for (j = i + 1; j < nodes.length; j++) {
           b = nodes[j];
-          if (b.anchor) continue;
-          var dx = a.x - b.x, dy = a.y - b.y;
-          var d = Math.sqrt(dx * dx + dy * dy);
+          if (b.anchor || b.link) continue;
+          if (trunkSet[pairKey(a, b)]) continue; // already in the backbone
+          var d = span(a, b);
           if (d < reach) out.push([a, b, 1 - d / reach]);
         }
       }
@@ -556,18 +616,33 @@
       };
     }
 
-    function addNode(x, y) {
+    function nearestBase(x, y) {
+      var best = null, bd = Infinity;
+      for (var i = 0; i < nodes.length; i++) {
+        var n = nodes[i];
+        if (n.anchor || n.joined) continue;
+        var dx = n.x - x, dy = n.y - y, d = dx * dx + dy * dy;
+        if (d < bd) { bd = d; best = n; }
+      }
+      return best;
+    }
+
+    function addNode(x, y, host) {
       var n = node(x, y, rng(((x * 1013 + y * 71) | 0) >>> 0));
       n.fade = 0;
       n.joined = true;
-      nodes.push(n);
+      // Whoever it attaches to, it attaches to something: see edges().
+      n.link = host || nearestBase(x, y);
+      if (n.link) nodes.push(n);
     }
 
     function advanceJoins(dt) {
       if (reaching) {
         reaching.t += dt / 1600;
         if (reaching.t >= 1) {
-          addNode(reaching.tx, reaching.ty);
+          // The inviter is the newcomer's link, which is exactly what the
+          // reach that just finished was showing.
+          addNode(reaching.tx, reaching.ty, reaching.host);
           reaching = null;
         }
       }
@@ -575,7 +650,15 @@
         var n = nodes[i];
         if (n.dying) {
           n.fade -= dt / 1400;
-          if (n.fade <= 0) nodes.splice(i, 1);
+          if (n.fade <= 0) {
+            nodes.splice(i, 1);
+            // Anything in flight to or from it goes too, or it would carry
+            // on towards a node that is no longer there -- and no longer
+            // drifting either, since only nodes still in the list move.
+            for (var p = pulses.length - 1; p >= 0; p--) {
+              if (pulses[p].from === n || pulses[p].to === n) pulses.splice(p, 1);
+            }
+          }
         } else if (n.fade < 1) {
           n.fade = Math.min(1, n.fade + dt / 1400);
         }
@@ -589,23 +672,33 @@
         n.x = n.bx + Math.sin(clock * n.wx + n.px) * n.ax;
         n.y = n.by + Math.cos(clock * n.wy + n.py) * n.ay;
       }
-      var list = edges();
       // An unclaimed server has nothing going on yet, and shows it: no
       // packets, no arrivals, everything dimmed. Matches the card's
       // "Not set up yet" rather than restating it.
+      //
+      // Order matters here. Who is in the graph is settled first, and only
+      // then are the edges computed from it -- otherwise an arrival spends
+      // its first frame drawn with no edge attached, briefly a node floating
+      // free of the net, and a departure leaves the edge list pointing at
+      // someone who has already gone.
+      if (state.claimed) {
+        nextJoin -= dt;
+        if (nextJoin <= 0) {
+          tryJoin();
+          nextJoin = 9000 + Math.random() * 7000;
+        }
+        advanceJoins(dt);
+      }
+
+      var list = edges();
+
       if (state.claimed) {
         nextPulse -= dt;
         if (nextPulse <= 0) {
           spawnPulse(list);
           nextPulse = 3000 + Math.random() * 3500;
         }
-        nextJoin -= dt;
-        if (nextJoin <= 0) {
-          tryJoin();
-          nextJoin = 9000 + Math.random() * 7000;
-        }
         advancePulses(dt, list);
-        advanceJoins(dt);
       }
       return list;
     }
