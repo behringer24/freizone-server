@@ -358,7 +358,7 @@ func (a *API) handleClaimPrekeyBundle(w http.ResponseWriter, r *http.Request) {
 	// call once drained. Since an anonymous claimant never claims a key
 	// (above), this also stops being a way for anyone to make this server
 	// send push wakes to an arbitrary device on demand.
-	if claimed != nil && !a.broker.hasSubscribers(deviceID) {
+	if claimed != nil && !a.broker.hasResponsiveSubscriber(deviceID) {
 		if remaining, err := store.CountOneTimePrekeys(a.DB, deviceID); err == nil && remaining < lowOneTimePrekeyThreshold {
 			a.wakeDevice(device)
 		}

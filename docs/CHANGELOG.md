@@ -14,6 +14,39 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+### Added
+
+* **A cap on concurrent message streams per device (`SRV-28`).**
+  `FREIZONE_MAX_STREAMS_PER_DEVICE` (default 4) bounds how many
+  `GET /v1/messages/stream` connections one device may hold at once; a
+  further attempt gets `429 too_many_streams`, refused before the event
+  stream opens so a client is told rather than handed a stream that ends
+  immediately. Nothing bounded this before — the subscriber map only grew,
+  so a client with a reconnect bug ran the process out of file descriptors.
+  Per device rather than server-wide, so one runaway client cannot cost
+  everybody else their live delivery
+* **Connection timeouts on every listener (`SRV-28`).**
+  `ReadHeaderTimeout` (15s) and `IdleTimeout` (150s), where the server
+  previously set none at all, so nothing ever shed a half-open connection.
+  `ReadTimeout` and `WriteTimeout` are deliberately still unset: a blob
+  upload over a slow link and a message stream open for hours each
+  legitimately outlast any useful value, and a `WriteTimeout` in particular
+  would cut every stream at the timeout no matter how healthy it was. The
+  stream handler bounds each individual write instead (30s), which is what
+  stops a peer that has stopped reading from holding a connection forever
+
+### Fixed
+
+* **A message that overflows a device's stream buffer no longer loses its
+  push wake (`SRV-27`).** The server published to any live stream and then
+  asked separately whether the device had one, to decide about a push
+  notification — but a stream whose buffer is full drops the message while
+  still counting as connected, so the one case that most needed a fallback
+  nudge was exactly the case that suppressed it. The message was always safe
+  in the queue; what went missing was any signal to go and fetch it, until
+  the device happened to reconnect. Publishing now reports whether the
+  message actually landed, and that is what decides the wake
+
 ## [0.21.1] — 2026-08-15
 
 One fix, from an audit rather than a report: deleting a single message left

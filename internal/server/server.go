@@ -42,6 +42,42 @@ type Server struct {
 	servers []*http.Server
 }
 
+// Connection timeouts (SRV-28). Two of net/http's four are set here; the
+// other two deliberately are not, and which is which is the whole point.
+//
+// ReadHeaderTimeout and IdleTimeout are safe because neither can fire during
+// a request this server actually serves: one covers the header, the other an
+// idle keep-alive connection between requests.
+//
+// ReadTimeout and WriteTimeout are not set, and must not be. Both cover a
+// whole request/response, and both of this server's long operations exceed
+// any value that would be a useful bound elsewhere: a blob upload over a slow
+// mobile link can legitimately take minutes to read, and an SSE stream stays
+// open for hours by design. WriteTimeout is the dangerous one -- it is reset
+// only when a new request header is read, which a stream never does, so it
+// would cut every stream at the timeout no matter how healthy, while the
+// handler's writes went on reporting success. The bound that was actually
+// wanted there is per write, and lives in the stream handler
+// (internal/api/messages.go's sseWriteTimeout).
+const (
+	// readHeaderTimeout is the Slowloris bound: a client that opens a
+	// connection and dribbles its headers holds nothing for longer than this.
+	readHeaderTimeout = 15 * time.Second
+
+	// idleTimeout closes a kept-alive connection with no request in flight.
+	// Comfortably above any client's own reuse interval, so it costs a
+	// reconnect only for connections genuinely finished with.
+	idleTimeout = 150 * time.Second
+)
+
+// withTimeouts applies the two timeouts that are safe for every route this
+// server has -- see the block above for the two that are not.
+func withTimeouts(srv *http.Server) *http.Server {
+	srv.ReadHeaderTimeout = readHeaderTimeout
+	srv.IdleTimeout = idleTimeout
+	return srv
+}
+
 // New builds a Server for opts. It does not start listening.
 func New(opts Options) (*Server, error) {
 	wrapped := withLogging(withRecover(withMaxBody(opts.Handler, opts.MaxRequestBodyBytes, opts.BodyLimitOverrides), opts.Logger), opts.Logger)
@@ -49,12 +85,12 @@ func New(opts Options) (*Server, error) {
 	switch opts.TLSMode {
 	case config.TLSModeOff:
 		return &Server{opts: opts, servers: []*http.Server{
-			{Addr: opts.HTTPAddr, Handler: wrapped},
+			withTimeouts(&http.Server{Addr: opts.HTTPAddr, Handler: wrapped}),
 		}}, nil
 
 	case config.TLSModeManual:
 		return &Server{opts: opts, servers: []*http.Server{
-			{Addr: opts.HTTPSAddr, Handler: wrapped},
+			withTimeouts(&http.Server{Addr: opts.HTTPSAddr, Handler: wrapped}),
 		}}, nil
 
 	case config.TLSModeAutocert:
@@ -66,15 +102,15 @@ func New(opts Options) (*Server, error) {
 			HostPolicy: autocert.HostWhitelist(opts.Domain),
 			Cache:      autocert.DirCache(opts.AutocertCacheDir),
 		}
-		httpsServer := &http.Server{
+		httpsServer := withTimeouts(&http.Server{
 			Addr:      opts.HTTPSAddr,
 			Handler:   wrapped,
 			TLSConfig: mgr.TLSConfig(),
-		}
-		httpServer := &http.Server{
+		})
+		httpServer := withTimeouts(&http.Server{
 			Addr:    opts.HTTPAddr,
 			Handler: mgr.HTTPHandler(nil), // serves ACME HTTP-01 challenges, redirects everything else to https
-		}
+		})
 		return &Server{opts: opts, servers: []*http.Server{httpServer, httpsServer}}, nil
 
 	default:

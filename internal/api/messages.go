@@ -16,6 +16,15 @@ import (
 // sseHeartbeatInterval keeps SSE connections alive through idle proxies.
 const sseHeartbeatInterval = 25 * time.Second
 
+// sseWriteTimeout bounds one write to a stream. Generous, because it is not a
+// pacing mechanism: a healthy client reads a few hundred bytes immediately,
+// and anything approaching this is a peer that has stopped reading -- a
+// half-open socket, a handover, a proxy that dropped it mid-flight. Without
+// it such a write parks the handler's goroutine for as long as the kernel
+// keeps retransmitting, holding a subscriber slot for a device nobody is
+// serving (SRV-28).
+const sseWriteTimeout = 30 * time.Second
+
 // handleSendMessage enqueues an opaque, end-to-end-encrypted message
 // envelope for a recipient device. The server never inspects payload.
 func (a *API) handleSendMessage(w http.ResponseWriter, r *http.Request) {
@@ -233,10 +242,15 @@ func (a *API) checkBatchSize(w http.ResponseWriter, count int) bool {
 // handleSendMessage and handleReceiveFederatedMessage: once a message is
 // queued, delivery to the recipient is identical regardless of which
 // server the sender came from.
+// A wake is sent unless the message was actually handed to a live stream.
+// Publishing answers that itself (SRV-27): asking the broker a second,
+// weaker question -- "is anything subscribed?" -- used to suppress the wake
+// for a subscriber whose buffer had overflowed and had therefore just
+// dropped this very message. The message stays safe in the durable queue
+// either way; what went missing was any signal to go and fetch it, until the
+// device reconnected or polled of its own accord.
 func (a *API) queueAndNotify(msg store.Message, recipientDevice *store.Device) {
-	a.broker.publish(msg.RecipientDeviceID, msg)
-
-	if !a.broker.hasSubscribers(msg.RecipientDeviceID) {
+	if !a.broker.publish(msg.RecipientDeviceID, msg) {
 		a.wakeDevice(recipientDevice)
 	}
 }
@@ -372,20 +386,46 @@ func (a *API) handleMessageStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The subscription is taken before a byte of the response is written, so
+	// a refusal can still be a plain JSON error rather than a stream that
+	// opens and immediately ends (SRV-28).
+	ch, unsubscribe, err := a.broker.subscribe(identity.DeviceID, a.Config.MaxStreamsPerDevice)
+	if err != nil {
+		writeError(w, http.StatusTooManyRequests, "too_many_streams",
+			fmt.Sprintf("this device already has %d open message streams", a.Config.MaxStreamsPerDevice))
+		return
+	}
+	defer unsubscribe()
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 
+	// Every write gets its own deadline, rather than the server carrying a
+	// WriteTimeout (SRV-28). A server-wide one cannot be used here at all: it
+	// is reset only when a new request's *header* is read, and a stream never
+	// reads another one, so it would cut every stream at the timeout however
+	// healthy it was -- measured, and worse than it sounds, because the writes
+	// go on reporting success to this handler while the client has already
+	// seen the connection end. Per write, the deadline does what was actually
+	// wanted: a write to a peer that has stopped reading fails instead of
+	// parking this goroutine forever.
+	rc := http.NewResponseController(w)
+	writeWithDeadline := func(write func() bool) bool {
+		if err := rc.SetWriteDeadline(time.Now().Add(sseWriteTimeout)); err != nil &&
+			!errors.Is(err, http.ErrNotSupported) {
+			return false
+		}
+		return write()
+	}
+
 	for _, m := range pending {
-		if !writeSSEMessage(w, m) {
+		if !writeWithDeadline(func() bool { return writeSSEMessage(w, m) }) {
 			return
 		}
 	}
 	flusher.Flush()
-
-	ch, unsubscribe := a.broker.subscribe(identity.DeviceID)
-	defer unsubscribe()
 
 	ticker := time.NewTicker(sseHeartbeatInterval)
 	defer ticker.Stop()
@@ -395,12 +435,18 @@ func (a *API) handleMessageStream(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case msg := <-ch:
-			if !writeSSEMessage(w, msg) {
+			if !writeWithDeadline(func() bool { return writeSSEMessage(w, msg) }) {
 				return
 			}
 			flusher.Flush()
 		case <-ticker.C:
-			if _, err := w.Write([]byte(": heartbeat\n\n")); err != nil {
+			// The heartbeat is also the liveness probe: a peer that has gone
+			// away without saying so is discovered here, at worst one interval
+			// later, which is what releases the subscriber slot.
+			if !writeWithDeadline(func() bool {
+				_, err := w.Write([]byte(": heartbeat\n\n"))
+				return err == nil
+			}) {
 				return
 			}
 			flusher.Flush()
