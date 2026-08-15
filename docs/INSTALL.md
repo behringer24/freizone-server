@@ -25,7 +25,7 @@ bumping the tag on an existing install; upgrades are just a new tag, but you
 should know what changed first.
 
 ```
-ghcr.io/behringer24/freizone-server:v0.13.1
+ghcr.io/behringer24/freizone-server:v0.22.0
 ```
 
 ## 2. Create the compose file and `.env`
@@ -35,7 +35,7 @@ ghcr.io/behringer24/freizone-server:v0.13.1
 ```yaml
 services:
   freizone-server:
-    image: ghcr.io/behringer24/freizone-server:v0.13.1
+    image: ghcr.io/behringer24/freizone-server:v0.22.0
     container_name: freizone-server
     restart: unless-stopped
     ports:
@@ -251,7 +251,7 @@ Two things are easy to get wrong here, specifically for freizone-server:
 ```yaml
 services:
   freizone-server:
-    image: ghcr.io/behringer24/freizone-server:v0.13.1
+    image: ghcr.io/behringer24/freizone-server:v0.22.0
     container_name: freizone-server
     restart: unless-stopped
     expose:

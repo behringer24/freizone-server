@@ -52,5 +52,6 @@ The rule is "fall back to what that specific field's absence actually
 implies", not one global default.
 
 **Still worth doing:** a pass over existing endpoints/UI to check none of
-them silently assume a capability instead of checking for it, before the
-surface area grows further (groups/SRV-01, multi-device/SRV-02).
+them silently assume a capability instead of checking for it — overdue now
+that groups (SRV-01) already shipped without one, and worth finishing before
+multi-device (SRV-02) grows the surface further still.

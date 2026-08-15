@@ -1,10 +1,10 @@
 # Design: Groups
 
-Status: **planned** · Roadmap: [SRV-01](../ROADMAP.md) · Also affects: freizone-app
+Status: **done** · Roadmap: [SRV-01](../ROADMAP.md) · Also affects: freizone-app
 
-Group messaging with a founder/admin/moderator authority model. Nothing of it
-exists today — no tables, no API, no UI. The decisive question is not the REST
-surface but **where a group lives**, and the answer shapes everything else.
+Group messaging with a founder/admin/moderator authority model. The decisive
+question was not the REST surface but **where a group lives**, and the answer
+shapes everything else.
 
 Broadcast, listed together with groups in SRV-01 today, is deliberately *not*
 covered here — see "Out of scope".

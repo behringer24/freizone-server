@@ -16,7 +16,8 @@ type ServerStatus struct {
 	// waiting to be bootstrapped.
 	Claimed bool
 
-	// RegistrationPolicy is "open", "invite" or "community".
+	// RegistrationPolicy is "open", "invite" or "closed". A fourth value,
+	// "community" (SRV-15), is planned but not shipped yet.
 	RegistrationPolicy string
 
 	// FederationEnabled defaults to TRUE when absent -- a server predating the
