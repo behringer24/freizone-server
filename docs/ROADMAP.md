@@ -1024,3 +1024,73 @@ may only restate facts the page already prints in words.
   departure left the edge list pointing at a node already gone. Membership
   is now settled before edges are computed, and a packet in flight to a node
   that leaves is dropped with it
+
+### SRV-27 — A full subscriber buffer swallows its own push wake
+Status: `planned`
+
+`queueAndNotify` (`internal/api/messages.go:236-242`) publishes to the
+broker, then wakes the device only if it has no subscriber:
+
+```go
+a.broker.publish(msg.RecipientDeviceID, msg)
+if !a.broker.hasSubscribers(msg.RecipientDeviceID) {
+    a.wakeDevice(recipientDevice)
+}
+```
+
+But `publish` drops silently when a subscriber's channel is full — the bare
+`default:` at `internal/api/broker.go:65-70` — while `hasSubscribers`
+(`broker.go:52-56`) only counts entries: `len(b.subs[deviceID]) > 0`. So the
+one case where a connected device most needs a fallback nudge, its 16-slot
+buffer (`broker.go:25`) having overflowed, is exactly the case where the
+wake is suppressed. The message is safe in the durable queue; what is lost
+is any signal to go and get it, until the device reconnects or polls of its
+own accord.
+
+The comment at `broker.go:58-61` acknowledges the drop and points at "their
+next poll or reconnect" as the fallback. It does not note that the drop also
+cancels the wake, which is the part that turns a slow delivery into an
+indefinite one.
+
+Same predicate gates the second wake trigger, `internal/api/prekeys.go:361`.
+
+Worth fixing as a correctness matter rather than a capacity one: it is the
+server-side twin of the app bug found on 2026-08-15, where a device that had
+silently stopped receiving went on believing it was connected.
+
+- 2026-08-15 — found while answering a question about how many concurrent
+  stream subscribers a server holds. Not observed in the wild: it needs 16
+  messages to a device faster than its stream drains them
+
+### SRV-28 — Nothing bounds or sheds SSE subscribers
+Status: `planned`
+
+There is no cap on concurrent stream subscribers — not in total, not per
+account, device or IP. `internal/api/broker.go:24-29` appends to a map that
+only grows, and `internal/config/config.go` has limits for body size, queued
+messages, batches and blobs but none for connections.
+
+Compounding it, the `http.Server` sets **no timeouts at all**: no
+`ReadTimeout`, `WriteTimeout`, `IdleTimeout` or `ReadHeaderTimeout` anywhere
+in `internal/server/`. So nothing sheds a connection either. A half-open TCP
+peer counts as a live subscriber until the handler returns, and without a
+`WriteTimeout` a write to one can block that handler indefinitely — while
+also suppressing the device's push wakes, per `SRV-27`'s predicate. A client
+with a reconnect bug accumulates subscribers with nothing to stop it.
+
+Individually a subscriber is cheap: one 16-slot channel, one 25s heartbeat
+ticker (`internal/api/messages.go:16-17`), a slice slot, plus net/http's own
+per-connection goroutine. The effective ceiling is therefore the process's
+file-descriptor limit, inherited from whatever the Docker daemon defaults to
+— an accident of the host rather than a decision made here. Neither the
+Dockerfile nor freizone-farm's compose files set `ulimits`.
+
+Not a scaling item: `docs/HIGH-AVAILABILITY.md` rules out scale-out on
+purpose, and a self-hosted server for a known population will not run into
+this by growing. The argument for doing something is that the failure mode
+is discovered by falling over, and that a `WriteTimeout` and a
+`ReadHeaderTimeout` are cheap insurance regardless of population.
+
+- 2026-08-15 — raised alongside `SRV-27`, from the same question. No
+  incident behind it; both are things the code permits rather than things
+  that have happened
