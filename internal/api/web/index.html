@@ -33,6 +33,14 @@
     /* The card, once it is frosted -- kept high enough that body text keeps
        its contrast against whatever drifts underneath. */
     --card-glass: rgba(255, 255, 255, .62);
+    /* The logo is pale cream line-art drawn for a dark ground -- against a
+       light page it measures 1.06:1 and simply is not there. Rather than a
+       second, recoloured copy of the artwork (a second binary in the page,
+       and the shading would not survive a CSS tint), it gets the dark ground
+       it was drawn for, as a disc. Deep teal rather than the accent: on
+       #0c8577 the artwork's own shadows fall to 2.5:1, here they hold 5.2:1
+       while the disc still stands 7.8:1 off the page. */
+    --logo-backing: #005048;
     /* Light needs a far lighter touch: the same weight that reads as a soft
        edge on a dark page reads as dirt on a white one. These reach the
        corner in full now, which the earlier pair never did. */
@@ -58,6 +66,9 @@
          got near its own last stop, so they only now arrive at full weight. */
       --vignette-mid: rgba(0, 0, 0, .1);
       --vignette-edge: rgba(0, 0, 0, .26);
+      /* None needed here: the page already is the dark ground the artwork
+         was drawn for. */
+      --logo-backing: transparent;
     }
   }
   /* The chat background's motif vocabulary -- paper cranes, speech bubbles,
@@ -133,11 +144,17 @@
     max-width: 30rem;
     text-align: center;
   }
+  /* 88 with 8 of padding, so the artwork still draws at its native 72 in
+     both themes and only the disc around it appears or does not (box-sizing
+     is border-box for everything on this page). */
   .logo {
-    width: 72px;
-    height: 72px;
+    width: 88px;
+    height: 88px;
+    padding: 8px;
     margin: 0 auto 20px;
     display: block;
+    border-radius: 50%;
+    background: var(--logo-backing);
   }
   h1 {
     margin: 0;
