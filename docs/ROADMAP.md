@@ -859,6 +859,18 @@ a one-time reset. No wire-format change.
   pins the distinction the call exists for: being removed from a group does not
   take it off the list, forgetting it does
 
+- 2026-08-15 — `DeleteMessage` takes the message's stored media with it. It
+  already cascaded the pin, the attachments and the group deliveries, but the
+  bytes on disk stayed: the transcript line is the only thing that names
+  `<media>/<chat>/<message>`, so deleting it left the picture unreachable and
+  permanent — the same broken promise freizone-app 0.23.0 fixed for a whole
+  account, one message at a time. Found in the cut audit (see freizone-app's
+  APP-21 note of the same date), which turned up the other half in the app:
+  pin, unpin and per-message deletion never reached this client at all,
+  despite `PinMessage`/`UnpinMessage`/`DeleteMessage` sitting here since
+  stage 1 — the read half (pins on the chat summary) was wired, the write
+  half was not, so both silently reverted on the next rebuild from the core
+
 ### SRV-24 — Let a server move house
 Status: `planned` · Also affects: freizone-app, shared Go core
 
