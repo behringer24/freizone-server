@@ -2,6 +2,7 @@ package client
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -259,9 +260,33 @@ func TestDeleteMessageTakesItsChildrenWithIt(t *testing.T) {
 	if err := c.PinMessage("chat", "m1"); err != nil {
 		t.Fatalf("PinMessage: %v", err)
 	}
+	// Media files too: the transcript line is the only thing that names them,
+	// so a deletion that left them behind would leak bytes nothing can reach.
+	// A second message's files prove the removal is per message, not per chat.
+	if err := c.WriteAttachmentFile("chat", "m1", []byte("full")); err != nil {
+		t.Fatalf("WriteAttachmentFile: %v", err)
+	}
+	if err := c.WriteAttachmentThumb("chat", "m1", []byte("thumb")); err != nil {
+		t.Fatalf("WriteAttachmentThumb: %v", err)
+	}
+	if err := c.WriteAttachmentFile("chat", "m2", []byte("other")); err != nil {
+		t.Fatalf("WriteAttachmentFile m2: %v", err)
+	}
 
 	if err := c.DeleteMessage("chat", "m1"); err != nil {
 		t.Fatalf("DeleteMessage: %v", err)
+	}
+
+	for _, path := range []string{
+		c.AttachmentPath("chat", "m1"),
+		c.AttachmentThumbPath("chat", "m1"),
+	} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("media outlived its message: %s (stat: %v)", path, err)
+		}
+	}
+	if _, err := os.Stat(c.AttachmentPath("chat", "m2")); err != nil {
+		t.Errorf("another message's media went with it: %v", err)
 	}
 
 	msgs, err := c.Messages("chat")

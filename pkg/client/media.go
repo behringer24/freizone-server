@@ -156,6 +156,23 @@ func (c *Client) EnsureAttachment(ctx context.Context, chatID, messageID, server
 // missing it costs nothing but disk somebody's retention sweep will reclaim.
 const blobReleaseTimeout = 15 * time.Second
 
+// deleteMessageMedia removes one message's attachment bytes and its preview,
+// [Client.DeleteMessage]'s half of what DeleteChatMedia does for a whole chat.
+// Absence is the normal case rather than an error: most messages carry no
+// picture, and a picture nobody looked at has a preview but no full file.
+func (c *Client) deleteMessageMedia(chatID, messageID string) error {
+	for _, suffix := range []string{"", ".thumb"} {
+		path, err := c.media.mediaPath(chatID, messageID, suffix)
+		if err != nil {
+			return err
+		}
+		if err := removeFile(path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // DeleteChatMedia removes everything stored for one chat. Called when a
 // transcript is cleared or a conversation deleted: the messages are gone, and
 // leaving their pictures behind means storage nobody can see or reach.

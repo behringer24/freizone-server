@@ -14,6 +14,16 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+### Fixed
+
+* **`Client.DeleteMessage` removes the message's stored media too (`SRV-23`).**
+  It already cascaded the pin, the attachment records and the group
+  deliveries; the bytes on disk stayed behind, unreachable — the transcript
+  line is the only thing that names them, and nothing else ever cleans them
+  up. Found in the cut audit of 2026-08-15 alongside the app-side half (see
+  freizone-app): pin, unpin and per-message deletion never called this
+  client at all
+
 ## [0.21.0] — 2026-08-15
 
 One fix, traced from a group counter that would not reach three of three. It

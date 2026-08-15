@@ -554,12 +554,20 @@ func applyLaterChanges(lines [][]byte, msg *Message) {
 }
 
 // DeleteMessage removes one line, along with its attachments, its group
-// deliveries and its pin. Local only -- the peer keeps their copy.
+// deliveries, its pin -- and its stored media, because once the line naming
+// those files is gone, nothing can reach them and nothing else ever cleans
+// them up. Local only -- the peer keeps their copy.
 func (c *Client) DeleteMessage(chatID, messageID string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// The record first: if the media removal fails the caller hears about it
+	// while the message is already gone, which leaks invisible bytes -- the
+	// other order would leave a visible bubble whose picture has vanished.
 	if err := c.appendRecord(chatID, logRecord{T: recDelete, ID: messageID}); err != nil {
+		return err
+	}
+	if err := c.deleteMessageMedia(chatID, messageID); err != nil {
 		return err
 	}
 	return c.maybeCompact(chatID)
