@@ -14,6 +14,15 @@
     --accent: #0c8577;
     --accent-ink: #ffffff;
     --shadow: 0 1px 2px rgba(16, 32, 29, .06), 0 12px 32px rgba(16, 32, 29, .08);
+    /* Tint and weight lifted verbatim from the app's chat background
+       (PatternBackground in freizone-app), so the two read as the same
+       surface rather than merely similar ones. */
+    --pattern-tint: rgba(0, 42, 38, .06);
+    /* The constellation has to sit above the pattern but well below the
+       text. These three are the dials to turn if it ever reads too loud. */
+    --net-edge: rgba(12, 133, 119, .13);
+    --net-node: rgba(12, 133, 119, .28);
+    --net-pulse: rgba(12, 133, 119, .5);
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -25,8 +34,24 @@
       --accent: #3fbfad;
       --accent-ink: #06201c;
       --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 16px 40px rgba(0, 0, 0, .35);
+      --pattern-tint: rgba(218, 242, 239, .1);
+      --net-edge: rgba(63, 191, 173, .14);
+      --net-node: rgba(63, 191, 173, .3);
+      --net-pulse: rgba(63, 191, 173, .55);
     }
   }
+  /* The chat background's motif vocabulary -- paper cranes, speech bubbles,
+     server racks, a shield, node constellations, dot grids -- redrawn as a
+     seamless vector tile. Redrawn rather than embedded: the app ships this
+     artwork as an 860 KB alpha-mask PNG, which as a data URL would be over a
+     megabyte on a page that is otherwise 21 KB. Anything crossing a tile edge
+     is redrawn one tile over by the <use> ring inside the SVG, which is what
+     makes it repeat without a seam.
+
+     Held in a custom property purely so the URL appears once rather than
+     twice for the -webkit- prefix below. */
+  :root { --pattern-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 440 440'%3E%3Cdefs%3E%3Cg id='t' fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cg transform='translate(30 44) rotate(-8)'%3E%3Cpath d='M22 22 L34 22 L28 34 Z'/%3E%3Cpath d='M22 22 L4 12 L16 26 Z'/%3E%3Cpath d='M34 22 L52 12 L40 26 Z'/%3E%3Cpath d='M24 21 L20 6 L13 9'/%3E%3Cpath d='M33 21 L41 14'/%3E%3C/g%3E%3Cg transform='translate(268 26) rotate(5)'%3E%3Cpath d='M8 2 H36 A6 6 0 0 1 42 8 V20 A6 6 0 0 1 36 26 H20 L10 34 L12 26 H8 A6 6 0 0 1 2 20 V8 A6 6 0 0 1 8 2 Z'/%3E%3Cpath d='M13 14 H31' stroke-dasharray='0 9' stroke-width='2.6'/%3E%3C/g%3E%3Cg transform='translate(118 146)'%3E%3Cpath d='M10 50 L34 14 L58 42 L86 10 M58 42 L72 66 M34 14 L86 10'/%3E%3Ccircle cx='10' cy='50' r='3'/%3E%3Ccircle cx='34' cy='14' r='3' fill='white'/%3E%3Ccircle cx='58' cy='42' r='3'/%3E%3Ccircle cx='86' cy='10' r='3' fill='white'/%3E%3Ccircle cx='72' cy='66' r='3'/%3E%3C/g%3E%3Cg transform='translate(350 138) rotate(7)'%3E%3Cpath d='M17 2 L32 8 V22 C32 32 25 38 17 41 C9 38 2 32 2 22 V8 Z'/%3E%3Ccircle cx='17' cy='18' r='4'/%3E%3Cpath d='M17 22 L17 29'/%3E%3C/g%3E%3Cg transform='translate(38 296) rotate(-4)'%3E%3Crect x='2' y='2' width='32' height='40' rx='3'/%3E%3Cpath d='M2 15 H34 M2 28 H34'/%3E%3Ccircle cx='8' cy='8.5' r='1.6' fill='white' stroke='none'/%3E%3Ccircle cx='8' cy='21.5' r='1.6' fill='white' stroke='none'/%3E%3Ccircle cx='8' cy='34.5' r='1.6' fill='white' stroke='none'/%3E%3C/g%3E%3Cg transform='translate(228 328) rotate(9)'%3E%3Cpath d='M14 25 C14 25 2 17 2 9 C2 4 6 1 10 1 C12.5 1 14 3 14 3 C14 3 15.5 1 18 1 C22 1 26 4 26 9 C26 17 14 25 14 25 Z'/%3E%3C/g%3E%3Cpath d='M322 286 H349 M322 295 H349 M322 304 H349 M322 313 H349' stroke-dasharray='0 9' stroke-width='2.6'/%3E%3Cg transform='translate(186 78) rotate(22)'%3E%3Cpath d='M0 14 A14 14 0 0 1 14 0'/%3E%3Cpath d='M0 24 A24 24 0 0 1 24 0'/%3E%3Cpath d='M0 34 A34 34 0 0 1 34 0'/%3E%3C/g%3E%3Cg transform='translate(296 208) rotate(152) scale(.72)'%3E%3Cpath d='M22 22 L34 22 L28 34 Z'/%3E%3Cpath d='M22 22 L4 12 L16 26 Z'/%3E%3Cpath d='M34 22 L52 12 L40 26 Z'/%3E%3Cpath d='M24 21 L20 6 L13 9'/%3E%3Cpath d='M33 21 L41 14'/%3E%3C/g%3E%3Cg transform='translate(52 186) rotate(-14) scale(.7)'%3E%3Cpath d='M8 2 H36 A6 6 0 0 1 42 8 V20 A6 6 0 0 1 36 26 H20 L10 34 L12 26 H8 A6 6 0 0 1 2 20 V8 A6 6 0 0 1 8 2 Z'/%3E%3C/g%3E%3Ccircle cx='396' cy='372' r='13'/%3E%3Ccircle cx='396' cy='372' r='6'/%3E%3Ccircle cx='150' cy='268' r='9'/%3E%3Ccircle cx='262' cy='128' r='5'/%3E%3Ccircle cx='94' cy='396' r='6'/%3E%3Ccircle cx='202' cy='412' r='2.2' fill='white' stroke='none'/%3E%3Ccircle cx='356' cy='62' r='2.2' fill='white' stroke='none'/%3E%3Ccircle cx='112' cy='112' r='2.2' fill='white' stroke='none'/%3E%3Ccircle cx='420' cy='240' r='2.2' fill='white' stroke='none'/%3E%3Ccircle cx='16' cy='232' r='2.2' fill='white' stroke='none'/%3E%3Ccircle cx='276' cy='396' r='2.2' fill='white' stroke='none'/%3E%3Cpath d='M-40 386 C 40 330 110 448 196 402 S 348 322 486 372' stroke-dasharray='5 8'/%3E%3Cpath d='M118 -30 C 150 40 96 92 128 158 S 176 236 148 300' stroke-dasharray='5 8'/%3E%3C/g%3E%3C/defs%3E%3Cuse href='%23t'/%3E%3Cuse href='%23t' x='-440'/%3E%3Cuse href='%23t' x='440'/%3E%3Cuse href='%23t' y='-440'/%3E%3Cuse href='%23t' y='440'/%3E%3Cuse href='%23t' x='-440' y='-440'/%3E%3Cuse href='%23t' x='440' y='-440'/%3E%3Cuse href='%23t' x='-440' y='440'/%3E%3Cuse href='%23t' x='440' y='440'/%3E%3C/svg%3E"); }
+
   * { box-sizing: border-box; }
   html, body { height: 100%; }
   body {
@@ -41,7 +66,35 @@
     justify-content: center;
     padding: 24px;
   }
+  /* Both decoration layers sit behind the text and swallow no clicks, so
+     selection and the footer link behave exactly as before. Deliberately not
+     negative z-index: that gets entangled with the way a body background
+     propagates to the viewport canvas, whereas lifting main to 1 behaves the
+     same everywhere. */
+  .pattern, #net {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+  }
+  /* Same construction as the app: a flat tint showing through a line-art
+     mask, not a coloured image. That is what lets one asset serve both
+     themes -- only the tint swaps. Guarded because without mask support the
+     tint would otherwise flood the page as a solid block. */
+  @supports (mask-image: none) or (-webkit-mask-image: none) {
+    .pattern {
+      background-color: var(--pattern-tint);
+      -webkit-mask-image: var(--pattern-mask);
+              mask-image: var(--pattern-mask);
+      -webkit-mask-repeat: repeat;
+              mask-repeat: repeat;
+      -webkit-mask-size: 440px 440px;
+              mask-size: 440px 440px;
+    }
+  }
   main {
+    position: relative;
+    z-index: 1;
     width: 100%;
     max-width: 30rem;
     text-align: center;
@@ -137,6 +190,8 @@
 </style>
 </head>
 <body>
+<div class="pattern" aria-hidden="true"></div>
+<canvas id="net" aria-hidden="true"></canvas>
 <main>
   <img class="logo" src="data:image/png;base64,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" alt="Freizone" width="72" height="72">
 
@@ -261,9 +316,457 @@
     }
   }
 
+  // Background constellation. Decoration, but decoration that means
+  // something -- and everything it means, the card above already says in
+  // words: the host name out of the address bar, plus the three public
+  // fields read from /v1/server-status below. Nothing about traffic,
+  // accounts, seats or peers reaches this code. Those are admin-only for the
+  // same reason seats are kept off this page (see parseAttestation above),
+  // and a background is the last place they should resurface -- not even
+  // indirectly, as a node count or a tempo, which is why nothing here scales
+  // with usage. There is consequently nothing to leak: the picture is a
+  // restatement of the card, not a second source.
+  var constellation = (function () {
+    var canvas = document.getElementById('net');
+    if (!canvas || !canvas.getContext) return { apply: function () {} };
+    var ctx = canvas.getContext('2d');
+
+    var motionQ = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)');
+    var darkQ = window.matchMedia && matchMedia('(prefers-color-scheme: dark)');
+
+    var w = 0, h = 0, vw = -1, vh = -1;
+    var nodes = [], pulses = [], reaching = null;
+    var reach = 0, clock = 0, last = 0, raf = 0, resizeTimer = 0;
+    var nextPulse = 4000, nextJoin = 10000;
+    var colors = { edge: '', node: '', pulse: '' };
+
+    // Only ever written from the public server-status read. Until that lands
+    // -- and permanently, if it fails -- these stay at the understated end:
+    // no peers beyond the frame, nobody arriving. A decoration must never
+    // imply a capability the server might not have.
+    var state = { claimed: true, federation: false, policy: 'closed' };
+
+    // Hash the address into the layout seed. Two consequences, both wanted:
+    // one server always draws the same constellation, and two different
+    // servers draw visibly different ones -- a fingerprint you can recognise
+    // on sight, built from something already in the address bar, so it
+    // discloses nothing that reading the URL would not.
+    //
+    // location.host, not hostname: the port is part of which server this is,
+    // and two instances on one host would otherwise be indistinguishable.
+    // It omits the default port, so the usual https deployment is unaffected.
+    // (parseAttestation above still compares against hostname -- an
+    // attestation is about the domain, which is a different question.)
+    function seedFrom(str) {
+      var s = 1779033703 ^ str.length;
+      for (var i = 0; i < str.length; i++) {
+        s = Math.imul(s ^ str.charCodeAt(i), 3432918353);
+        s = (s << 13) | (s >>> 19);
+      }
+      s = Math.imul(s ^ (s >>> 16), 2246822507);
+      s = Math.imul(s ^ (s >>> 13), 3266489909);
+      return (s ^ (s >>> 16)) >>> 0;
+    }
+
+    function rng(seed) {
+      return function () {
+        seed = (seed + 0x6d2b79f5) | 0;
+        var t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+
+    function node(x, y, rand) {
+      return {
+        bx: x, by: y, x: x, y: y,
+        ax: 5 + rand() * 8, ay: 5 + rand() * 8,
+        // One drift cycle per 20-40s, so it reads as a tide rather than as
+        // movement. Nobody should catch this page fidgeting.
+        wx: 6.2832 / (20000 + rand() * 20000),
+        wy: 6.2832 / (20000 + rand() * 20000),
+        px: rand() * 6.2832, py: rand() * 6.2832,
+        r: 1.5 + rand() * 1.7,
+        fade: 1, joined: false, dying: false, anchor: null
+      };
+    }
+
+    function layout() {
+      var rand = rng(seedFrom(location.host || 'freizone'));
+
+      // Node count follows viewport area, capped at both ends: a phone must
+      // not get a wall of dots, a wide desktop not three lonely ones. It
+      // follows the window and nothing else -- see the note up top.
+      var count = Math.max(8, Math.min(24, Math.round((w * h) / 48000)));
+      reach = Math.min(Math.max(w, h) * 0.32, 250);
+
+      // A jittered grid rather than free placement: unconstrained random
+      // points clump, and a clump reads as a mistake rather than a pattern.
+      var cols = Math.max(2, Math.round(Math.sqrt(count * w / h)));
+      var rows = Math.max(2, Math.ceil(count / cols));
+      nodes = [];
+      for (var r = 0; r < rows; r++) {
+        for (var c = 0; c < cols && nodes.length < count; c++) {
+          nodes.push(node(
+            (c + 0.5 + (rand() - 0.5) * 0.72) * (w / cols),
+            (r + 0.5 + (rand() - 0.5) * 0.72) * (h / rows),
+            rand
+          ));
+        }
+      }
+
+      // Federation peers sit outside the frame on purpose: all you ever see
+      // of one is an edge running off the side of the page. Each is pinned
+      // to a node inside rather than left to the proximity test, so that
+      // edge is always actually there to see.
+      var inner = nodes.length;
+      for (var i = 0; i < 4 && inner; i++) {
+        var side = Math.floor(rand() * 4);
+        var m = 70 + rand() * 60;
+        var p = node(
+          side === 0 ? -m : side === 1 ? w + m : rand() * w,
+          side === 2 ? -m : side === 3 ? h + m : rand() * h,
+          rand
+        );
+        p.anchor = nodes[Math.floor(rand() * inner)];
+        nodes.push(p);
+      }
+    }
+
+    function resize() {
+      // Kept unclamped alongside w/h so sameSize() below compares like with
+      // like when the viewport really is zero.
+      vw = window.innerWidth;
+      vh = window.innerHeight;
+      w = Math.max(1, vw);
+      h = Math.max(1, vh);
+      // Capped at 2: past that the fill cost on a phone buys nothing the eye
+      // can find in a background this faint.
+      var dpr = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+      canvas.style.width = w + 'px';
+      canvas.style.height = h + 'px';
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      layout();
+    }
+
+    function readColors() {
+      var cs = getComputedStyle(document.documentElement);
+      colors.edge = cs.getPropertyValue('--net-edge').trim() || 'rgba(12,133,119,.13)';
+      colors.node = cs.getPropertyValue('--net-node').trim() || 'rgba(12,133,119,.28)';
+      colors.pulse = cs.getPropertyValue('--net-pulse').trim() || 'rgba(12,133,119,.5)';
+    }
+
+    function edges() {
+      var out = [], i, j, a, b;
+      for (i = 0; i < nodes.length; i++) {
+        a = nodes[i];
+        if (a.anchor) {
+          // A peer's one edge inward -- drawn only when this server
+          // actually federates, which is the whole point of showing it.
+          if (state.federation) out.push([a, a.anchor, 0.8]);
+          continue;
+        }
+        for (j = i + 1; j < nodes.length; j++) {
+          b = nodes[j];
+          if (b.anchor) continue;
+          var dx = a.x - b.x, dy = a.y - b.y;
+          var d = Math.sqrt(dx * dx + dy * dy);
+          if (d < reach) out.push([a, b, 1 - d / reach]);
+        }
+      }
+      return out;
+    }
+
+    // A sealed packet. It crosses a node and carries on at the same size in
+    // the same colour -- never opened, which is the one thing this whole
+    // product is about. Driven by a clock and nothing else, and kept sparse
+    // so it cannot be misread as a live view of traffic.
+    function spawnPulse(list) {
+      if (!list.length) return;
+      var e = list[Math.floor(Math.random() * list.length)];
+      pulses.push({
+        from: e[0], to: e[1], t: 0,
+        speed: 0.00042 + Math.random() * 0.00028,
+        hops: 2, ring: 0
+      });
+    }
+
+    function advancePulses(dt, list) {
+      for (var i = pulses.length - 1; i >= 0; i--) {
+        var p = pulses[i];
+        p.t += dt * p.speed;
+        if (p.ring > 0) p.ring = Math.max(0, p.ring - dt / 700);
+        if (p.t < 1) continue;
+
+        // Hand it on rather than end it: passing through a node unchanged is
+        // the point being made.
+        var options = [];
+        for (var k = 0; k < list.length; k++) {
+          if (list[k][0] === p.to && list[k][1] !== p.from) options.push(list[k][1]);
+          else if (list[k][1] === p.to && list[k][0] !== p.from) options.push(list[k][0]);
+        }
+        if (p.hops > 0 && options.length) {
+          p.from = p.to;
+          p.to = options[Math.floor(Math.random() * options.length)];
+          p.t = 0; p.hops--; p.ring = 1;
+        } else {
+          pulses.splice(i, 1);
+        }
+      }
+    }
+
+    // The registration policy, in motion. Open: newcomers simply arrive, at
+    // the edge, on their own. Invite: nothing arrives until a node already
+    // here reaches out, and the newcomer appears at the far end of that
+    // reach. Closed: nobody arrives at all. The same three words the card
+    // states, in the only other language this page speaks.
+    function tryJoin() {
+      if (reaching) return;
+      if (state.policy !== 'open' && state.policy !== 'invite') return;
+
+      var live = 0, oldest = null, hosts = [], i;
+      for (i = 0; i < nodes.length; i++) {
+        var n = nodes[i];
+        if (n.anchor) continue;
+        if (!n.joined) hosts.push(n);
+        else if (!n.dying) { live++; if (!oldest) oldest = n; }
+      }
+      // Past a handful of arrivals the earliest one leaves again, or the
+      // graph would grow without bound on a page left open all day.
+      if (live >= 4 && oldest) oldest.dying = true;
+      if (!hosts.length) return;
+
+      var m = 40;
+      if (state.policy === 'open') {
+        // Biased to the border, so it reads as arriving from outside.
+        var vertical = Math.random() < 0.5;
+        addNode(
+          vertical ? m + Math.random() * (w - 2 * m) : (Math.random() < 0.5 ? m : w - m),
+          vertical ? (Math.random() < 0.5 ? m : h - m) : m + Math.random() * (h - 2 * m)
+        );
+        return;
+      }
+      reaching = {
+        host: hosts[Math.floor(Math.random() * hosts.length)],
+        tx: m + Math.random() * (w - 2 * m),
+        ty: m + Math.random() * (h - 2 * m),
+        t: 0
+      };
+    }
+
+    function addNode(x, y) {
+      var n = node(x, y, rng(((x * 1013 + y * 71) | 0) >>> 0));
+      n.fade = 0;
+      n.joined = true;
+      nodes.push(n);
+    }
+
+    function advanceJoins(dt) {
+      if (reaching) {
+        reaching.t += dt / 1600;
+        if (reaching.t >= 1) {
+          addNode(reaching.tx, reaching.ty);
+          reaching = null;
+        }
+      }
+      for (var i = nodes.length - 1; i >= 0; i--) {
+        var n = nodes[i];
+        if (n.dying) {
+          n.fade -= dt / 1400;
+          if (n.fade <= 0) nodes.splice(i, 1);
+        } else if (n.fade < 1) {
+          n.fade = Math.min(1, n.fade + dt / 1400);
+        }
+      }
+    }
+
+    function step(dt) {
+      clock += dt;
+      for (var i = 0; i < nodes.length; i++) {
+        var n = nodes[i];
+        n.x = n.bx + Math.sin(clock * n.wx + n.px) * n.ax;
+        n.y = n.by + Math.cos(clock * n.wy + n.py) * n.ay;
+      }
+      var list = edges();
+      // An unclaimed server has nothing going on yet, and shows it: no
+      // packets, no arrivals, everything dimmed. Matches the card's
+      // "Not set up yet" rather than restating it.
+      if (state.claimed) {
+        nextPulse -= dt;
+        if (nextPulse <= 0) {
+          spawnPulse(list);
+          nextPulse = 3000 + Math.random() * 3500;
+        }
+        nextJoin -= dt;
+        if (nextJoin <= 0) {
+          tryJoin();
+          nextJoin = 9000 + Math.random() * 7000;
+        }
+        advancePulses(dt, list);
+        advanceJoins(dt);
+      }
+      return list;
+    }
+
+    function line(x1, y1, x2, y2) {
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+    }
+
+    function draw(list) {
+      var dim = state.claimed ? 1 : 0.42;
+      var i, e;
+      ctx.clearRect(0, 0, w, h);
+
+      ctx.strokeStyle = colors.edge;
+      ctx.lineWidth = 1;
+      for (i = 0; i < list.length; i++) {
+        e = list[i];
+        ctx.globalAlpha = e[2] * e[0].fade * e[1].fade * dim;
+        line(e[0].x, e[0].y, e[1].x, e[1].y);
+      }
+
+      if (reaching) {
+        ctx.globalAlpha = dim;
+        line(
+          reaching.host.x, reaching.host.y,
+          reaching.host.x + (reaching.tx - reaching.host.x) * reaching.t,
+          reaching.host.y + (reaching.ty - reaching.host.y) * reaching.t
+        );
+      }
+
+      ctx.fillStyle = colors.pulse;
+      ctx.strokeStyle = colors.pulse;
+      for (i = 0; i < pulses.length; i++) {
+        var p = pulses[i];
+        if (p.ring > 0) {
+          ctx.globalAlpha = p.ring * 0.5 * dim;
+          ctx.beginPath();
+          ctx.arc(p.from.x, p.from.y, 4 + (1 - p.ring) * 7, 0, 6.2832);
+          ctx.stroke();
+        }
+        ctx.globalAlpha = dim;
+        ctx.beginPath();
+        ctx.arc(
+          p.from.x + (p.to.x - p.from.x) * p.t,
+          p.from.y + (p.to.y - p.from.y) * p.t,
+          2.1, 0, 6.2832
+        );
+        ctx.fill();
+      }
+
+      ctx.fillStyle = colors.node;
+      for (i = 0; i < nodes.length; i++) {
+        var n = nodes[i];
+        if (n.anchor) continue; // off-screen by construction
+        ctx.globalAlpha = n.fade * dim;
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, n.r, 0, 6.2832);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    function still() { return !!(motionQ && motionQ.matches); }
+
+    // A page can load into a viewport of 0x0 -- a background tab, a restored
+    // session, a prerender -- and no resize event is guaranteed when it is
+    // finally shown. Measuring here as well as on 'resize' is what stops the
+    // canvas from staying stuck at whatever size it was born with.
+    function syncSize() {
+      if (window.innerWidth !== vw || window.innerHeight !== vh) resize();
+    }
+
+    function render() {
+      syncSize();
+      draw(step(0));
+    }
+
+    function frame(ts) {
+      raf = requestAnimationFrame(frame);
+      if (!last) last = ts;
+      var dt = ts - last;
+      if (dt < 32) return; // ~30fps: ample for a drift, easier on a battery
+      last = ts;
+      syncSize();
+      // Clamped, so coming back to a backgrounded tab resumes where it left
+      // off instead of jumping a minute's worth of drift in one frame.
+      draw(step(Math.min(dt, 100)));
+    }
+
+    function start() {
+      if (raf || still() || document.hidden) return;
+      last = 0;
+      raf = requestAnimationFrame(frame);
+    }
+
+    function stop() {
+      if (raf) { cancelAnimationFrame(raf); raf = 0; }
+    }
+
+    function onMedia(q, fn) {
+      if (!q) return;
+      if (q.addEventListener) q.addEventListener('change', fn);
+      else if (q.addListener) q.addListener(fn);
+    }
+
+    readColors();
+    resize();
+    if (still()) render(); else start();
+
+    window.addEventListener('resize', function () {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(function () {
+        resize();
+        if (still()) render();
+      }, 150);
+    });
+
+    // Becoming visible is also the moment to re-measure: see syncSize. The
+    // reduced-motion branch needs it explicitly, since start() deliberately
+    // does nothing there and its still frame would otherwise keep whatever
+    // size the tab had while hidden.
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) stop();
+      else if (still()) render();
+      else start();
+    });
+
+    // Honoured properly: one still frame, no animation loop at all.
+    onMedia(motionQ, function () {
+      if (still()) { stop(); render(); } else { start(); }
+    });
+
+    onMedia(darkQ, function () {
+      readColors();
+      if (still()) render();
+    });
+
+    return {
+      apply: function (s) {
+        state.claimed = s.claimed;
+        state.federation = s.federation;
+        state.policy = s.policy;
+        if (still()) render();
+      }
+    };
+  })();
+
   fetch('/v1/server-status', { headers: { accept: 'application/json' } })
     .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
     .then(function (s) {
+      // Same three facts the rows below spell out, handed to the background
+      // so it can say them a second way.
+      constellation.apply({
+        claimed: !!s.claimed,
+        federation: !!s.federation_enabled,
+        policy: s.registration_policy
+      });
+
       document.getElementById('federation').textContent = s.federation_enabled ? 'On' : 'Off';
       var el = document.getElementById('registration');
       if (!s.claimed) {
@@ -298,6 +801,10 @@
     .catch(function () {
       document.getElementById('registration').textContent = 'unavailable';
       document.getElementById('federation').textContent = 'unavailable';
+      // The constellation is deliberately left alone here. Its defaults are
+      // the understated ones -- no peers past the frame, nobody joining --
+      // and if we could not read the server's own status, claiming either is
+      // exactly what we must not do.
     });
 </script>
 </body>

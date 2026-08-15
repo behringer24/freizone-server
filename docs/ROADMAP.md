@@ -961,3 +961,49 @@ to back up and migrate beside the SQLite file that already gets both.
   joined at two different values. The drain series is an *upper* bound, and
   only became one again with 0.18.1: while nothing released a delivered blob it
   was simply the normal case
+
+### SRV-26 — Landing page background
+Status: `done` · Touches: freizone-app (shares the artwork's motif vocabulary)
+
+The root page (`SRV-21`) is correct but anonymous: nothing about it says it
+belongs to the same product as the app's chat screen. Giving it the chat
+background's pattern, plus a quiet animation in front of it, is the cheap way
+to make a bare domain recognisable.
+
+The interesting constraint is what the animation is allowed to *mean*. A
+decoration driven by real activity would be a metadata leak in a product whose
+whole point is that the server learns as little as possible — and account and
+seat counts are already deliberately kept off this page (see `SRV-22` and the
+`seats` note in `PROTOCOL.md`). So the rule is the narrow one: the background
+may only restate facts the page already prints in words.
+
+- 2026-08-15 — shipped. The pattern is the app's motif vocabulary (cranes,
+  speech bubbles, racks, a shield, node constellations, dot grids) *redrawn*
+  as a 3.5 KB seamless SVG tile rather than the app's own asset, which is an
+  860 KB alpha-mask PNG and would have been over a megabyte inline. Applied
+  the same way the app applies it — a flat tint behind a mask, not a coloured
+  image — so one tile serves both themes and only `--pattern-tint` swaps.
+  Seamlessness is structural rather than hand-fitted: a ring of nine `<use>`
+  copies inside the SVG redraws anything crossing an edge one tile over.
+  In front of it, a canvas constellation whose every input is already on the
+  page: `location.host` seeds the node layout, so a server always draws the
+  same figure and two servers draw different ones (an identicon that moves,
+  disclosing nothing the address bar does not — `host` rather than `hostname`
+  so that two instances behind one name are still told apart, as the two
+  local development servers are); `federation_enabled`
+  decides whether edges run off the frame or the graph is a closed island;
+  `registration_policy` decides how newcomers appear — on their own when
+  open, only after an existing node reaches out when invite-only, not at all
+  when closed; and an unclaimed server sits dimmed and still. Packets crossing
+  the graph never change size or colour at a node, which is the E2E claim
+  stated as a picture, and they are timed on a clock rather than on anything
+  real — sparse enough not to be misread as a live traffic view. Nothing here
+  scales with usage, not even indirectly via node count or tempo, which is
+  what keeps it a restatement rather than a second data source. A failed
+  status read leaves the understated defaults standing (no peers, no
+  arrivals): a decoration must not imply a capability the server may not have.
+  `prefers-reduced-motion` gets one still frame and no animation loop at all,
+  a hidden tab gets none, and the page still pulls in nothing — the CSP that
+  already forbade subresources needed no change, and a test now pins both
+  that and the page's size ceiling. The page grew 21 KB → 43 KB, which is
+  also why `handleLanding` finally got an `ETag` and revalidation
