@@ -1,6 +1,6 @@
 # Design: Shared protocol client core
 
-Status: **planned** · Roadmap: [SRV-23](../ROADMAP.md) · Also affects:
+Status: **done** · Roadmap: [SRV-23](../ROADMAP.md) · Also affects:
 freizone-app, future freizone-bot
 
 Freizone has **two client implementations of the same protocol today**, and

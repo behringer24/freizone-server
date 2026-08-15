@@ -79,7 +79,7 @@ sync interval, even though the database row referencing them survived. See
 ```yaml
 services:
   freizone-server:
-    image: ghcr.io/behringer24/freizone-server:v0.13.1
+    image: ghcr.io/behringer24/freizone-server:v0.22.0
     container_name: freizone-server
     restart: unless-stopped
     ports:
@@ -150,7 +150,7 @@ actually fail over:
 ```yaml
 services:
   freizone-server:
-    image: ghcr.io/behringer24/freizone-server:v0.13.1
+    image: ghcr.io/behringer24/freizone-server:v0.22.0
     profiles: ["standby"]   # docker compose up -d does NOT start this
     restart: unless-stopped
     ports:
@@ -220,9 +220,9 @@ automate the same way as failing over.
   architectural, not operational: an option to store `FREIZONE_BLOB_DIR`
   contents directly in an S3-compatible bucket instead of local disk would
   let one replication mechanism (the bucket) cover both the database and
-  attachments, closing this document's biggest caveat. Worth a ROADMAP entry
-  if this is a direction you want to take rather than something purely
-  documented around.
+  attachments, closing this document's biggest caveat. Tracked as
+  [SRV-20](ROADMAP.md#srv-20--object-storage-backed-blob-storage), raised the
+  same day as this document; not yet designed.
 - **A reference failover script/container** shipped alongside the project
   (rather than only ever pasted into this doc) — the shell snippet above is
   deliberately minimal and has no split-brain protection beyond "don't

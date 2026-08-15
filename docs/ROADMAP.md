@@ -238,7 +238,9 @@ on 2026-07-30, so older notes may use the old code.
   *recipient's* server, the first capability carrying a numeric limit rather
   than a flag
 - **Open** — a pass over existing endpoints and UI to check none silently
-  assumes a capability, before groups (SRV-01) and multi-device (SRV-02) grow
+  assumes a capability instead of checking for it: overdue now that groups
+  (SRV-01) already shipped without one, and worth finishing before multi-device
+  (SRV-02) grows
   the surface further
 
 ### SRV-11 — Resumable/chunked blob uploads
@@ -509,7 +511,7 @@ admins against the server's real active-account count — never on `GET
   parser in Node, not just reasoned about
 
 ### SRV-23 — Shared protocol client core
-Status: `in progress` · Also affects: freizone-app, future freizone-bot
+Status: `done` · Also affects: freizone-app, future freizone-bot (not started)
 Design: [design/23-shared-client-core.md](design/23-shared-client-core.md)
 
 The protocol is implemented twice: `cmd/devclient` (3,236 lines of Go) and
@@ -845,6 +847,55 @@ a one-time reset. No wire-format change.
   call sites, which is why the screens do not change and `AppState` stays as the
   view model, and 60 + 76 lines for `sendMessage`/`_deliver`. Step 5 is where
   the data reset takes effect; the Pixel backup exists for exactly that moment
+- 2026-08-10 — **the cut, done in one piece as planned** (freizone-app
+  `80171c2`). `AppSession` now opens a persistent `CoreAccount` in `init()` and
+  keeps it for the session's lifetime: the live stream, every send, every
+  group action and every read-state change go through it instead of Dart's own
+  crypto and `LocalStateStore`. `_handleIncoming` stops decrypting and just
+  refreshes the affected chat from the core's outcome; `sendMessage` and
+  `sendGroupMessage` collapse into one `_sendViaCore`; every `saveProfile` call
+  that persisted session, conversation or group state is gone from the live
+  path. Extended past the doc's five steps the same day, because each extra
+  piece was the identical defect restated: group management, blocking,
+  accepting a request and `resetSecureSession` all had to move to the core in
+  the same commit, or the moment the receive path cut over each one would have
+  silently stopped working
+- 2026-08-11 — **the app's second implementation of the protocol deleted
+  outright** (`f106e21`): `processIncomingMessage`, `group_receive.dart`,
+  `session_recovery.dart`, the encrypt/send half, the per-peer session lock —
+  everything the conformance test used to hold two clients to one written-down
+  standard, now that there is only one client left to hold. Removed in eight
+  rounds, each one the analyzer's own proof that nothing still referenced what
+  went next; the vectors keep running here, against `pkg/client`, which is
+  what actually ships. Reading the old implementation before deleting it found
+  two real gaps the cut had quietly opened: the proactive group-sync request
+  was gone (restored in the core, called from `enterGroup`), and
+  `removeConversationPermanently` no longer discarded a peer's real sessions —
+  the two lines doing that cleared a Dart-side copy that meant nothing once
+  the sessions lived in the core. Closed the same day by wiring the existing
+  `ForgetPeerDevice` to a new `CoreForgetPeer` (`69013e0`)
+- 2026-08-12 — **freizone-app 0.21.0 released** on the new core. The planned
+  data reset took effect — accounts, contacts and settings carried over; chat
+  history and secure sessions did not, each re-established quietly on first
+  contact — and groups worked properly client-side for the first time:
+  per-message timestamps, per-person read receipts, delivery detail naming who
+  has and has not received a message, and a stated notice when a member's
+  account has ceased to exist
+- 2026-08-14/15 — **the audit pass**, run deliberately against the 08-10 cut
+  rather than from a bug report, closing regressions the rebuild had
+  introduced silently: a released picture re-occupying its recipient's server
+  quota; a discarded background-wake housekeeping report; clearing or deleting
+  a chat or a group not taking effect until the next rebuild; a dissolved or
+  left group not coming off the list; the save/share sheet looking in the old
+  picture location; a message landing in an already-open chat never being
+  confirmed read; the live stream not re-establishing itself after a single
+  drop; account removal not taking the core's own directory (or the pre-cut
+  SQLite file) with it; and a pin or a per-message deletion silently
+  reverting on the next rebuild — that last one because
+  `PinMessage`/`UnpinMessage`/`DeleteMessage` had sat unused in `pkg/client`
+  since stage 1, wired for reading but never for writing. Shipped as
+  freizone-app 0.21.0 through 0.23.1; each fix is recorded in freizone-app's
+  own `CHANGELOG.md` and the matching `APP-` item
 - 2026-08-15 — **`ForgetGroup`**, the one thing the cut left the app unable to
   do. Removing a group from a device was a Dart-side deletion before; afterwards
   the app could clear a group's transcript and media but not its facts, and
@@ -871,6 +922,13 @@ a one-time reset. No wire-format change.
   despite `PinMessage`/`UnpinMessage`/`DeleteMessage` sitting here since
   stage 1 — the read half (pins on the chat summary) was wired, the write
   half was not, so both silently reverted on the next rebuild from the core
+- 2026-08-15 — **done.** `pkg/client` is the only protocol implementation left
+  and the app has run on it, on device, for a week, with the regressions the
+  cut introduced found and closed by explicit audit rather than by report. The
+  one open question the cut turned up — what a user is shown when a
+  one-to-one peer's *account*, not just a device, no longer exists — stays
+  deliberately out of scope here, per the 2026-08-09 note above: it is
+  Andreas' call, not this item's
 
 ### SRV-24 — Let a server move house
 Status: `planned` · Also affects: freizone-app, shared Go core

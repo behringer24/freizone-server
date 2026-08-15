@@ -1,6 +1,6 @@
 # Design: Attested servers
 
-Status: **planned** · Roadmap: [SRV-19](../ROADMAP.md) · Client side: freizone-app
+Status: **done** · Roadmap: [SRV-19](../ROADMAP.md) · Client side: freizone-app
 [APP-22](https://github.com/behringer24/freizone-app/blob/master/docs/ROADMAP.md)
 
 Some servers are run in agreement with the project. Users should be able to see

@@ -1,6 +1,6 @@
 # Design: Session recovery on ratchet desync
 
-Status: **in progress** · Roadmap: [SRV-03](../ROADMAP.md)
+Status: **done** · Roadmap: [SRV-03](../ROADMAP.md)
 
 The Double Ratchet had no self-healing: once `sessions[peer]` desynced, all
 further messages from that peer stayed undecryptable and piled up in the
