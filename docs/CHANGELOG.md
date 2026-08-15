@@ -16,6 +16,25 @@ terser than what follows — the tag was the changelog at the time.
 
 ### Added
 
+* **A background for the landing page (`SRV-26`).** The root page now carries
+  the app's chat-screen pattern — redrawn as a 3.5 KB seamless SVG tile, since
+  the app's own artwork is an 860 KB PNG — and, in front of it, a slow
+  constellation of nodes and edges. What the constellation shows is limited on
+  purpose to facts the page already prints: the host name seeds the layout, so
+  each server draws its own recognisable figure; federation decides whether
+  edges leave the frame; the registration policy decides how newcomers appear,
+  or whether they appear at all; an unclaimed server sits dimmed and still.
+  Packets crossing the graph never change at a node — the end-to-end promise as
+  a picture — and are timed on a clock, not on traffic. Nothing here is derived
+  from usage, not even a node count, and a failed status read leaves the
+  understated defaults in place rather than implying a capability the server may
+  not have. Honours `prefers-reduced-motion` with a single still frame, stops
+  entirely in a hidden tab, and still fetches nothing: the page remains one
+  request, as its unchanged CSP already required
+* **`ETag` and revalidation on the landing page.** It had no cache validators at
+  all and was re-sent in full on every hit — tolerable at 21 KB, less so now
+  that the artwork rides along inline. Repeat visitors get a `304`
+
 * **`Client.ForgetGroup` (`SRV-23`).** Discards everything an account holds
   about a group — its facts, the events still waiting on facts that never
   arrived, each member's last known view, and the chat state a list reads. The

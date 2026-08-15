@@ -1,12 +1,25 @@
 package api
 
 import (
+	"bytes"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"net/http"
+	"time"
 )
 
 //go:embed web/index.html
 var landingHTML []byte
+
+// Identifies this build's copy of the page. Computed once at start-up
+// because the bytes are compiled in and cannot change while the process
+// runs, which is also what makes it safe to revalidate against rather than
+// having to guess an expiry.
+var landingETag = func() string {
+	sum := sha256.Sum256(landingHTML)
+	return `"` + hex.EncodeToString(sum[:8]) + `"`
+}()
 
 // handleLanding serves a small human-facing page at the site root. A
 // browser hitting the bare domain would otherwise get net/http's plain
@@ -31,6 +44,16 @@ func (a *API) handleLanding(w http.ResponseWriter, r *http.Request) {
 			"script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(landingHTML)
+	// The page carries its own background artwork inline, so it is no longer
+	// small enough to be worth re-sending to every repeat visitor.
+	// "no-cache" is revalidate-every-time rather than don't-store: an
+	// operator who upgrades sees the new page at once, and an unchanged one
+	// costs a header exchange instead of the whole file. ServeContent does
+	// the If-None-Match comparison against the ETag set here, and leaves the
+	// Content-Type above alone rather than sniffing its own.
+	w.Header().Set("ETag", landingETag)
+	w.Header().Set("Cache-Control", "no-cache")
+	// Zero modtime: there is no meaningful file time for an embedded asset,
+	// and it suppresses Last-Modified so the ETag is the only validator.
+	http.ServeContent(w, r, "index.html", time.Time{}, bytes.NewReader(landingHTML))
 }

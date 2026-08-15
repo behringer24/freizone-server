@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -40,6 +41,91 @@ func TestHandleLandingAttestationRowStartsHidden(t *testing.T) {
 	}
 	if !strings.Contains(body, `id="attestation-value" hidden`) {
 		t.Error("attestation value is not present and hidden by default")
+	}
+}
+
+// The page is one request or it is nothing: its CSP grants no 'self' for
+// scripts, styles or images, so any subresource added later would not merely
+// cost a round trip, it would be blocked outright and the page would come up
+// broken. Cheaper to fail here than to work that out from a blank background.
+// Outbound <a href> links are a different thing entirely and stay allowed --
+// the footer has one.
+func TestHandleLandingPullsInNothing(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+
+	body := doRequest(t, a.Router(), http.MethodGet, "/", nil).Body.String()
+	for _, subresource := range []string{
+		"<script src", "<link ", "@import", "url(http", "url('http", `url("http`,
+		`src="http`, "src='http", `src="/`, "src='/",
+	} {
+		if strings.Contains(body, subresource) {
+			t.Errorf("page references an external subresource (%q); it must stay a single request", subresource)
+		}
+	}
+}
+
+// Guards the page's weight, not its prose. It carries its background artwork
+// and its logo inline, which is the right call at a few KB apiece and the
+// wrong one the moment somebody pastes in a full-size bitmap -- the app's own
+// chat-background PNG would be over a megabyte base64-encoded. The ceiling is
+// deliberately far above the current size: it exists to catch a binary asset,
+// not to police comments.
+func TestHandleLandingStaysSmall(t *testing.T) {
+	const ceiling = 64 << 10
+
+	a, _ := newTestAPI(t, config.PolicyOpen)
+
+	size := doRequest(t, a.Router(), http.MethodGet, "/", nil).Body.Len()
+	if size > ceiling {
+		t.Errorf("landing page is %d bytes, over the %d ceiling -- embedding a large asset?", size, ceiling)
+	}
+}
+
+// The page now depends on the exact permissions this CSP grants: an inline
+// style block and script, and data: URLs for the logo and the background
+// mask. Tightening any of these silently turns the page blank or unstyled
+// rather than erroring, so they are pinned here.
+func TestHandleLandingCSPAllowsWhatThePageUses(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+
+	csp := doRequest(t, a.Router(), http.MethodGet, "/", nil).Header().Get("Content-Security-Policy")
+	for _, directive := range []string{
+		"img-src data:",              // inline logo and the background mask tile
+		"style-src 'unsafe-inline'",  // the one <style> block
+		"script-src 'unsafe-inline'", // the one <script> block
+		"connect-src 'self'",         // the /v1/server-status read
+	} {
+		if !strings.Contains(csp, directive) {
+			t.Errorf("CSP is missing %q, which the page relies on; CSP = %q", directive, csp)
+		}
+	}
+}
+
+// A repeat visitor should get a 304 rather than the whole page again. Worth
+// having now that the page carries its artwork inline: it is several times
+// the size it was when it was text and a logo.
+func TestHandleLandingRevalidates(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+
+	first := doRequest(t, a.Router(), http.MethodGet, "/", nil)
+	etag := first.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("no ETag on the first response")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, "/", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("If-None-Match", etag)
+	second := httptest.NewRecorder()
+	a.Router().ServeHTTP(second, req)
+
+	if second.Code != http.StatusNotModified {
+		t.Errorf("status = %d, want 304", second.Code)
+	}
+	if second.Body.Len() != 0 {
+		t.Errorf("304 carried %d bytes of body", second.Body.Len())
 	}
 }
 
