@@ -32,11 +32,12 @@
     --net-pulse: rgba(12, 133, 119, .78);
     /* The card, once it is frosted -- kept high enough that body text keeps
        its contrast against whatever drifts underneath. */
-    --card-glass: rgba(255, 255, 255, .72);
+    --card-glass: rgba(255, 255, 255, .62);
     /* Light needs a far lighter touch: the same weight that reads as a soft
-       edge on a dark page reads as dirt on a white one. */
-    --vignette-mid: rgba(16, 32, 29, .03);
-    --vignette-edge: rgba(16, 32, 29, .09);
+       edge on a dark page reads as dirt on a white one. These reach the
+       corner in full now, which the earlier pair never did. */
+    --vignette-mid: rgba(16, 32, 29, .04);
+    --vignette-edge: rgba(16, 32, 29, .13);
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -53,8 +54,10 @@
       --net-node: rgba(63, 191, 173, .45);
       --net-pulse: rgba(63, 191, 173, .66);
       --card-glass: rgba(20, 32, 29, .66);
-      --vignette-mid: rgba(0, 0, 0, .12);
-      --vignette-edge: rgba(0, 0, 0, .34);
+      /* Down from .12/.34: those were chosen against a gradient that never
+         got near its own last stop, so they only now arrive at full weight. */
+      --vignette-mid: rgba(0, 0, 0, .1);
+      --vignette-edge: rgba(0, 0, 0, .26);
     }
   }
   /* The chat background's motif vocabulary -- paper cranes, speech bubbles,
@@ -97,10 +100,16 @@
   /* Last of the three in the markup, so it darkens the pattern and the
      constellation without touching the text, which sits a layer above.
      Transparent well past the middle: the card and everything around it must
-     read exactly as before, and only the far edges pick up any weight. */
+     read exactly as before, and only the far edges pick up any weight.
+
+     farthest-corner, not a hand-picked size: it puts the last stop exactly
+     on the screen's corner. Sized 125% x 105% the corner landed at 65.9% of
+     the gradient whatever the resolution, so the edge colour was never
+     reached anywhere on screen and the corner received 0.019 alpha -- an
+     effect that was, correctly, invisible. */
   .vignette {
-    background: radial-gradient(ellipse 125% 105% at 50% 45%,
-      transparent 45%, var(--vignette-mid) 78%, var(--vignette-edge) 100%);
+    background: radial-gradient(ellipse farthest-corner at 50% 45%,
+      transparent 40%, var(--vignette-mid) 72%, var(--vignette-edge) 100%);
   }
   /* Same construction as the app: a flat tint showing through a line-art
      mask, not a coloured image. That is what lets one asset serve both
