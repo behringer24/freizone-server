@@ -844,6 +844,20 @@ a one-time reset. No wire-format change.
   call sites, which is why the screens do not change and `AppState` stays as the
   view model, and 60 + 76 lines for `sendMessage`/`_deliver`. Step 5 is where
   the data reset takes effect; the Pixel backup exists for exactly that moment
+- 2026-08-15 — **`ForgetGroup`**, the one thing the cut left the app unable to
+  do. Removing a group from a device was a Dart-side deletion before; afterwards
+  the app could clear a group's transcript and media but not its facts, and
+  `Groups()` is a directory listing — so a group one had left kept its row in
+  the chat list, with the known limitation written into
+  `AppSession.declineGroupInvite` rather than fixed. Removes the whole
+  `groups/<id>` directory: facts, held events, per-member sync state and the
+  chat state a list reads. Deliberately
+  *not* part of leaving, and it makes no membership check of its own — the fold
+  cannot tell "left" from "never joined" once the facts are gone, so the rule
+  that this is only ever right for a group one is out of belongs with the caller
+  that knows (freizone-app's `group_actions.dart` gates exactly that). The test
+  pins the distinction the call exists for: being removed from a group does not
+  take it off the list, forgetting it does
 
 ### SRV-24 — Let a server move house
 Status: `planned` · Also affects: freizone-app, shared Go core

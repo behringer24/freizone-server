@@ -2,6 +2,7 @@
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"time"
 
@@ -250,6 +251,39 @@ func (c *Client) Groups() ([]string, error) {
 	}
 	sort.Strings(ids)
 	return ids, nil
+}
+
+// ForgetGroup discards everything this account holds *about* a group: its
+// facts, the events waiting on facts that never arrived, what each member last
+// said their view was, and the chat state a list reads. The transcript and the
+// media are not here and are the caller's to clear -- a group chat lives under
+// dirChats keyed by group id like any other (see layout.go).
+//
+// Only ever right for a group this account is no longer in. While still a
+// member the others keep sending, and an arriving message rebuilds a chat whose
+// facts are gone: no name, no member list, and a send that fails with "no
+// group". So the caller has to have left, been removed, or seen it dissolved
+// first -- this makes no such check, because the fold cannot distinguish
+// "left" from "never joined" for a group whose facts are already gone.
+//
+// [Client.Groups] is a directory listing, so this is what actually makes a
+// group disappear from the chat list. Leaving alone does not: a member who
+// left is still a member the fold knows about, deliberately, so a message that
+// arrives afterwards is recognised rather than treated as a stranger's.
+func (c *Client) ForgetGroup(groupID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// store.path rejects any id that could escape the store, which is the
+	// whole check this needs -- a group id arrives from the wire.
+	dir, err := c.store.path(dirGroups, groupID)
+	if err != nil {
+		return err
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("client: forgetting group: %w", err)
+	}
+	return nil
 }
 
 // GroupMembership folds a group's facts into its current membership, or

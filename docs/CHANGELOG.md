@@ -14,6 +14,20 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+### Added
+
+* **`Client.ForgetGroup` (`SRV-23`).** Discards everything an account holds
+  about a group — its facts, the events still waiting on facts that never
+  arrived, each member's last known view, and the chat state a list reads. The
+  transcript and the media are not in there and stay the caller's to clear, a
+  group chat being a chat like any other. This is what actually takes a group
+  off a chat list: `Client.Groups` is a directory listing, so leaving one does
+  not, and deliberately so — the fold keeps a member who left precisely so a
+  message arriving afterwards is still recognised. Only ever right for a group
+  the account is out of, and the check for that belongs to the caller, since
+  once the facts are gone the fold can no longer tell "left" from "never
+  joined". Nothing server-side changes
+
 ## [0.19.0] — 2026-08-14
 
 The statistics from 0.18.0 said how much is stored. This adds where it is going
