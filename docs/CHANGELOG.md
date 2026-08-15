@@ -14,13 +14,32 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-08-15
+
+Two unrelated things. `Client.ForgetGroup` (`SRV-23`) is what finally takes a
+group an account has left off its chat list. The rest is the landing page
+(`SRV-26`), which now looks like it belongs to the same product as the app —
+without telling a visitor anything about the server it was not already telling
+them in words.
+
 ### Added
 
+* **`Client.ForgetGroup` (`SRV-23`).** Discards everything an account holds
+  about a group — its facts, the events still waiting on facts that never
+  arrived, each member's last known view, and the chat state a list reads. The
+  transcript and the media are not in there and stay the caller's to clear, a
+  group chat being a chat like any other. This is what actually takes a group
+  off a chat list: `Client.Groups` is a directory listing, so leaving one does
+  not, and deliberately so — the fold keeps a member who left precisely so a
+  message arriving afterwards is still recognised. Only ever right for a group
+  the account is out of, and the check for that belongs to the caller, since
+  once the facts are gone the fold can no longer tell "left" from "never
+  joined". Nothing server-side changes
 * **A background for the landing page (`SRV-26`).** The root page now carries
   the app's chat-screen pattern — redrawn as a 3.5 KB seamless SVG tile, since
   the app's own artwork is an 860 KB PNG — and, in front of it, a slow
   constellation of nodes and edges. What the constellation shows is limited on
-  purpose to facts the page already prints: the host name seeds the layout, so
+  purpose to facts the page already prints: the address seeds the layout, so
   each server draws its own recognisable figure; federation decides whether
   edges leave the frame; the registration policy decides how newcomers appear,
   or whether they appear at all; an unclaimed server sits dimmed and still.
@@ -34,18 +53,6 @@ terser than what follows — the tag was the changelog at the time.
 * **`ETag` and revalidation on the landing page.** It had no cache validators at
   all and was re-sent in full on every hit — tolerable at 21 KB, less so now
   that the artwork rides along inline. Repeat visitors get a `304`
-
-* **`Client.ForgetGroup` (`SRV-23`).** Discards everything an account holds
-  about a group — its facts, the events still waiting on facts that never
-  arrived, each member's last known view, and the chat state a list reads. The
-  transcript and the media are not in there and stay the caller's to clear, a
-  group chat being a chat like any other. This is what actually takes a group
-  off a chat list: `Client.Groups` is a directory listing, so leaving one does
-  not, and deliberately so — the fold keeps a member who left precisely so a
-  message arriving afterwards is still recognised. Only ever right for a group
-  the account is out of, and the check for that belongs to the caller, since
-  once the facts are gone the fold can no longer tell "left" from "never
-  joined". Nothing server-side changes
 
 ## [0.19.0] — 2026-08-14
 
