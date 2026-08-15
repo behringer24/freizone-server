@@ -6,7 +6,12 @@
 <title>Freizone server</title>
 <style>
   :root {
-    --bg: #f4f6f6;
+    /* Deliberately a good way off white. At #f4f6f6 the page, the pattern,
+       the constellation and a white card all sat within a few percent of
+       each other and the whole thing read as one flat sheet -- the card in
+       particular had nothing to stand away from. Darkening the ground is
+       what gives every layer above it somewhere to be. */
+    --bg: #e4ebe9;
     --card: #ffffff;
     --ink: #10201d;
     --muted: #5a6b67;
@@ -17,12 +22,14 @@
     /* Tint and weight lifted verbatim from the app's chat background
        (PatternBackground in freizone-app), so the two read as the same
        surface rather than merely similar ones. */
-    --pattern-tint: rgba(0, 42, 38, .06);
+    --pattern-tint: rgba(0, 42, 38, .085);
     /* The constellation has to sit above the pattern but well below the
-       text. These three are the dials to turn if it ever reads too loud. */
-    --net-edge: rgba(12, 133, 119, .2);
-    --net-node: rgba(12, 133, 119, .42);
-    --net-pulse: rgba(12, 133, 119, .62);
+       text. These three are the dials to turn if it ever reads too loud.
+       Carried further here than in dark mode: teal on a light ground has
+       less room to separate itself than the same teal on a near-black one. */
+    --net-edge: rgba(12, 133, 119, .3);
+    --net-node: rgba(12, 133, 119, .58);
+    --net-pulse: rgba(12, 133, 119, .78);
     /* The card, once it is frosted -- kept high enough that body text keeps
        its contrast against whatever drifts underneath. */
     --card-glass: rgba(255, 255, 255, .72);
@@ -153,8 +160,8 @@
   @supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
     .card {
       background: var(--card-glass);
-      -webkit-backdrop-filter: blur(2px) saturate(1.4);
-              backdrop-filter: blur(2px) saturate(1.4);
+      -webkit-backdrop-filter: blur(2px);
+              backdrop-filter: blur(2px);
     }
   }
   .badge {
