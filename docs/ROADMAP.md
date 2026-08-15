@@ -122,7 +122,7 @@ today's QR, which is only for registration invites. Prerequisite for history
 transfer (APP-02).
 
 ### SRV-03 — Session recovery on ratchet desync
-Status: `in progress` · Also affects: freizone-app
+Status: `done` · Also affects: freizone-app
 Design: [design/03-session-recovery.md](design/03-session-recovery.md)
 
 The Double Ratchet had no self-healing: once a session desynced, every further
@@ -138,9 +138,10 @@ detected and repaired automatically, over an invisible re-key envelope.
 - 2026-08-01 — automatic detection and re-key: a typed failure taxonomy
   (`pkg/ratchet/failure.go`), per-peer evidence, the `v: 3 / kind: rekey`
   control envelope, and the ordering rule that stops both sides re-keying at once
-- **Open** — the whole loop end-to-end through two real app instances, including
-  across a background push wake. Wants a deliberate desync injector in a debug
-  build, since a desync should now be rare enough never to occur by accident
+- 2026-08-15 — **done.** The whole loop verified end-to-end through two real
+  app instances, including across a background push wake — Andreas' live test,
+  successful. The desync injector the previous note wanted turned out not to
+  be needed to close the item
 
 ### SRV-04 — Authenticate the prekey-bundle claim
 Status: `done` · Also affects: freizone-app
