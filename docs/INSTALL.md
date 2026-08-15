@@ -63,10 +63,12 @@ can create accounts, via invite codes it issues afterwards. See
 [Registration policy](../README.md#registration-policy-who-can-create-an-account)
 in the README for `invite`/`open`.
 
-Everything else — retention windows, blob limits, the push gateway URL,
-log level — has a working default; add variables to `.env` only when you
-need to change one. The complete list is in the README's
-[configuration reference](../README.md#configuration-reference).
+Everything else — retention windows, blob limits, log level — has a working
+default; add variables to `.env` only when you need to change one. The
+complete list is in the README's
+[configuration reference](../README.md#configuration-reference). The push
+gateway URL gets its own section below, since it's worth understanding
+before you set it rather than just copying a default.
 
 ## 3. Start it
 
@@ -134,6 +136,39 @@ go build -o devclient ./cmd/devclient
 See [docs/DEVCLIENT.md](DEVCLIENT.md) for what else `devclient` is good for —
 it's primarily a debugging tool, useful well beyond first setup, but it
 doesn't grow into an admin CLI no matter what you ask it to do.
+
+## Push wake for devices without UnifiedPush
+
+A device that has a UnifiedPush distributor installed (e.g. via `ntfy`) needs
+none of this — it registers its own endpoint (`PUT /v1/devices/{device_id}/push-endpoint`)
+and push-wake works fully decentralized, no gateway, no third party, nothing
+to configure here at all.
+
+A device *without* a distributor instead registers an FCM/APNs push target
+(`PUT /v1/devices/{device_id}/push-target`), which needs a
+[freizone-gateway](https://github.com/behringer24/freizone-gateway) instance
+to relay the actual wake — set via `FREIZONE_PUSH_GATEWAY_URL`. This is
+**not** something worth standing up yourself in the common case: an FCM
+push token is scoped to the Firebase project baked into the app binary that
+requested it, so a gateway running under your own Firebase project can only
+ever wake a build of the app you compiled against that same project —
+useless against the stock, officially distributed app. Running your own
+only makes sense if you're also shipping your own app build; see
+freizone-gateway's own README if that's actually your situation.
+
+For everyone else, point at a shared instance instead:
+
+```
+FREIZONE_PUSH_GATEWAY_URL=https://fz-gateway.behringer24.de
+```
+
+No registration step needed on either side — this server mints its own
+signing identity on first boot and starts calling the gateway the moment the
+variable is set. Treat the choice of *which* gateway to trust the same way
+you'd treat picking any other server your users' data passes through:
+you're trusting that operator to relay honestly and keep the thing running,
+same category of decision as federating with a server you don't run
+yourself.
 
 ## Upgrading
 
