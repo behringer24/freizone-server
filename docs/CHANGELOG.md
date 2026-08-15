@@ -14,6 +14,13 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+## [0.21.1] — 2026-08-15
+
+One fix, from an audit rather than a report: deleting a single message left
+its picture on disk with nothing left to name it. The same shape as the two
+before it — a cleanup that quietly stopped happening looks exactly like one
+that succeeds.
+
 ### Fixed
 
 * **`Client.DeleteMessage` removes the message's stored media too (`SRV-23`).**
