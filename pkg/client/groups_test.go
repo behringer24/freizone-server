@@ -633,5 +633,64 @@ func TestStoredFactsAreReVerifiedOnLoad(t *testing.T) {
 	}
 }
 
+// Forgetting a group is what actually takes it off the chat list, and leaving
+// is not: Groups is a directory listing, so a group whose facts are still on
+// disk is still a row -- with the member who left simply no longer in it.
+//
+// This is the whole point of the call. A shell that offers "remove from this
+// device" for a group one has left has nothing else to reach for: clearing the
+// transcript leaves the row, and the fold has no notion of "hidden".
+func TestForgettingAGroupIsWhatRemovesItFromTheList(t *testing.T) {
+	c, me := groupClient(t)
+	f := newFounder(t)
+	if _, err := c.ApplyGroupControl(f.invite(me), f.accountID, time.Now()); err != nil {
+		t.Fatalf("invite: %v", err)
+	}
+
+	groups, err := c.Groups()
+	if err != nil || len(groups) != 1 {
+		t.Fatalf("want the invited group listed, got %v (%v)", groups, err)
+	}
+
+	// Being out of the group is not being rid of it: the fold keeps a member
+	// who left or was removed, so that a message arriving afterwards is still
+	// recognised as this group's. (Removal rather than a leave only because a
+	// leave has to be signed by its own subject, and this client's identity
+	// does not sign anything offline -- the fold treats the two identically.)
+	gone := f.sign(&group.Event{Type: group.EventMemberRemove, Subject: me})
+	if _, err := c.ApplyGroupControl(f.events(gone), f.accountID, time.Now()); err != nil {
+		t.Fatalf("removal: %v", err)
+	}
+	groups, err = c.Groups()
+	if err != nil || len(groups) != 1 {
+		t.Fatalf("being out of the group must not remove it, got %v (%v)", groups, err)
+	}
+
+	if err := c.ForgetGroup(f.groupID); err != nil {
+		t.Fatalf("ForgetGroup: %v", err)
+	}
+	groups, err = c.Groups()
+	if err != nil || len(groups) != 0 {
+		t.Fatalf("want no groups left, got %v (%v)", groups, err)
+	}
+	// And nothing is left to fold: a membership answer here would mean the
+	// facts survived somewhere the listing does not look.
+	membership, err := c.GroupMembership(f.groupID)
+	if err != nil || membership != nil {
+		t.Errorf("want no facts left, got %v (%v)", membership, err)
+	}
+
+	// Forgetting one that was never here is not an error -- a shell removing
+	// the same group twice, or one whose facts never arrived, is ordinary.
+	if err := c.ForgetGroup(f.groupID); err != nil {
+		t.Errorf("forgetting an unknown group must be a no-op: %v", err)
+	}
+
+	// An id that could escape the store is still refused.
+	if err := c.ForgetGroup(".."); err == nil {
+		t.Error("want an unsafe group id refused")
+	}
+}
+
 // readFileForTest reads a store file directly, for the tests that damage one.
 func readFileForTest(path string) ([]byte, error) { return os.ReadFile(path) }
