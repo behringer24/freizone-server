@@ -151,6 +151,14 @@ type Conversation struct {
 	// user's accept.
 	PendingApproval bool
 
+	// PeerGone records that the peer's *account*, not merely a device, was
+	// confirmed gone by asking their server (see [Client.markPeerGone]) --
+	// set once so every later send refuses at no network cost instead of
+	// asking the same question again. Permanent in practice: an account id is
+	// derived from the key material behind it, so a deleted account never
+	// returns under the same id for someone new to inherit.
+	PeerGone bool
+
 	// Receipts are cumulative watermarks, not per-message marks: a receipt says
 	// "everything up to this instant". That is what makes one arriving late
 	// harmless -- it moves a monotonic value and touches no message, so newer
@@ -170,6 +178,7 @@ type conversationFile struct {
 
 	Blocked         bool `json:"blocked,omitempty"`
 	PendingApproval bool `json:"pending_approval,omitempty"`
+	PeerGone        bool `json:"peer_gone,omitempty"`
 
 	PeerDeliveredUpTo        string `json:"peer_delivered_up_to,omitempty"`
 	PeerReadUpTo             string `json:"peer_read_up_to,omitempty"`
@@ -204,6 +213,7 @@ func (f conversationFile) resolve() (*Conversation, error) {
 		HasUnread:       f.HasUnread,
 		Blocked:         f.Blocked,
 		PendingApproval: f.PendingApproval,
+		PeerGone:        f.PeerGone,
 	}
 	var err error
 	for _, field := range []struct {
@@ -288,6 +298,7 @@ func (c *Client) PutConversation(convo Conversation) error {
 		HasUnread:                convo.HasUnread,
 		Blocked:                  convo.Blocked,
 		PendingApproval:          convo.PendingApproval,
+		PeerGone:                 convo.PeerGone,
 		PeerDeliveredUpTo:        formatTime(convo.PeerDeliveredUpTo),
 		PeerReadUpTo:             formatTime(convo.PeerReadUpTo),
 		SentDeliveredReceiptUpTo: formatTime(convo.SentDeliveredReceiptUpTo),
@@ -415,6 +426,61 @@ func (c *Client) UnblockPeer(peer string) error {
 	}
 	delete(entries, peer)
 	return c.writeBlocked(path, entries)
+}
+
+// PeerAccountGoneMarker is the one-to-one counterpart to a group's own line
+// (recordMemberGone) -- worded without a name, since a one-to-one chat has
+// exactly one other party and repeating who they are would be noise.
+const PeerAccountGoneMarker = "This account no longer exists on their server, so nothing sent here will ever arrive"
+
+// markPeerGone records that a peer's account, confirmed gone by asking their
+// server (see accountIsGone), is not coming back.
+//
+// Set once, not on every failed retry: the flag is what lets [Client.deliver]
+// refuse at no network cost afterwards, instead of asking the same question on
+// every attempt. Local only, like a group's recordMemberGone -- nothing
+// signed can say this about a one-to-one peer either, their server said so and
+// only this device asked. Deliberately its own field rather than piggybacking
+// on Blocked or PendingApproval: this is neither a decision the user made nor
+// a stranger's first contact, it is a fact about the other side.
+func (c *Client) markPeerGone(peer string) error {
+	convo, err := c.Conversation(peer)
+	if err != nil {
+		return err
+	}
+	if convo == nil {
+		// Nothing to mark and nowhere to notify into -- the chat was deleted
+		// between the failed send and this call.
+		return nil
+	}
+	if convo.PeerGone {
+		return nil
+	}
+	convo.PeerGone = true
+	if err := c.PutConversation(*convo); err != nil {
+		return err
+	}
+
+	// De-duplicated by text as well as by the flag above, the same defence
+	// recordMemberGone uses: two sends racing before the flag is visible must
+	// not double the line.
+	msgs, err := c.Messages(peer)
+	if err != nil {
+		return err
+	}
+	for i := range msgs {
+		if msgs[i].Kind == MessageSystemInfo && msgs[i].Text == PeerAccountGoneMarker {
+			return nil
+		}
+	}
+	id, err := newMessageID()
+	if err != nil {
+		return err
+	}
+	return c.AppendMessage(peer, Message{
+		ID: id, Text: PeerAccountGoneMarker, Timestamp: time.Now().UTC(),
+		Kind: MessageSystemInfo, SendState: SendSent,
+	})
 }
 
 // IsPeerBlocked reports whether peer is locally blocked.

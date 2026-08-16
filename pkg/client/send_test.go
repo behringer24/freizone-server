@@ -828,6 +828,89 @@ func TestClaimRefusesABundleWithABrokenCertificate(t *testing.T) {
 	}
 }
 
+// The one-to-one counterpart to
+// TestASnapshotDebtIsDroppedOnlyWhenTheAccountIsGone: a device that stops
+// answering heals itself on the next send (proven by
+// TestASendToAReplacedDeviceForgetsTheCachedOne, unchanged by this), but an
+// account that is *gone* -- deleted by an admin, say -- must stop being
+// retried and say so, once, in the transcript.
+func TestASendIsRefusedForGoodOnceThePeersAccountIsConfirmedGone(t *testing.T) {
+	srv := newFakeServer(t)
+	alice := srv.account(t, "alice")
+	bob := srv.account(t, "bob")
+	bobID := identityOf(t, bob).AccountID
+
+	if _, err := alice.StartConversation(t.Context(), bobID, ""); err != nil {
+		t.Fatalf("StartConversation: %v", err)
+	}
+	if _, err := alice.SendText(t.Context(), bobID, "first", SendOptions{}); err != nil {
+		t.Fatalf("SendText: %v", err)
+	}
+	deliverTo(t, bob)
+
+	// Attempt 1: the cached device stops answering. This alone must not be
+	// read as "gone" -- it is the ordinary shape of a replaced phone, and the
+	// existing device is only forgotten, not yet asked about.
+	srv.set(func(s *fakeServer) { s.sendStatus = http.StatusNotFound })
+	if _, err := alice.SendText(t.Context(), bobID, "to a dead device", SendOptions{}); err == nil {
+		t.Fatal("the send must fail")
+	}
+	if convo, _ := alice.Conversation(bobID); convo == nil || convo.PeerGone {
+		t.Fatal("a single stale-device failure must not be read as the account being gone")
+	}
+
+	// Now the account itself is gone, and the *next* attempt is where that
+	// actually surfaces: nothing is cached any more, so this resolves for
+	// real instead of reusing what attempt 1 just dropped.
+	srv.set(func(s *fakeServer) {
+		s.sendStatus = 0
+		delete(s.accounts, bobID)
+	})
+	if _, err := alice.SendText(t.Context(), bobID, "will never arrive", SendOptions{}); !errors.Is(err, ErrPeerGone) {
+		t.Fatalf("want ErrPeerGone, got %v", err)
+	}
+
+	convo, err := alice.Conversation(bobID)
+	if err != nil {
+		t.Fatalf("Conversation: %v", err)
+	}
+	if convo == nil || !convo.PeerGone {
+		t.Fatal("the conversation must record that the peer is gone")
+	}
+
+	said := func() int {
+		msgs, err := alice.Messages(bobID)
+		if err != nil {
+			t.Fatalf("Messages: %v", err)
+		}
+		var n int
+		for _, m := range msgs {
+			if m.Kind == MessageSystemInfo && m.Text == PeerAccountGoneMarker {
+				n++
+			}
+		}
+		return n
+	}
+	if said() != 1 {
+		t.Fatalf("want the chat told once, got %d lines", said())
+	}
+
+	// Every attempt after that refuses at no network cost: no further bundle
+	// claim, because there is nothing left to ask.
+	var claimsBefore, claimsAfter int
+	srv.set(func(s *fakeServer) { claimsBefore = s.bundleClaims })
+	if _, err := alice.SendText(t.Context(), bobID, "one more try", SendOptions{}); !errors.Is(err, ErrPeerGone) {
+		t.Fatalf("want ErrPeerGone again, got %v", err)
+	}
+	srv.set(func(s *fakeServer) { claimsAfter = s.bundleClaims })
+	if claimsAfter != claimsBefore {
+		t.Error("a peer already confirmed gone must not cost another network round trip")
+	}
+	if said() != 1 {
+		t.Fatalf("the chat must not be told twice, got %d lines", said())
+	}
+}
+
 func identityOf(t *testing.T, c *Client) Identity {
 	t.Helper()
 	id, err := c.Identity()

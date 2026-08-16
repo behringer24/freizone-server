@@ -50,6 +50,12 @@ var ErrAttachmentNotResendable = errors.New("client: the attachment for this mes
 // never told either way -- blocking is silent in both directions.
 var ErrPeerBlocked = errors.New("client: this contact is blocked, so nothing is sent to them")
 
+// ErrPeerGone reports a send to a peer whose account was confirmed gone --
+// asked of their server, not guessed from a failed send (see accountIsGone).
+// Permanent in practice: an account id is derived from the key material
+// behind it, so a deleted account never returns under the same id.
+var ErrPeerGone = errors.New("client: this contact's account no longer exists, so nothing can be sent to them")
+
 // SendOptions carries the parts of a message that are not its text. The zero
 // value is an ordinary message sent now.
 type SendOptions struct {
@@ -485,9 +491,36 @@ func (c *Client) deliver(ctx context.Context, peerAccountID string, plaintext []
 		return false, false, ErrPeerBlocked
 	}
 
-	peer, err := c.Endpoint(ctx, peerAccountID)
+	// The same backstop, for the same reason: a composed message, a queued
+	// receipt, a retry and a re-key signal all have to refuse identically once
+	// the peer is confirmed gone, not only the one a person started. Checked
+	// here rather than left to whatever set the flag, and read from the
+	// conversation rather than asking again -- markPeerGone already paid for
+	// the one request that answers this, and every attempt after it should be
+	// free.
+	convo, err := c.Conversation(peerAccountID)
 	if err != nil {
 		return false, false, err
+	}
+	if convo != nil && convo.PeerGone {
+		return false, false, ErrPeerGone
+	}
+	var knownServer string
+	if convo != nil {
+		knownServer = convo.PeerServer
+	}
+
+	// The dominant way an admin-deleted account is actually discovered: the
+	// *first* failure against a still-cached device (postEnvelope, below)
+	// already drops the cache once it sees a stale-device 404, so it is the
+	// *next* attempt that lands here with nothing cached -- which is exactly
+	// when Endpoint falls through to a real ResolvePeer call instead of
+	// answering from memory. A 404 there already is the same signal
+	// accountIsGone asks for; giveUpOnPeer is the one place that turns it into
+	// ErrPeerGone rather than a plain failure repeated forever.
+	peer, err := c.Endpoint(ctx, peerAccountID)
+	if err != nil {
+		return false, false, c.giveUpOnPeer(ctx, knownServer, peerAccountID, err)
 	}
 	if peer.Federated() {
 		allowed, err := c.federationAllowed(ctx)
@@ -600,6 +633,26 @@ func placeholderFor(media OutgoingMedia) Attachment {
 	}
 }
 
+// giveUpOnPeer turns a stale-device failure that heal-and-retry could not fix
+// into a final answer: is the account itself gone, or merely a device this
+// side does not yet know how to reach? cause is the failure that triggered
+// the question, returned unchanged whenever the account still exists or the
+// question itself could not be answered -- an unread verdict must never be
+// guessed at, the same rule [accountIsGone] itself follows.
+func (c *Client) giveUpOnPeer(ctx context.Context, server, accountID string, cause error) error {
+	if !IsStaleDevice(cause) {
+		return cause
+	}
+	gone, gerr := c.accountIsGone(ctx, server, accountID)
+	if gerr != nil || !gone {
+		return cause
+	}
+	if markErr := c.markPeerGone(accountID); markErr != nil {
+		return errors.Join(cause, markErr)
+	}
+	return ErrPeerGone
+}
+
 // sessionForSending returns the session to encrypt with, and the prekey block
 // to announce alongside it when the session is new.
 func (c *Client) sessionForSending(ctx context.Context, peer PeerEndpoint, existing *ratchet.Session) (*ratchet.Session, *ratchet.InitialMessage, bool, error) {
@@ -622,10 +675,20 @@ func (c *Client) sessionForSending(ctx context.Context, peer PeerEndpoint, exist
 		}
 		fresh, rerr := c.Endpoint(ctx, peer.AccountID)
 		if rerr != nil {
-			return nil, nil, false, rerr
+			// An admin-deleted account usually surfaces right here:
+			// ForgetPeerDevice just dropped the cached device, so this
+			// re-resolve asks the account directly (ResolvePeer) and gets the
+			// same 404 accountIsGone would. Ask outright rather than give up
+			// on the strength of this failure alone.
+			return nil, nil, false, c.giveUpOnPeer(ctx, peer.Server, peer.AccountID, rerr)
 		}
 		if bundle, err = c.ClaimBundle(ctx, fresh); err != nil {
-			return nil, nil, false, err
+			// The heal-and-retry above found an account, still claiming
+			// against a device this server no longer honours -- no swap left
+			// to heal from. Same question, same reason: this server's 404
+			// does not say which was missing, so it has to be asked rather
+			// than inferred.
+			return nil, nil, false, c.giveUpOnPeer(ctx, fresh.Server, fresh.AccountID, err)
 		}
 		peer = fresh
 	}
