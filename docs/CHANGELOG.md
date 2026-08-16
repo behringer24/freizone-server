@@ -20,9 +20,8 @@ terser than what follows — the tag was the changelog at the time.
   (`SRV-29`).** Previously, an account an admin removed just failed every
   retry forever, silently — the same distinction between a dead device
   (heals on its own) and a dead account (permanent) that groups already had.
-  The chat now shows one plain line saying so, and stops trying to send:
-  the composer stays open, since this is a fact about the other side, not a
-  decision the user made
+  The chat now shows one plain line saying so and stops trying to send;
+  everything already in it stays readable
 
 ## [0.22.0] — 2026-08-15
 
