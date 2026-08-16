@@ -1209,3 +1209,45 @@ is discovered by falling over, and that a `WriteTimeout` and a
   that matter driving a real HTTP connection — a quiet stream must survive
   past where a per-response deadline would have cut it, and one device's
   refusal must not touch another's
+
+### SRV-29 — Say when a one-to-one peer's account is confirmed gone
+Status: `done` · Also affects: freizone-app
+Design: see the "Also filed rather than fixed" note in
+[design/23-shared-client-core.md](design/23-shared-client-core.md), closed
+2026-08-16 by this item
+
+SRV-23 shipped the distinction between a dead *device* (heals itself on the
+next send) and a dead *account* (an admin removed it; every retry failed
+forever) for groups only, since group facts can express "this member ceased
+to exist" and a one-to-one chat has no equivalent place to put the fact. What
+was missing was a decision about what the user is shown, filed there as
+explicitly not that item's call.
+
+- 2026-08-16 — designed and shipped in one pass, after discussing the UX with
+  Andreas: the composer stays open (this is a fact about the other side, not
+  a decision the user made, unlike blocking), sending itself is refused, and a
+  plain system line in the transcript is enough for now — no chat-list badge,
+  which would have been new UI work with no existing precedent (even a
+  blocked contact isn't marked in the chat list today).
+- 2026-08-16 — mechanism: reuses `accountIsGone` outright rather than building
+  a second way to ask the same question — the same `GET /v1/accounts/{id}`
+  probe SRV-23 already built for a group's snapshot-debt retry, asked only
+  once healing has already had its chance to work, exactly as it is for a
+  group member. Two call sites needed it, not one: the *dominant* way an
+  admin-deleted account actually surfaces is a retry's own `Endpoint` call in
+  `deliver` finding nothing cached and re-resolving for real (the first
+  failure, against a still-cached device, only forgets the device — it
+  hasn't tried re-resolving yet, so asking there would be premature); the
+  narrower case is `sessionForSending`'s own re-resolve-and-reclaim finding
+  the account exists but the freshly-resolved device still refuses. Both
+  route through one `giveUpOnPeer` helper, so there is exactly one place that
+  turns "stale device, healing exhausted" into a verdict. A new `PeerGone`
+  field on `Conversation` (mirroring `Blocked`/`PendingApproval`) makes every
+  attempt after the first free: `deliver`'s existing blocked-peer guard gained
+  a twin that refuses before touching the network at all, rather than asking
+  the same question, and paying for it, on every later attempt. One
+  conformance-shaped test drives the whole distinction through a real fake
+  server: a device that stops answering must not be read as gone (heals on
+  the next send, unchanged from before this item), and an account actually
+  deleted must be — confirmed once, marked, told once, and free on every
+  attempt after

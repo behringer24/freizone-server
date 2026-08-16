@@ -14,6 +14,16 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+### Added
+
+* **A one-to-one chat says when the other side's account is confirmed gone
+  (`SRV-29`).** Previously, an account an admin removed just failed every
+  retry forever, silently — the same distinction between a dead device
+  (heals on its own) and a dead account (permanent) that groups already had.
+  The chat now shows one plain line saying so, and stops trying to send:
+  the composer stays open, since this is a fact about the other side, not a
+  decision the user made
+
 ## [0.22.0] — 2026-08-15
 
 What the stream endpoint never bounded, now bounded (`SRV-27`, `SRV-28`), plus
