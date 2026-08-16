@@ -635,12 +635,15 @@ group facts cannot express "this member ceased to exist". Fixing it for
 one-to-one needs a decision about what the user is shown, which is not this
 item's to make.
 
-**Closed 2026-08-16, as SRV-29.** The decision: the composer stays open (this
-is a fact about the other side, not something the user did), sending itself is
-refused, and a plain system line in the transcript is enough — no chat-list
-badge. See SRV-29's own entry in `docs/ROADMAP.md` for the mechanism, which
-reuses `accountIsGone` (built for the group case above) rather than adding a
-second way to ask the same question.
+**Closed 2026-08-16, as SRV-29.** Sending is refused and a plain system line
+goes in the transcript — no chat-list badge. The composer was to have stayed
+open, on the grounds that this is a fact about the other side rather than
+something the user did; a device test the same day reversed that, since the
+argument is about blame and the question is about usefulness. It is now
+replaced by a bar, as a federation-locked chat already was. See SRV-29's own
+entry in `docs/ROADMAP.md` for the mechanism, which reuses `accountIsGone`
+(built for the group case above) rather than adding a second way to ask the
+same question.
 
 ## What stage 5a settled
 

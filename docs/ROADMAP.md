@@ -1229,6 +1229,25 @@ explicitly not that item's call.
   plain system line in the transcript is enough for now — no chat-list badge,
   which would have been new UI work with no existing precedent (even a
   blocked contact isn't marked in the chat list today).
+- 2026-08-16 — **the composer half of that was wrong, and Andreas' device test
+  found it.** Two defects and one reversal, in freizone-app:
+  the retry chip is gated on `message.hasFailed` alone, so passing
+  `onRetry: null` removed the tap handler and left the button — an affordance
+  that looks live and silently does nothing, which is worse than the state it
+  replaced. It now renders inert as "Not delivered" instead. Second, the
+  failure reached the user as *"Send failed: client: this contact's
+  account…"*: every error `pkg/client` raises carries that package prefix, so
+  it classifies nothing for a reader, and `describeError` now strips it
+  (capitalising what it uncovers, since a Go error string starts lower-case by
+  convention). And the reversal: **the composer is now replaced by a bar, like
+  a federation-locked chat.** The original reasoning confused *whose fault it
+  is* with *what the UI should offer* — the app went on accepting messages it
+  knew it would never deliver, each one becoming a dead bubble restating a
+  permanent fact. freizone-app's own composer chain already had the principle
+  written into it ("offering a button that can only fail is worse than not
+  having one"), and this is the only one of its five states that can never
+  lift, so it is ordered ahead of "server offline" and "federation off",
+  which are both *not right now* rather than *never*
 - 2026-08-16 — mechanism: reuses `accountIsGone` outright rather than building
   a second way to ask the same question — the same `GET /v1/accounts/{id}`
   probe SRV-23 already built for a group's snapshot-debt retry, asked only
