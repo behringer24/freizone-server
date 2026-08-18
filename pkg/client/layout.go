@@ -50,6 +50,12 @@ const (
 	fileBlocked   = "blocked.json"
 	fileSettings  = "settings.json"
 
+	// filePending marks a registration that was started but not seen through.
+	// Registration is not idempotent -- see register.go -- so the keys are on
+	// disk before the request goes out, and this says the account behind them
+	// may or may not exist yet.
+	filePending = "registration.pending"
+
 	dirPrekeys = "prekeys"
 	dirPeers   = "peers"
 	dirChats   = "chats"
@@ -87,6 +93,7 @@ func (s *store) failuresPath() (string, error)  { return s.path(fileFailures) }
 func (s *store) knownPath() (string, error)     { return s.path(fileKnown) }
 func (s *store) blockedPath() (string, error)   { return s.path(fileBlocked) }
 func (s *store) settingsPath() (string, error)  { return s.path(fileSettings) }
+func (s *store) pendingPath() (string, error)   { return s.path(filePending) }
 
 func (s *store) prekeyPath(name string) (string, error) {
 	return s.path(dirPrekeys, name)

@@ -10,6 +10,7 @@ so the prefix says which repo's `docs/ROADMAP.md` owns the item:
 - `SRV-` — freizone-server (this file, core)
 - `APP-` — freizone-app
 - `GAW-` — freizone-gateway
+- `BOT-` — freizone-bot
 
 A change spanning several repos is listed **once**, in the repo where the
 essential work happens; its entry names the others it touches.
@@ -1270,3 +1271,78 @@ explicitly not that item's call.
   the next send, unchanged from before this item), and an account actually
   deleted must be — confirmed once, marked, told once, and free on every
   attempt after
+
+### SRV-30 — What `pkg/client` still owed a headless consumer
+Status: `done` · Also affects: freizone-app, freizone-bot (BOT-01)
+
+`pkg/client` was complete for protocol work and yet nothing outside its own
+tests used it: `cmd/devclient` still runs the pre-SRV-23 implementation, and the
+app reaches it through the FFI layer. So freizone-bot would have been the
+*first* real consumer, and three gaps only a first consumer notices had to be
+closed first. Two of them turned out to be gaps the app had as well.
+
+- 2026-08-17 — **account registration** (`register.go`). It existed three
+  times and in the core not at all: `cmd/devclient/identity.go`, this package's
+  own live-server helper — doing a raw `http.Post` with the comment "the core
+  offers nothing" — and freizone-app. Now `Register` and `ClaimServer`,
+  deliberately two calls rather than one with a flag: they differ in what they
+  do to the *server*, not in how they are configured, and nobody should be able
+  to claim a server by filling in one more field. `NewIdentity` is exported
+  alongside them because an account id is a derivation of the root key rather
+  than something a server assigns, so a caller can know its own address before
+  any server has heard of it. **Registration is not idempotent, and that is
+  handled here rather than left to each consumer**: the server creates the
+  account when it answers, the caller learns of it when it reads the answer, so
+  a crash in between leaves an orphan and a naive retry registers a *second*
+  account under a *different* address, having spent a second invite code on it.
+  The keys and a marker go to disk before the request; a resumed attempt
+  derives the id from the stored root key and asks the server whether it is
+  there. The live-server test's sixty hand-rolled lines are now this call,
+  which is the honest measure of the gap having closed
+- 2026-08-17 — **one owner per account directory** (`lock.go` and its three
+  platform files). Nothing prevented two `Client`s over one directory, and the
+  result is destructive on the first concurrent write: a session file is a
+  whole-file write of an advancing ratchet, `processedIDs` and the failure
+  counts live in memory, and `Open` *itself* mutates (it settles in-flight
+  sends to failed). `peerLocks` looks like protection at the call site and is a
+  map inside one `Client`. Two collisions, two different answers: **another
+  process** gets `ErrAccountInUse`, held by the kernel so a crash leaves
+  nothing stale to reason about; **the same process** gets the same `Client`
+  back, reference-counted. The second half is not a convenience — freizone-app
+  opens one account from the foreground session *and* from a push wake's
+  isolate, which is one OS process, so a plain file lock would have turned a
+  protection into a missed message. Handing back the open `Client` is what
+  those two callers needed all along, and closes a race SRV-03's 2026-07-22
+  entry only half addressed: that fix made the wake share the app's *pipeline*,
+  not its `Client`. Windows has no `LockFileEx` in the standard library, and it
+  is called through kernel32 directly rather than adding `golang.org/x/sys` —
+  that would land in freizone-app's core too, whose dependency list was cut to
+  almost nothing when the store left SQLite
+- 2026-08-17 — **what a caller owes an envelope, and a connection**
+  (`drain.go`). `HandleIncoming` does no network I/O by design, so everything
+  following from it — acknowledging, confirming to the sender, answering a
+  group peer whose view has drifted — was the caller's, and was written out
+  identically by every caller. It existed once, in freizone-app's FFI layer,
+  where a bot could not reach it. Now `HandleAndAck`, `Drain` and `Maintain`.
+  `Drain` is what a fresh connection does and the reason `Stream` does not do
+  it: a stream carries what arrives from now on, and the queue is separate.
+  `Maintain` is one call rather than four because the order is not the
+  caller's to know — and it is worth a *timer* as well as a reconnect for
+  anything long-lived, which is this item's one genuine divergence from the
+  app: a phone reconnects constantly, a server process holds one stream for
+  weeks and would otherwise never top up its prekey pool again. Grew past the
+  planned drain-only scope once reading showed the app's `doCoreMaintain`
+  carried real rules of its own; leaving it there would have meant the bot
+  copying it, which is the defect SRV-23 exists to end
+- 2026-08-17 — two things the work turned up rather than fixed. The fake
+  server's error envelope did not match the real one (`{"error": "code"}`
+  against `{"error": {"code": …}}`), so every refusal it produced arrived
+  without a code and the two production rules that read one — `IsStaleDevice`'s
+  `federation_disabled` exception and the group fan-out's handling of it —
+  could not be exercised against it at all. Fixed, and it is the third time
+  that stub has been wrong in a way that hid something, which `liveserver_test.go`'s
+  own header already noted about the first two. And a negative control found
+  that the duplicate check in `HandleAndAck` is a *second* line rather than the
+  only one: the receive path returns nothing to confirm with for a duplicate
+  anyway. Both are written down now, since removing either alone leaves the
+  test green
