@@ -14,6 +14,16 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+### Fixed
+
+* **Two programs sharing one account's data can no longer corrupt it
+  (`SRV-30`).** Opening the same account from a second program is now refused
+  outright, and opening it twice inside one program hands back the one already
+  open. This closes a real hazard in the Android app, where a notification
+  arriving while the app is on screen made two independent copies of the
+  encryption state for the same account — enough to lose the thread of a
+  conversation and force it to be re-established
+
 ### Added
 
 * **A one-to-one chat says when the other side's account is confirmed gone

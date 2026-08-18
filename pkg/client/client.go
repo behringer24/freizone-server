@@ -89,6 +89,12 @@ type Client struct {
 	store *store
 	path  string
 
+	// key is the resolved form of path, and the registry entry this Client
+	// belongs to -- see lock.go. Held rather than recomputed so Close cannot
+	// release a different entry than Open took, however the caller spelled the
+	// directory.
+	key string
+
 	// processedIDs and processedOrder mirror the handled-message log in memory:
 	// bounded to MaxProcessedMessageIDs, checked on every incoming envelope, and
 	// far too hot to read from disk each time. The log on disk is append-only,
@@ -131,21 +137,50 @@ type Options struct {
 // Opening also settles anything the previous process left mid-send: a message
 // still marked pending belonged to a send that cannot still be running, so it
 // becomes a failure to retry rather than a spinner nobody will ever resolve.
+//
+// The account is owned for as long as it is open. A second process gets
+// [ErrAccountInUse]; a second opener *in this process* gets the same Client
+// back, and the account is released when the last of them closes it. Both
+// halves are explained in lock.go.
 func Open(path string) (*Client, error) { return OpenWith(path, Options{}) }
 
 // OpenWith is [Open] with the settings that are not the account's location.
 func OpenWith(path string, opts Options) (*Client, error) {
-	st, err := openStore(path)
-	if err != nil {
-		return nil, err
-	}
 	mediaPath := opts.MediaPath
 	if mediaPath == "" {
 		mediaPath = filepath.Join(path, dirMedia)
 	}
+
+	entry, first, err := acquireAccount(path, mediaPath)
+	if err != nil {
+		return nil, err
+	}
+	if !first {
+		return entry.client, nil
+	}
+
+	// From here on the account is held, so every failure has to give it back
+	// or the directory stays locked until the process exits.
+	c, err := newClient(path, mediaPath)
+	if err != nil {
+		if release := releaseAccount(accountKey(path)); release != nil {
+			return nil, errors.Join(err, release)
+		}
+		return nil, err
+	}
+	entry.client = c
+	return c, nil
+}
+
+func newClient(path, mediaPath string) (*Client, error) {
+	st, err := openStore(path)
+	if err != nil {
+		return nil, err
+	}
 	c := &Client{
 		store:     st,
 		path:      path,
+		key:       accountKey(path),
 		peerLocks: make(map[string]*sync.Mutex),
 		media:     mediaStore{root: mediaPath},
 	}
@@ -162,10 +197,14 @@ func OpenWith(path string, opts Options) (*Client, error) {
 	return c, nil
 }
 
-// Close releases the account. Nothing is buffered, so this exists for symmetry
-// and for a caller that wants an explicit end -- every write has already been
-// synced by the time the call that made it returned.
-func (c *Client) Close() error { return nil }
+// Close gives up this caller's hold on the account. Nothing is buffered --
+// every write was synced by the time the call that made it returned -- so what
+// this releases is the ownership, and only once every opener in this process
+// has let go.
+//
+// Safe to call more than once, and safe to call on a Client another opener is
+// still using: that is the whole point of counting them.
+func (c *Client) Close() error { return releaseAccount(c.key) }
 
 // Path is the account directory this Client was opened from.
 func (c *Client) Path() string { return c.path }

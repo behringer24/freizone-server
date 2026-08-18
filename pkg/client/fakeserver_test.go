@@ -65,6 +65,20 @@ type fakeServer struct {
 	// session that was established once from one established again.
 	bundleClaims int
 
+	// The registration policy this server pretends to have, and a count of the
+	// accounts actually created. The count is what proves a resumed
+	// registration did not quietly create a second account.
+	registrationClosed bool
+	inviteRequired     bool
+	setupToken         string
+	registrations      int
+
+	// loseRegistrationAnswer creates the account and *then* fails the
+	// response, which is the shape of a connection dropped on the way back --
+	// the one failure a client cannot tell from "it never happened", and the
+	// reason registration has a resume path at all.
+	loseRegistrationAnswer bool
+
 	// unauthenticatedClaim makes the bundle endpoint answer without a one-time
 	// prekey, as it does when it refuses a claim.s credentials.
 	unauthenticatedClaim bool
@@ -269,6 +283,9 @@ func (s *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 			RootPubKey: base64.StdEncoding.EncodeToString(acc.rootPub),
 			Devices:    acc.devices,
 		})
+
+	case r.Method == http.MethodPost && (path == "/v1/accounts" || path == "/v1/bootstrap/claim"):
+		s.handleRegister(w, r, path == "/v1/bootstrap/claim")
 
 	case r.Method == http.MethodPost && strings.HasSuffix(path, "/prekeys"):
 		deviceID := strings.TrimSuffix(strings.TrimPrefix(path, "/v1/devices/"), "/prekeys")
@@ -598,6 +615,158 @@ func (s *fakeServer) lookupAccount(idOrPrefix string) *fakeAccount {
 	return nil
 }
 
+// handleRegister stands in for POST /v1/accounts and POST /v1/bootstrap/claim.
+//
+// It verifies the device certificate and re-derives the account id from the
+// root key exactly as internal/api does, rather than taking the client's word
+// for either. That is the point of having it here: a client that builds the
+// body wrong -- a mis-encoded key, a certificate signed over the wrong id, a
+// timestamp in the wrong format -- fails in this test rather than against a
+// real server much later.
+//
+// Called with s.mu already held, like every other branch of serve.
+func (s *fakeServer) handleRegister(w http.ResponseWriter, r *http.Request, bootstrap bool) {
+	var body struct {
+		SetupToken          string  `json:"setup_token"`
+		RootPubKey          string  `json:"root_pubkey"`
+		DeviceID            string  `json:"device_id"`
+		DevicePubKey        string  `json:"device_pubkey"`
+		DeviceCertIssuedAt  string  `json:"device_cert_issued_at"`
+		DeviceCertSignature string  `json:"device_cert_signature"`
+		InviteCode          *string `json:"invite_code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+
+	if bootstrap && body.SetupToken != s.setupToken {
+		s.writeError(w, http.StatusForbidden, "invalid_setup_token")
+		return
+	}
+	// The invite policy, so a test can drive the refusal a closed or
+	// invite-only server gives.
+	if !bootstrap {
+		switch {
+		case s.registrationClosed:
+			s.writeError(w, http.StatusForbidden, "registration_closed")
+			return
+		case s.inviteRequired && (body.InviteCode == nil || *body.InviteCode == ""):
+			s.writeError(w, http.StatusForbidden, "invite_required")
+			return
+		}
+	}
+
+	rootPub, err := base64.StdEncoding.DecodeString(body.RootPubKey)
+	if err != nil || len(rootPub) != ed25519.PublicKeySize {
+		s.writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	devicePub, err := base64.StdEncoding.DecodeString(body.DevicePubKey)
+	if err != nil || len(devicePub) != ed25519.PublicKeySize {
+		s.writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	sig, err := base64.StdEncoding.DecodeString(body.DeviceCertSignature)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	issuedAt, err := time.Parse(time.RFC3339, body.DeviceCertIssuedAt)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	accountID, err := address.DeriveID(ed25519.PublicKey(rootPub))
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	cert := &devicecert.DeviceCertificate{
+		AccountID:    accountID,
+		DeviceID:     body.DeviceID,
+		DevicePubKey: ed25519.PublicKey(devicePub),
+		IssuedAt:     issuedAt,
+		Signature:    sig,
+	}
+	if err := cert.Verify(ed25519.PublicKey(rootPub)); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid_certificate")
+		return
+	}
+
+	if _, exists := s.accounts[accountID]; exists {
+		s.writeError(w, http.StatusConflict, "account_exists")
+		return
+	}
+
+	s.registrations++
+	device := deviceWire{
+		DeviceID:     body.DeviceID,
+		DevicePubKey: body.DevicePubKey,
+		IssuedAt:     body.DeviceCertIssuedAt,
+		Signature:    body.DeviceCertSignature,
+		Status:       "active",
+	}
+	s.accounts[accountID] = &fakeAccount{
+		id:      accountID,
+		rootPub: ed25519.PublicKey(rootPub),
+		devices: []deviceWire{device},
+	}
+	s.devices[body.DeviceID] = &fakeDevice{accountID: accountID}
+
+	if s.loseRegistrationAnswer {
+		// The account exists from here on; the caller just never finds out.
+		s.writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	s.writeJSON(w, accountWire{
+		ID:         accountID,
+		RootPubKey: body.RootPubKey,
+		Devices:    []deviceWire{device},
+	})
+}
+
+// queueRaw puts an envelope straight on a device's queue, bypassing the send
+// path -- the only way to hand a client something it cannot possibly decrypt.
+func (s *fakeServer) queueRaw(label string, msg IncomingMessage) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	deviceID := s.deviceIDs[label]
+	s.queues[deviceID] = append(s.queues[deviceID], queuedEnvelope{
+		MessageID:       msg.MessageID,
+		SenderAccountID: msg.SenderAccountID,
+		SenderDeviceID:  msg.SenderDeviceID,
+		SentAt:          msg.SentAt.Format(time.RFC3339),
+		Payload:         msg.Payload,
+	})
+}
+
+// acked reports whether an envelope has been taken off every queue it was on.
+// Searched by id rather than per device because the tests that ask are asking
+// about one specific envelope, not about a device.
+func (s *fakeServer) acked(messageID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, queue := range s.queues {
+		for _, q := range queue {
+			if q.MessageID == messageID {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// registrationCount is how many accounts this server actually created, which
+// is what tells a resumed registration from a repeated one.
+func (s *fakeServer) registrationCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.registrations
+}
+
 func (s *fakeServer) accountForDevice(deviceID string) string {
 	if dev := s.devices[deviceID]; dev != nil {
 		return dev.accountID
@@ -660,10 +829,21 @@ func (s *fakeServer) writeJSON(w http.ResponseWriter, v any) {
 	}
 }
 
+// writeError mirrors internal/api's own envelope: an "error" *object* holding
+// code and message.
+//
+// It used to write a flat {"error": "...", "message": "..."} instead, which
+// parses as a JSON object and so still read as a Freizone server refusing
+// something -- but with the code lost. Every refusal this server produced
+// therefore arrived undiagnosed, and the two production rules that read the
+// code (IsStaleDevice's federation_disabled exception, and the group fan-out's
+// per-peer handling of it) could not be exercised against it at all. The tests
+// looked like they covered those paths; nothing did.
 func (s *fakeServer) writeError(w http.ResponseWriter, status int, code string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(map[string]any{"error": code, "message": code}); err != nil {
+	body := map[string]any{"error": map[string]string{"code": code, "message": code}}
+	if err := json.NewEncoder(w).Encode(body); err != nil {
 		s.t.Errorf("encoding error response: %v", err)
 	}
 }

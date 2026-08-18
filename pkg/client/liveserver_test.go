@@ -26,22 +26,12 @@
 package client
 
 import (
-	"bytes"
-	"crypto/ed25519"
-	"crypto/rand"
-	"encoding/base64"
-	"encoding/json"
-
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/behringer24/freizone-server/pkg/address"
-	"github.com/behringer24/freizone-server/pkg/devicecert"
 )
 
 // liveServers reads the pair under test, or skips.
@@ -61,65 +51,23 @@ func liveServers(t *testing.T) (a, b, container string) {
 // liveAccount registers a fresh account on server and returns a client holding
 // it. The registration is the real POST an app makes on first run, which is
 // also the cheapest proof that the server under test is the one we think.
+//
+// This was sixty lines of hand-rolled key generation, certificate signing and
+// a raw http.Post, with the comment "the core offers nothing". It is now the
+// core's own [Client.Register] (SRV-30) -- which is the honest measure of that
+// gap having closed, and means every live run exercises the call an app and a
+// bot actually make rather than a test's imitation of it.
 func liveAccount(t *testing.T, server string) *Client {
 	t.Helper()
-
-	rootPub, rootPriv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("root key: %v", err)
-	}
-	devicePub, devicePriv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("device key: %v", err)
-	}
-	deviceID, err := devicecert.NewDeviceID()
-	if err != nil {
-		t.Fatalf("device id: %v", err)
-	}
-	accountID, err := address.DeriveID(rootPub)
-	if err != nil {
-		t.Fatalf("account id: %v", err)
-	}
-	issuedAt := time.Now().UTC().Truncate(time.Second)
-	cert, err := devicecert.SignDeviceCertificate(accountID, deviceID, devicePub, issuedAt, rootPriv)
-	if err != nil {
-		t.Fatalf("device certificate: %v", err)
-	}
-
-	body, err := json.Marshal(map[string]string{
-		"root_pubkey":           base64.StdEncoding.EncodeToString(rootPub),
-		"device_id":             deviceID,
-		"device_pubkey":         base64.StdEncoding.EncodeToString(devicePub),
-		"device_cert_issued_at": issuedAt.Format(time.RFC3339),
-		"device_cert_signature": base64.StdEncoding.EncodeToString(cert.Signature),
-	})
-	if err != nil {
-		t.Fatalf("registration body: %v", err)
-	}
-	resp, err := http.Post(server+"/v1/accounts", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("registering on %s: %v", server, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("registering on %s: %s", server, resp.Status)
-	}
 
 	c, err := Open(filepath.Join(t.TempDir(), "account"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = c.Close() })
-	if err := c.SetIdentity(Identity{
-		AccountID:  accountID,
-		Server:     server,
-		RootPub:    rootPub,
-		RootPriv:   rootPriv,
-		DeviceID:   deviceID,
-		DevicePub:  devicePub,
-		DevicePriv: devicePriv,
-	}); err != nil {
-		t.Fatalf("SetIdentity: %v", err)
+
+	if _, err := c.Register(t.Context(), server, RegisterOptions{}); err != nil {
+		t.Fatalf("registering on %s: %v", server, err)
 	}
 	if err := c.RotatePrekeys(t.Context()); err != nil {
 		t.Fatalf("RotatePrekeys: %v", err)
