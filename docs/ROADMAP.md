@@ -1346,3 +1346,86 @@ closed first. Two of them turned out to be gaps the app had as well.
   only one: the receive path returns nothing to confirm with for a duplicate
   anyway. Both are written down now, since removing either alone leaves the
   test green
+
+### SRV-31 — One home for address parsing
+Status: `planned` · Also affects: freizone-app, freizone-bot
+
+The address format is `id*server` -- `q2xjx-e3gtq-utyft-ankjc-v*chat.example.org`
+-- and that is the form a person copies out of the app and pastes anywhere else.
+**Nothing in Go parses it.** `pkg/address` owns the id half (separators, case,
+charset, checksum, the short prefix form) and knows nothing about a server; the
+only parser of the composite form is freizone-app's Dart side. So the format
+exists in the protocol, in one client, and nowhere else.
+
+That was not a tidiness problem. It cost freizone-bot a working peer route:
+`Deliver` passed an empty server to `StartConversation`, which means "mine", so
+a recipient on any other server was quietly unreachable in a product whose
+premise is that servers federate (see BOT-02). The bot now has its own parser,
+which makes **two**, and a second parser written from the format's description
+rather than from the first one immediately disagreed with it in three places.
+
+**Proposal:** `pkg/address` gains the composite form, split by strictness rather
+than by caller, because the strictness genuinely differs and one answer would be
+wrong for somebody:
+
+    type Address struct { ID, Server string }   // Server "" = "whatever server this resolves against"
+    func Parse(raw string) (Address, error)     // syntax only; ID may be a PrefixLength prefix
+    func ParseFull(raw string) (Address, error) // Parse + Normalize: full 21 chars, checksum
+    func (a Address) String() string            // canonical rendering
+    func SameServer(a, b string) bool           // are two server spellings one server
+
+`Parse` must accept a prefix, since `q2xjx*chat.example.org` is part of the
+documented format and is what powers interactive completion. `ParseFull` is what
+configuration and anything unattended uses: a truncated id in an environment
+file resolving to whoever happens to match is how an alert reaches a stranger.
+Naming the two says which is which at every call site, instead of a bool.
+
+**What the two existing parsers disagree about**, all found by reading them side
+by side rather than by anything failing:
+
+- **`*local`, and a bare trailing `*`, mean "this server".** Dart treats both as
+  equivalent to no star at all, and the format's own comment says a parser can
+  therefore always split on the first star instead of special-casing the absence
+  of one. The bot turns `*local` into the host `https://local` and refuses `id*`
+  as incomplete. So an address in a form the format documents is silently
+  misrouted by one of the two readers.
+- **Canonical rendering drops the default scheme.** Dart builds
+  `id*chat.example.org` and keeps `http://` visible, on the reasoning that a
+  non-default scheme is the one thing worth flagging. The bot renders
+  `id*https://chat.example.org`. Both parse back to the same address, so nothing
+  breaks -- but the same address has two spellings in logs, status output and
+  copy-paste, which is how a support conversation goes wrong.
+- **Scheme defaulting and trailing-slash trimming were reimplemented**, and
+  agree with `normalizeServerUrl` only by luck. The rule itself is settled and
+  documented at length in the app (no scheme means https, and https that fails
+  is a failure -- never a silent downgrade to http). A rule that is settled in
+  one place and re-derived in another is a rule with a half-life.
+- **"Same server" has no Go answer at all.** Dart's `sameServer` compares host
+  and explicit port and *ignores the scheme* when neither side names a port,
+  because the scheme is how this device happens to be reaching a server rather
+  than part of its identity. The bot's duplicate-recipient check compares
+  rendered strings, so it reads `id*chat.example.org` and
+  `id*http://chat.example.org` as two different people and would page one of
+  them twice.
+
+**Why `pkg/address` and not `pkg/client`.** Parsing a string needs no store, no
+HTTP, no session. `pkg/client` holds all three and, since SRV-30, takes an
+exclusive lock on an account directory -- so putting the parser there would mean
+that validating an environment variable imports the package that opens an
+account. `ResolvePeer` stays where it is and stays tolerant: it completes a
+prefix because a person is typing into a search box, and that is policy layered
+on the syntax, not the syntax itself.
+
+**Consumers to move over:** freizone-bot's `internal/config/address.go` becomes a
+thin policy wrapper (account-not-group, no duplicates, all-or-nothing on a list
+-- all of which are the bot's rules and belong to it). `cmd/devclient` turns out
+to need nothing: it never parses an address, it takes bare ids from flags, which
+is itself the reason it cannot address a federated peer either.
+
+**freizone-app is a separate item, not part of this one.** The Dart parser would
+delegate through `native/api.go`, but that touches a working, device-tested path,
+and there is one thing to check before proposing it: whether any path handles an
+address *before* the core is loaded -- a deep link at cold start being the
+obvious candidate. If there is one, a Dart parser stays, and then it stays
+deliberately and says so, rather than being a second implementation nobody
+remembered.
