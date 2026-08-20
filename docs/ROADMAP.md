@@ -1348,7 +1348,7 @@ closed first. Two of them turned out to be gaps the app had as well.
   test green
 
 ### SRV-31 — One home for address parsing
-Status: `planned` · Also affects: freizone-app, freizone-bot
+Status: `done` · Also affects: freizone-bot · freizone-app: separate item
 
 The address format is `id*server` -- `q2xjx-e3gtq-utyft-ankjc-v*chat.example.org`
 -- and that is the form a person copies out of the app and pastes anywhere else.
@@ -1429,3 +1429,39 @@ address *before* the core is loaded -- a deep link at cold start being the
 obvious candidate. If there is one, a Dart parser stays, and then it stays
 deliberately and says so, rather than being a second implementation nobody
 remembered.
+
+- 2026-08-20 — **done**, as proposed. `pkg/address/parse.go`: `Address`,
+  `Parse`, `ParseFull`, `NormalizeServer`, `SameServer`, and `String`/`Display`
+  for the two renderings. `Parse` also refuses a scheme with no host behind it,
+  which was not in the proposal and turned up while writing the tests: passed on,
+  `id*https://` becomes a request against a nonsense URL and reads as a server
+  being unreachable rather than as an address nobody could have meant.
+
+  `String` and `Display` as two methods rather than one is the part worth
+  recording. Canonical and human are different jobs -- one is compared and
+  stored, the other is read off a screen -- and the bot had been using one string
+  for both, so its outbox keys carried grouping-free ids with a `https://` that
+  the app never shows. Separating them let each call site say which it wanted,
+  and every one of the six that had been concatenating an address by hand turned
+  out to want a different one than the line above it.
+
+  Also `client.Identity.Address()`, which is where those six concatenations went.
+  Not a convenience: each kept whatever spelling of the server it had been
+  configured with, so one account had several written forms depending on which
+  code path printed it, and the address a person was told to invite did not match
+  the address in the file next to it.
+
+  **Two negative controls**, since everything passed on the first run and that is
+  not evidence. Reading `local` as a hostname failed three tests; making
+  `ParseFull` skip `Normalize` failed the prefix test. The first was the
+  instructive one: with `local` misread, `String` still round-tripped
+  *textually* -- `id*local` in, `id*local` out -- while pointing at a host that
+  does not exist. A round-trip test alone would have called that correct, which
+  is why the server-half table asserts the parsed value and not the rendering.
+
+  The bot's parser is now ~40 lines of policy over this: recipients must be
+  complete (never a prefix), an account where an account is meant, no
+  duplicates, all-or-nothing on a list. Its duplicate check moved to
+  `SameServer` and immediately started catching a case it had been letting
+  through. `cmd/devclient` needed nothing, as expected -- it never parses an
+  address, which is also why it cannot address a federated peer.

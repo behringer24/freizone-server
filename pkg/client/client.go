@@ -33,6 +33,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/behringer24/freizone-server/pkg/address"
 )
 
 // ErrNoIdentity reports an account directory that exists but has not been given
@@ -75,6 +77,20 @@ type Identity struct {
 	// unreachable while another's is fine.
 	PushRegisteredAt *time.Time
 	PushMechanism    string
+}
+
+// Address is this identity's portable address -- the id together with the server
+// it lives on, which is what a person copies out of one client and pastes into
+// another.
+//
+// Here rather than at each call site because the alternative is what actually
+// happened: consumers concatenated `AccountID + "*" + Server` in half a dozen
+// places, each keeping whatever spelling of the server it happened to be
+// configured with, so one account had several written forms. The server is
+// normalized for the same reason -- a trailing slash or a missing scheme in
+// configuration should not travel out into an address somebody else will type.
+func (i Identity) Address() address.Address {
+	return address.Address{ID: i.AccountID, Server: address.NormalizeServer(i.Server)}
 }
 
 // Client is one account's state.
