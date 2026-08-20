@@ -1348,7 +1348,7 @@ closed first. Two of them turned out to be gaps the app had as well.
   test green
 
 ### SRV-31 — One home for address parsing
-Status: `done` · Also affects: freizone-bot · freizone-app: separate item
+Status: `done` · Also affects: freizone-bot · freizone-app: APP-25
 
 The address format is `id*server` -- `q2xjx-e3gtq-utyft-ankjc-v*chat.example.org`
 -- and that is the form a person copies out of the app and pastes anywhere else.
@@ -1465,3 +1465,20 @@ remembered.
   `SameServer` and immediately started catching a case it had been letting
   through. `cmd/devclient` needed nothing, as expected -- it never parses an
   address, which is also why it cannot address a federated peer.
+
+- 2026-08-20 — the freizone-app follow-up is `APP-25`, and it **rejects** the
+  delegation this entry proposed. Three costs the proposal had not counted: 21
+  call sites on a device-tested path, `link_detection.dart` parsing per message
+  while a transcript renders, and three pure-Dart tests that would gain a
+  built-native-library dependency. The concern the item was opened to check --
+  a path handling an address before the core is loaded -- does not exist: the
+  `freizone://` URIs are QR payloads, not OS deep links, and there is no
+  matching intent-filter, so a scan is always inside a running app.
+
+  What `APP-25` does instead is what this repo already does for a layer written
+  twice: shared vectors, as `pkg/conformance` does for the protocol. Reading the
+  two implementations side by side to write that item turned up four more
+  disagreements -- Dart not validating the charset, having no `ParseFull`
+  equivalent, turning `https://` into the server `https:`, and not knowing the
+  `local` form in `normalizeServerUrl` so that `sameServer('local', "")` is
+  false there and true here. None had failed anything.
