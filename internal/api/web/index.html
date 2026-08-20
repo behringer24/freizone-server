@@ -66,13 +66,16 @@
          compressed almost flat by the sRGB curve near zero -- even the
          .26 this briefly held only reached 1.037:1 corner-to-centre
          contrast, against light mode's 1.289:1 at little more than half
-         the alpha. There is no value in between "does nothing" and "does
-         nothing you can tell apart from doing nothing"; asked 2026-08-20
-         whether the effect made sense here at all, and it does not -- same
-         reasoning as --logo-backing below: the ground is already as dark
-         as this layer would make it. */
-      --vignette-mid: transparent;
-      --vignette-edge: transparent;
+         the alpha. Corrected 2026-08-20: wanted darker, not lighter, so
+         edge is pushed all the way to opaque black -- CSS clamps alpha at
+         1 regardless, so this is the ceiling this technique has, not a
+         middle value. Even fully opaque it only reaches 1.134:1, still
+         under a tenth of light mode's contrast at a fraction of the alpha:
+         there simply is not much room between this ground and true black.
+         mid held well back (.3) so the darkening concentrates in the last
+         stretch to the corner instead of creeping into the page early. */
+      --vignette-mid: rgba(0, 0, 0, .3);
+      --vignette-edge: rgba(0, 0, 0, 1);
       /* None needed here: the page already is the dark ground the artwork
          was drawn for. */
       --logo-backing: transparent;
