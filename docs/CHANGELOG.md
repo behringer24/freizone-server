@@ -14,6 +14,13 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+## [0.23.0] — 2026-08-21
+
+The release the first freizone-bot is built on. Everything here is in
+`pkg/client` and `pkg/address` rather than in the server itself: three things a
+headless consumer needed and only a first consumer would notice were missing,
+plus one distinction the app had been unable to draw.
+
 ### Fixed
 
 * **Two programs sharing one account's data can no longer corrupt it
@@ -32,6 +39,30 @@ terser than what follows — the tag was the changelog at the time.
   (heals on its own) and a dead account (permanent) that groups already had.
   The chat now shows one plain line saying so and stops trying to send;
   everything already in it stays readable
+
+* **Registering an account is part of the client library now (`SRV-30`).** It
+  had been written three times outside it — in `cmd/devclient`, in this
+  package's own test helper, and in the Android app — and not once inside.
+  Registration is also no longer able to leave an orphan behind: a crash
+  between the server creating an account and the caller learning of it used to
+  make a restart register a *second* account under a different address, having
+  spent a second invite code on it
+
+* **Connecting also clears whatever arrived while disconnected (`SRV-30`).**
+  Every consumer had to write the queue drain, the acknowledgement rule and the
+  race against the live stream for itself, and nothing tested the two paths
+  together. One call does it, and one function owns both paths — which is the
+  shape three separate drifts in this project have argued for
+
+* **A peer on another server can be addressed at all (`SRV-31`).** The address
+  form `id*server` — what a person copies out of the app and pastes anywhere
+  else — had no reader in Go: `pkg/address` handled the id half and knew
+  nothing about a server, so the only parser of the whole thing was the app's
+  Dart side. Anything else resolved every recipient on its own server, in a
+  product whose premise is that servers federate. `pkg/address` now parses,
+  renders and compares the whole form, in two entry points split by strictness:
+  one accepts a prefix because interactive completion needs it, one requires the
+  full checksummed id because configuration does
 
 ## [0.22.0] — 2026-08-15
 
