@@ -14,6 +14,11 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+## [0.24.0] — 2026-08-23
+
+One addition to `pkg/address`, needed by anything that accepts the short address
+form a person actually copies.
+
 ### Added
 
 * **`address.VersionMarkerOf` reads what kind of id something is from one
