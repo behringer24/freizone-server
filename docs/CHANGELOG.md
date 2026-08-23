@@ -14,6 +14,17 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+### Added
+
+* **`address.VersionMarkerOf` reads what kind of id something is from one
+  character (`SRV-31`).** Whether an id names an account or a group is decided by
+  its first character, but `VersionOf` normalises before reading it and so
+  demands the whole 21-character id. Anything accepting the short prefix form the
+  app displays therefore could not check it — leaving a caller to either skip the
+  check or copy this package's character table, which is exactly what giving the
+  address format one home was meant to prevent. `VersionOf` now builds on the new
+  function, so the two differ by the validation and nothing else
+
 ## [0.23.0] — 2026-08-21
 
 The release the first freizone-bot is built on. Everything here is in

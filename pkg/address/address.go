@@ -99,13 +99,44 @@ func VerifyVersion(version int, id string, rootPubKey ed25519.PublicKey) (bool, 
 // VersionOf returns the version marker of an id: CurrentVersion for an
 // account address, VersionGroup for a group id. The id is normalized (and so
 // checksum-validated) first, since a marker read off an unvalidated string
-// says nothing.
+// says nothing about a *complete* id.
 func VersionOf(id string) (int, error) {
 	normalized, err := Normalize(id)
 	if err != nil {
 		return 0, err
 	}
-	return strings.IndexRune(charset, rune(normalized[0])), nil
+	return VersionMarkerOf(normalized)
+}
+
+// VersionMarkerOf reads the version marker from the first character of an id,
+// without validating anything else about it -- so it answers for a PrefixLength
+// prefix, or for a partially typed id, where VersionOf cannot.
+//
+// This exists because "which kind of thing is this" is answerable from one
+// character while "is this a valid id" is not, and callers legitimately need the
+// first without the second. Every place that accepts a short prefix -- and every
+// place that accepts an address at all should, since a prefix is one of the forms
+// the app displays -- still wants to know whether it was handed an account where
+// a group belongs, or the reverse. Those two differ *only* in this character.
+//
+// Without this, such a caller had one bad option and one worse one: skip the
+// check for prefixes, or copy the charset out of this package and read the
+// character itself. freizone-bot did the first and documented the second as the
+// thing not to do. The point of this package owning the address format is that
+// neither is necessary.
+//
+// It says nothing about validity. A marker from an unchecked string is a claim
+// about intent, not a guarantee -- use VersionOf when the id must be whole.
+func VersionMarkerOf(idOrPrefix string) (int, error) {
+	stripped := StripSeparators(idOrPrefix)
+	if stripped == "" {
+		return 0, errors.New("address: no id to read a version marker from")
+	}
+	marker := strings.IndexRune(charset, rune(stripped[0]))
+	if marker < 0 {
+		return 0, fmt.Errorf("address: %q does not begin with a version marker", idOrPrefix)
+	}
+	return marker, nil
 }
 
 // StripSeparators removes cosmetic dashes/whitespace and lowercases id,

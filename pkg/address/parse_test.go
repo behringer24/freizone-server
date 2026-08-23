@@ -252,3 +252,58 @@ func TestSameServer(t *testing.T) {
 		}
 	}
 }
+
+// The marker is one character, so it answers for a prefix -- which is the whole
+// point: every place that takes an address should take the short form the app
+// displays, and still wants to know it was not handed the other kind of id.
+func TestVersionMarkerReadsAPrefix(t *testing.T) {
+	account, group := testIDs(t)
+
+	for _, tc := range []struct {
+		raw  string
+		want int
+	}{
+		{account, CurrentVersion},
+		{group, VersionGroup},
+		// The forms VersionOf cannot answer for.
+		{account[:PrefixLength], CurrentVersion},
+		{group[:PrefixLength], VersionGroup},
+		{account[:1], CurrentVersion},
+		{group[:1], VersionGroup},
+		// Separators and case are stripped first, same as everywhere else.
+		{FormatForDisplay(group), VersionGroup},
+		{strings.ToUpper(group[:PrefixLength]), VersionGroup},
+		{"  " + group[:PrefixLength], VersionGroup},
+	} {
+		got, err := VersionMarkerOf(tc.raw)
+		if err != nil {
+			t.Errorf("VersionMarkerOf(%q): %v", tc.raw, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("VersionMarkerOf(%q) = %d, want %d", tc.raw, got, tc.want)
+		}
+	}
+
+	for _, raw := range []string{"", "   ", "---", "!", "1abc"} {
+		if _, err := VersionMarkerOf(raw); err == nil {
+			t.Errorf("VersionMarkerOf(%q) should have failed", raw)
+		}
+	}
+}
+
+// It deliberately does not validate. Said in a test because the difference
+// between the two functions is the whole reason both exist, and a future reader
+// tightening this one would break the callers it was added for.
+func TestVersionMarkerDoesNotValidate(t *testing.T) {
+	_, group := testIDs(t)
+
+	// A prefix with the checksum nowhere in sight still reports its kind.
+	if got, err := VersionMarkerOf(group[:3]); err != nil || got != VersionGroup {
+		t.Errorf("got %d, %v", got, err)
+	}
+	// And VersionOf still refuses the same string, which is the pairing.
+	if _, err := VersionOf(group[:3]); err == nil {
+		t.Error("VersionOf must still insist on a whole id")
+	}
+}
