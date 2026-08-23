@@ -1466,6 +1466,20 @@ remembered.
   through. `cmd/devclient` needed nothing, as expected -- it never parses an
   address, which is also why it cannot address a federated peer.
 
+- 2026-08-23 — `VersionMarkerOf` added, which is the piece the first cut left
+  missing. Reading "which kind of id is this" needs one character; `VersionOf`
+  demanded all 21, because it normalises before reading the marker. So a caller
+  accepting a short prefix -- and every caller accepting an address should, since
+  a prefix is one of the forms the app displays -- had one bad option and one
+  worse: skip the check, or copy the charset out of this package. freizone-bot
+  did the first and wrote the second down as the thing not to do, which is how
+  this surfaced.
+
+  `VersionOf` now calls it after normalising, so the two differ by exactly the
+  validation and nothing is duplicated. A test pins that `VersionMarkerOf`
+  deliberately does *not* validate, since a later tightening would break the
+  callers it exists for.
+
 - 2026-08-20 — the freizone-app follow-up is `APP-25`, and it **rejects** the
   delegation this entry proposed. Three costs the proposal had not counted: 21
   call sites on a device-tested path, `link_detection.dart` parsing per message
