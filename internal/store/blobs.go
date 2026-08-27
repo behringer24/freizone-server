@@ -103,6 +103,20 @@ func CreateBlobWithQuota(db DBTX, b Blob, candidateDeviceIDs []string, maxBlobs 
 	return stored, quotaExceeded, nil
 }
 
+// TotalBlobBytes reports the aggregate size of all stored blob ciphertext --
+// the true on-disk footprint, counting each blob once regardless of how many
+// recipients it was addressed to (contrast BlobUsage, which is per recipient).
+// Used to enforce the server-wide disk cap (config.MaxBlobBytesTotal, audit
+// M2) before and during an upload.
+func TotalBlobBytes(db DBTX) (int64, error) {
+	// COALESCE because SUM over no rows is NULL, not 0.
+	var total int64
+	if err := db.QueryRow(`SELECT COALESCE(SUM(size_bytes), 0) FROM blobs`).Scan(&total); err != nil {
+		return 0, fmt.Errorf("store: totalling blob bytes: %w", err)
+	}
+	return total, nil
+}
+
 // GetBlobForDevice looks up a blob, but only if it was addressed to
 // recipientDeviceID -- returning ErrNotFound both for "no such blob" and
 // "not yours", so a caller cannot probe which blob ids exist.

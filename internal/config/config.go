@@ -151,6 +151,16 @@ type Config struct {
 	MaxBlobBytesPerDevice int64
 	MaxBlobsPerDevice     int
 
+	// MaxBlobBytesTotal caps the aggregate size of all stored blob ciphertext
+	// on this server, a whole-disk backstop the per-device quotas cannot give:
+	// those bound only what one recipient holds, so the real ceiling was
+	// (#active devices) x MaxBlobBytesPerDevice, and the federated upload route
+	// needs no local account at all. 0 (the default) disables it, preserving
+	// prior behaviour; an operator on a small disk sets a real figure. Checked
+	// before accepting an upload and re-checked inside the write transaction
+	// (see internal/api/blobs.go), so it holds under concurrent uploads.
+	MaxBlobBytesTotal int64
+
 	// MaxBlobRecipients caps how many recipient devices one upload may name
 	// (SRV-18), so a group picture costs one upload per recipient *server*
 	// rather than one per member. A bound on the work a single request can
@@ -199,6 +209,7 @@ const (
 	envMaxBlobBytes          = "FREIZONE_MAX_BLOB_BYTES"
 	envMaxBlobBytesPerDevice = "FREIZONE_MAX_BLOB_BYTES_PER_DEVICE"
 	envMaxBlobsPerDevice     = "FREIZONE_MAX_BLOBS_PER_DEVICE"
+	envMaxBlobBytesTotal     = "FREIZONE_MAX_BLOB_BYTES_TOTAL"
 	envMaxBlobRecipients     = "FREIZONE_MAX_BLOB_RECIPIENTS"
 	envBlobRetentionDays     = "FREIZONE_BLOB_RETENTION_DAYS"
 
@@ -407,6 +418,17 @@ func Load(getenv func(string) string) (*Config, error) {
 	}
 	cfg.MaxBlobsPerDevice = maxBlobsPerDevice
 
+	// Unset means 0, which disables the aggregate cap (the prior behaviour).
+	var maxBlobBytesTotal int64
+	if v := getenv(envMaxBlobBytesTotal); v != "" {
+		parsed, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("%s: invalid value %q (must be a whole number of bytes): %w", envMaxBlobBytesTotal, v, err)
+		}
+		maxBlobBytesTotal = parsed
+	}
+	cfg.MaxBlobBytesTotal = maxBlobBytesTotal
+
 	maxBlobRecipients := defaultMaxBlobRecipients
 	if v := getenv(envMaxBlobRecipients); v != "" {
 		parsed, err := strconv.Atoi(v)
@@ -513,6 +535,17 @@ func (c *Config) validate() error {
 
 	if c.MaxBlobsPerDevice <= 0 {
 		return fmt.Errorf("%s must be a positive number, got %d", envMaxBlobsPerDevice, c.MaxBlobsPerDevice)
+	}
+
+	// 0 means "no aggregate cap", so only negatives are wrong. A positive cap
+	// below the single-blob limit could never store even one blob -- the same
+	// footgun the per-device check above guards against.
+	if c.MaxBlobBytesTotal < 0 {
+		return fmt.Errorf("%s must not be negative, got %d", envMaxBlobBytesTotal, c.MaxBlobBytesTotal)
+	}
+	if c.MaxBlobBytesTotal > 0 && c.MaxBlobBytesTotal < c.MaxBlobBytes {
+		return fmt.Errorf("%s (%d) must be at least %s (%d), otherwise no blob of the maximum size could ever be stored",
+			envMaxBlobBytesTotal, c.MaxBlobBytesTotal, envMaxBlobBytes, c.MaxBlobBytes)
 	}
 
 	if c.BlobRetentionDays <= 0 {

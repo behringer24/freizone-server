@@ -124,6 +124,32 @@ func TestCreateBlobWithQuotaMixedRecipients(t *testing.T) {
 	}
 }
 
+// TestTotalBlobBytes verifies the aggregate counts each blob once, regardless
+// of how many recipients it was addressed to -- the true disk footprint the
+// server-wide cap (audit M2) is enforced against.
+func TestTotalBlobBytes(t *testing.T) {
+	db := blobTestDB(t)
+	if err := CreateDevice(db, testDevice("acct1", "device2")); err != nil {
+		t.Fatalf("CreateDevice() error = %v", err)
+	}
+
+	if total, err := TotalBlobBytes(db); err != nil || total != 0 {
+		t.Fatalf("TotalBlobBytes() on empty = %d, %v, want 0, nil", total, err)
+	}
+
+	mustCreateBlob(t, db, "blob1", 1000, "device1")
+	// Two recipients: BlobUsage would count 2*500, but the disk footprint is 500.
+	mustCreateBlob(t, db, "blob2", 500, "device1", "device2")
+
+	total, err := TotalBlobBytes(db)
+	if err != nil {
+		t.Fatalf("TotalBlobBytes() error = %v", err)
+	}
+	if total != 1500 {
+		t.Errorf("TotalBlobBytes() = %d, want 1500 (each blob counted once)", total)
+	}
+}
+
 func TestCreateAndGetBlob(t *testing.T) {
 	db := blobTestDB(t)
 

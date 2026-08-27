@@ -60,6 +60,89 @@ func TestRatchetManyMessagesBothDirectionsInOrder(t *testing.T) {
 	}
 }
 
+// TestSkippedKeysStayBoundedAcrossChains is the regression guard for the
+// unbounded-Skipped-map memory DoS (security audit M3). maxSkippedMessageKeys
+// only bounds one skip run; here the peer leaves a near-full gap in each of
+// several DH chains, which without an aggregate cap would grow s.Skipped past
+// 2x the per-run limit. Eviction must keep it at maxTotalSkippedMessageKeys,
+// while the session stays fully usable and recently-buffered keys survive.
+func TestSkippedKeysStayBoundedAcrossChains(t *testing.T) {
+	p := setupParties(t, true)
+	alice, bob := mustInitiateAndRespond(t, p)
+
+	const gap = 1000 // buffers gap-1 (=999) keys per chain, just under the per-run cap
+
+	// skipRound has Alice send `gap` messages on her current chain but Bob only
+	// decrypt the last, buffering the gap; it then flips direction once so Alice
+	// DH-ratchets into a fresh chain for the next round. Returns the burst's
+	// (header, cipher) pairs so a caller can later deliver a still-buffered one.
+	skipRound := func(round int) []struct {
+		h Header
+		c []byte
+	} {
+		burst := make([]struct {
+			h Header
+			c []byte
+		}, gap)
+		for i := 0; i < gap; i++ {
+			h, c, err := alice.Encrypt([]byte("r"))
+			if err != nil {
+				t.Fatalf("round %d: alice.Encrypt(%d) error = %v", round, i, err)
+			}
+			burst[i] = struct {
+				h Header
+				c []byte
+			}{h, c}
+		}
+		// Bob decrypts only the last, buffering keys for 0..gap-2 on this chain.
+		if _, err := bob.Decrypt(burst[gap-1].h, burst[gap-1].c); err != nil {
+			t.Fatalf("round %d: bob.Decrypt(last) error = %v", round, err)
+		}
+		// Flip direction so Alice ratchets into a new sending chain: Bob sends,
+		// Alice receives (a DH-ratchet step on Alice's side).
+		hb, cb, err := bob.Encrypt([]byte("ack"))
+		if err != nil {
+			t.Fatalf("round %d: bob.Encrypt() error = %v", round, err)
+		}
+		if _, err := alice.Decrypt(hb, cb); err != nil {
+			t.Fatalf("round %d: alice.Decrypt(ack) error = %v", round, err)
+		}
+		return burst
+	}
+
+	skipRound(1)
+	skipRound(2)
+	lastBurst := skipRound(3) // this round's keys are the newest → must survive eviction
+
+	if len(bob.Skipped) > maxTotalSkippedMessageKeys {
+		t.Fatalf("len(Skipped) = %d, want <= %d (aggregate cap not enforced)", len(bob.Skipped), maxTotalSkippedMessageKeys)
+	}
+	// Three rounds buffered 3*999 = 2997 keys; eviction must have pinned it to
+	// the ceiling rather than letting it grow unbounded.
+	if len(bob.Skipped) != maxTotalSkippedMessageKeys {
+		t.Errorf("len(Skipped) = %d, want exactly %d after eviction", len(bob.Skipped), maxTotalSkippedMessageKeys)
+	}
+
+	// A recently-buffered key (from the newest round) must still decrypt: the
+	// eviction drops the oldest gaps, not the freshest.
+	if _, err := bob.Decrypt(lastBurst[0].h, lastBurst[0].c); err != nil {
+		t.Errorf("delivering a recent skipped message failed: %v (eviction dropped a fresh key)", err)
+	}
+
+	// And the session is still healthy for normal in-order delivery.
+	h, c, err := alice.Encrypt([]byte("still working"))
+	if err != nil {
+		t.Fatalf("alice.Encrypt(after rounds) error = %v", err)
+	}
+	got, err := bob.Decrypt(h, c)
+	if err != nil {
+		t.Fatalf("bob.Decrypt(after rounds) error = %v", err)
+	}
+	if string(got) != "still working" {
+		t.Errorf("got %q, want %q", got, "still working")
+	}
+}
+
 func TestRatchetOutOfOrderDelivery(t *testing.T) {
 	p := setupParties(t, true)
 	alice, bob := mustInitiateAndRespond(t, p)

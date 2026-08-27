@@ -24,10 +24,18 @@ type API struct {
 	Now func() time.Time
 	// broker fans out newly-queued messages to connected SSE streams.
 	broker *messageBroker
-	// PushClient sends push-wake requests (see push.go); overridable in
-	// tests to point at a fake distributor/gateway, including one served
-	// over TLS with a test certificate.
+	// PushClient sends push-wake requests to device-registered UnifiedPush
+	// endpoints (see push.go's notifyPush). It is hardened against SSRF
+	// (newUnifiedPushClient: no redirects, hard timeout, internal-address
+	// denylist), because the endpoint is chosen by an untrusted device.
+	// Overridable in tests to point at a fake distributor served over TLS.
 	PushClient *http.Client
+	// GatewayClient sends push-relay requests to the operator-configured
+	// freizone-gateway (see push.go's notifyPushViaGateway). Same redirect/
+	// timeout hardening as PushClient but no internal-address denylist: the
+	// gateway URL is trusted config and a gateway legitimately runs on an
+	// internal address. Overridable in tests to point at a fake gateway.
+	GatewayClient *http.Client
 	// VAPIDPublicKey/VAPIDPrivateKey are this server's one push-signing
 	// keypair (RFC 8292), set by main.go after store.InitVAPIDKeys.
 	VAPIDPublicKey  string
@@ -47,7 +55,9 @@ type API struct {
 func New(db *sql.DB, cfg *config.Config, authMW *auth.Middleware, logger *slog.Logger) *API {
 	return &API{
 		DB: db, Config: cfg, Auth: authMW, Logger: logger, Now: time.Now,
-		broker: newMessageBroker(), PushClient: http.DefaultClient,
+		broker:        newMessageBroker(),
+		PushClient:    newUnifiedPushClient(),
+		GatewayClient: newGatewayClient(),
 	}
 }
 

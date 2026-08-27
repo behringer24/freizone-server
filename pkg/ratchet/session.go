@@ -36,7 +36,13 @@ type Session struct {
 
 	Ns, Nr, PN uint32
 
-	Skipped map[skippedKey][]byte
+	Skipped map[skippedKey]skippedValue
+
+	// skipSeq is the next insertion sequence handed to a buffered skipped key,
+	// so the aggregate cap can evict oldest-first (see skipMessageKeys). Not
+	// exported: it is internal bookkeeping, reconstructed on load from the
+	// persisted per-entry sequences.
+	skipSeq uint64
 }
 
 func newInitiatorSession(sk, ad []byte, ratchetPriv *ecdh.PrivateKey, remoteSignedPrekeyPub *ecdh.PublicKey) (*Session, error) {
@@ -181,7 +187,7 @@ func (s *Session) decrypt(header Header, ciphertext []byte) ([]byte, error) {
 func (s *Session) clone() *Session {
 	c := *s
 	if s.Skipped != nil {
-		c.Skipped = make(map[skippedKey][]byte, len(s.Skipped))
+		c.Skipped = make(map[skippedKey]skippedValue, len(s.Skipped))
 		for k, v := range s.Skipped {
 			c.Skipped[k] = v
 		}
@@ -209,6 +215,10 @@ type skippedEntryJSON struct {
 	DHPub []byte `json:"dh_pub"`
 	N     uint32 `json:"n"`
 	MK    []byte `json:"mk"`
+	// Seq preserves eviction order across reloads (audit M3). Older sessions
+	// written before this field default to 0, which just makes them all
+	// equally "oldest" until fresh keys are buffered -- harmless.
+	Seq uint64 `json:"seq,omitempty"`
 }
 
 // MarshalJSON implements json.Marshaler.
@@ -229,8 +239,8 @@ func (s *Session) MarshalJSON() ([]byte, error) {
 	if s.DHr != nil {
 		sj.DHrPub = s.DHr.Bytes()
 	}
-	for k, mk := range s.Skipped {
-		sj.Skipped = append(sj.Skipped, skippedEntryJSON{DHPub: []byte(k.dhPub), N: k.n, MK: mk})
+	for k, v := range s.Skipped {
+		sj.Skipped = append(sj.Skipped, skippedEntryJSON{DHPub: []byte(k.dhPub), N: k.n, MK: v.mk, Seq: v.seq})
 	}
 	return json.Marshal(sj)
 }
@@ -267,9 +277,12 @@ func (s *Session) UnmarshalJSON(data []byte) error {
 	}
 
 	if len(sj.Skipped) > 0 {
-		s.Skipped = make(map[skippedKey][]byte, len(sj.Skipped))
+		s.Skipped = make(map[skippedKey]skippedValue, len(sj.Skipped))
 		for _, e := range sj.Skipped {
-			s.Skipped[skippedKey{dhPub: string(e.DHPub), n: e.N}] = e.MK
+			s.Skipped[skippedKey{dhPub: string(e.DHPub), n: e.N}] = skippedValue{mk: e.MK, seq: e.Seq}
+			if e.Seq >= s.skipSeq {
+				s.skipSeq = e.Seq + 1
+			}
 		}
 	}
 	return nil

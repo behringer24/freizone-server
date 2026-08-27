@@ -124,6 +124,22 @@ func (a *API) storeUploadedBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Whole-server disk cap (audit M2): if the aggregate is already at or over
+	// the ceiling, refuse before reading a single body byte. 0 disables it.
+	// The exact-fit decision at the boundary is made authoritatively in the
+	// write transaction below, against the real stored size.
+	if a.Config.MaxBlobBytesTotal > 0 {
+		total, err := store.TotalBlobBytes(a.DB)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+			return
+		}
+		if total >= a.Config.MaxBlobBytesTotal {
+			writeError(w, http.StatusInsufficientStorage, "storage_full", "server blob storage is full")
+			return
+		}
+	}
+
 	digest, ok := parseBlobDigest(w, r)
 	if !ok {
 		return
@@ -219,6 +235,13 @@ func (a *API) storeUploadedBlob(w http.ResponseWriter, r *http.Request) {
 		// The file is already on disk; without rows it is unreachable, so
 		// drop it rather than leave it for the orphan sweep.
 		_ = a.Blobs.Remove(blobID)
+		// A full server is a whole-upload condition the sender cannot work
+		// around by dropping a recipient -- answer 507, not a per-recipient
+		// outcome, and not a 500.
+		if errors.Is(err, errBlobStorageFull) {
+			writeError(w, http.StatusInsufficientStorage, "storage_full", "server blob storage is full")
+			return
+		}
 		if a.Logger != nil {
 			a.Logger.Warn("blob: recording upload failed", "error", err, "blob_id", blobID)
 		}
@@ -345,17 +368,35 @@ func (a *API) checkBlobRecipient(deviceID string) (blobRecipientOutcome, int64) 
 	return blobStored, a.Config.MaxBlobBytesPerDevice - totalBytes
 }
 
+// errBlobStorageFull is returned by recordBlobWithQuota when accepting this
+// blob would push the server past its aggregate disk cap
+// (config.MaxBlobBytesTotal, audit M2). Distinct from an internal error so the
+// handler can answer 507 rather than 500.
+var errBlobStorageFull = errors.New("blob: server storage is full")
+
 // recordBlobWithQuota writes the blob and the recipient rows that still fit
-// their per-device quota, in one transaction. The quota re-check happens inside
-// the transaction (see store.CreateBlobWithQuota) to close the TOCTOU window
-// between the pre-flight check and commit. Returns the device ids actually
-// stored and those refused for quota.
+// their per-device quota, in one transaction. Two checks happen inside that
+// transaction so both hold under concurrent uploads (the single-writer
+// connection serializes them): the aggregate server-wide disk cap (audit M2)
+// and the per-device quota re-check (audit H3, see store.CreateBlobWithQuota).
+// Returns the device ids actually stored and those refused for quota, or
+// errBlobStorageFull if the whole upload is refused for the disk cap.
 func (a *API) recordBlobWithQuota(blob store.Blob, candidates []string) (stored, quotaExceeded []string, err error) {
 	tx, err := a.DB.Begin()
 	if err != nil {
 		return nil, nil, err
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op after a successful Commit
+
+	if a.Config.MaxBlobBytesTotal > 0 {
+		total, err := store.TotalBlobBytes(tx)
+		if err != nil {
+			return nil, nil, err
+		}
+		if total+blob.SizeBytes > a.Config.MaxBlobBytesTotal {
+			return nil, nil, errBlobStorageFull
+		}
+	}
 
 	stored, quotaExceeded, err = store.CreateBlobWithQuota(tx, blob, candidates, a.Config.MaxBlobsPerDevice, a.Config.MaxBlobBytesPerDevice)
 	if err != nil {

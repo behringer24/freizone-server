@@ -560,7 +560,7 @@ func TestHandleSendMessageTriggersGatewayPushWhenNoSubscriber(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer fakeGateway.Close()
-	a.PushClient = fakeGateway.Client()
+	a.GatewayClient = fakeGateway.Client()
 	a.Config.PushGatewayURL = fakeGateway.URL
 
 	setTargetBody, _ := json.Marshal(setPushTargetRequest{Platform: strPtr("fcm"), Token: strPtr("fcm-registration-token")})
@@ -598,7 +598,7 @@ func TestHandleSendMessageSkipsGatewayPushWhenGatewayURLUnset(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer fakeGateway.Close()
-	a.PushClient = fakeGateway.Client()
+	a.GatewayClient = fakeGateway.Client()
 	// a.Config.PushGatewayURL intentionally left empty.
 
 	setTargetBody, _ := json.Marshal(setPushTargetRequest{Platform: strPtr("fcm"), Token: strPtr("fcm-registration-token")})
@@ -655,7 +655,7 @@ func TestGatewayGoneDropsDeadPushTarget(t *testing.T) {
 		w.WriteHeader(http.StatusGone)
 	}))
 	defer fakeGateway.Close()
-	a.PushClient = fakeGateway.Client()
+	a.GatewayClient = fakeGateway.Client()
 	a.Config.PushGatewayURL = fakeGateway.URL
 
 	setTargetBody, _ := json.Marshal(setPushTargetRequest{Platform: strPtr("fcm"), Token: strPtr("dead-token")})
@@ -697,7 +697,7 @@ func TestGatewayTransientFailureKeepsPushTarget(t *testing.T) {
 		}
 	}))
 	defer fakeGateway.Close()
-	a.PushClient = fakeGateway.Client()
+	a.GatewayClient = fakeGateway.Client()
 	a.Config.PushGatewayURL = fakeGateway.URL
 
 	setTargetBody, _ := json.Marshal(setPushTargetRequest{Platform: strPtr("fcm"), Token: strPtr("live-token")})
