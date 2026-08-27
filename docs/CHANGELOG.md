@@ -14,6 +14,17 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+### Fixed
+
+* **The Docker build pins an exact Go patch release** (`golang:1.26.7-alpine`)
+  instead of the floating `1.26-alpine` tag. A floating tag is not
+  self-updating: Docker reuses whatever base image is in the local cache unless
+  the caller passes `--pull`, so the build was neither reproducible nor
+  current. Worse, the official Go image sets `GOTOOLCHAIN=local` and so never
+  fetches a newer toolchain on its own — once 0.25.0 raised go.mod's `go` line
+  to 1.26.6, a cached older image failed the build outright. The pin must stay
+  at or above go.mod's `go` line; move the two together.
+
 ## [0.25.0] — 2026-08-27
 
 A security-hardening pass from an internal pre-release audit of the server:

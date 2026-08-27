@@ -1,6 +1,18 @@
 # syntax=docker/dockerfile:1
 
-FROM golang:1.26-alpine AS build
+# Pinned to an exact patch, not the floating 1.26-alpine tag. Two reasons, both
+# learned the hard way on the 0.25.0 update: a floating tag makes the build
+# non-reproducible while *also* not keeping itself current (Docker reuses
+# whatever sits in the local cache unless the caller passes --pull), and the
+# official Go image sets GOTOOLCHAIN=local, so it never fetches a newer
+# toolchain on its own -- a cached image older than go.mod's `go` line fails
+# the build outright rather than adapting.
+#
+# This must stay >= the `go` line in go.mod. Raising that line without raising
+# this one is what breaks the build, so move both together. Bump this on Go
+# patch releases to pick up standard-library security fixes; `govulncheck ./...`
+# reports when that is due.
+FROM golang:1.26.7-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
