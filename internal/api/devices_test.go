@@ -133,6 +133,44 @@ func TestHandleRevokeDevice(t *testing.T) {
 	}
 }
 
+// TestHandleRevokeDeviceRejectsCrossAccount is the regression guard for the
+// cross-account revocation IDOR (security audit H1). An attacker signs a
+// revocation over their OWN account id but the victim's (public) device id,
+// with their own root key -- which satisfies every check the handler makes
+// (path==body device id, body account==signing account, rev.Verify against the
+// attacker's own root key). The account-scoped store UPDATE must still refuse
+// to touch a device that belongs to another account.
+func TestHandleRevokeDeviceRejectsCrossAccount(t *testing.T) {
+	a, db := newTestAPI(t, config.PolicyOpen)
+	victim := registerAccount(t, a)
+	attacker := registerAccount(t, a)
+
+	revokedAt := time.Now().Truncate(time.Second)
+	rev, err := devicecert.SignDeviceRevocation(attacker.accountID, victim.deviceID, revokedAt, attacker.rootPriv)
+	if err != nil {
+		t.Fatalf("SignDeviceRevocation() error = %v", err)
+	}
+	reqBody, _ := json.Marshal(revokeDeviceRequest{
+		AccountID: attacker.accountID,
+		DeviceID:  victim.deviceID,
+		RevokedAt: revokedAt.UTC().Format(time.RFC3339),
+		Signature: b64(rev.Signature),
+	})
+
+	rec := doSignedRequest(t, a.Router(), http.MethodPost, "/v1/devices/"+victim.deviceID+"/revoke", reqBody, attacker.deviceID, attacker.devicePriv)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("cross-account revoke status = %d, want 404, body = %s", rec.Code, rec.Body.String())
+	}
+
+	dev, err := store.GetDevice(db, victim.deviceID)
+	if err != nil {
+		t.Fatalf("GetDevice() error = %v", err)
+	}
+	if dev.Status != store.DeviceStatusActive {
+		t.Errorf("victim device status = %q, want %q (must survive a cross-account revoke)", dev.Status, store.DeviceStatusActive)
+	}
+}
+
 func TestHandleRevokeDeviceMismatchedPathAndBody(t *testing.T) {
 	a, _ := newTestAPI(t, config.PolicyOpen)
 	k := registerAccount(t, a)

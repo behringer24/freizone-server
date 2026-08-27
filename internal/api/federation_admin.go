@@ -10,6 +10,7 @@ import (
 	"net/http"
 
 	"github.com/behringer24/freizone-server/internal/store"
+	"github.com/behringer24/freizone-server/pkg/address"
 )
 
 // handleListFederationBlocklist returns every account currently blocked
@@ -49,8 +50,16 @@ func (a *API) handleBlockFederationSender(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "invalid_request", "account_id is required")
 		return
 	}
+	// Store the canonical id so the exact-match blocklist lookup in
+	// verifyFederatedSender (which normalizes the sender's id first) always
+	// matches, whatever cosmetic form the admin happened to type it in.
+	canonicalAccountID, err := address.Normalize(req.AccountID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "account_id is not a valid address")
+		return
+	}
 
-	if err := store.BlockFederationSender(a.DB, req.AccountID, identity.AccountID, req.Reason, a.Now()); err != nil {
+	if err := store.BlockFederationSender(a.DB, canonicalAccountID, identity.AccountID, req.Reason, a.Now()); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
 		return
 	}
@@ -63,9 +72,17 @@ func (a *API) handleUnblockFederationSender(w http.ResponseWriter, r *http.Reque
 	if _, ok := requireAdmin(w, r); !ok {
 		return
 	}
-	accountID := r.PathValue("account_id")
+	// Normalize to match the canonical form BlockFederationSender stored under
+	// -- an admin unblocking by a differently-spelled id must still hit the
+	// row. An id that cannot normalize was never storable, so it is simply not
+	// blocked.
+	canonicalAccountID, err := address.Normalize(r.PathValue("account_id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "account is not blocked")
+		return
+	}
 
-	if err := store.UnblockFederationSender(a.DB, accountID); err != nil {
+	if err := store.UnblockFederationSender(a.DB, canonicalAccountID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", "account is not blocked")
 			return

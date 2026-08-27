@@ -34,6 +34,96 @@ func blobTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
+// TestCreateBlobWithQuotaRefusesOverByteQuota is the regression guard for the
+// blob-quota TOCTOU (security audit H3). The authoritative re-check inside the
+// transaction must refuse a recipient whose byte quota this blob would exceed,
+// and must not create the blob row when no recipient fits (it would be an
+// unreachable file). This is the mechanism that closes the race: several
+// uploads racing the pre-flight check all reach this re-check serialized by the
+// single-writer transaction.
+func TestCreateBlobWithQuotaRefusesOverByteQuota(t *testing.T) {
+	db := blobTestDB(t)
+	const maxBlobs = 100
+	const maxBytes = 1000
+
+	stored, over, err := CreateBlobWithQuota(db, testBlob("blob1", 800), []string{"device1"}, maxBlobs, maxBytes)
+	if err != nil {
+		t.Fatalf("CreateBlobWithQuota() error = %v", err)
+	}
+	if len(stored) != 1 || len(over) != 0 {
+		t.Fatalf("first upload: stored=%v over=%v, want [device1] / []", stored, over)
+	}
+
+	// device1 now holds 800 of 1000; a 300-byte blob would reach 1100 -> refused.
+	stored, over, err = CreateBlobWithQuota(db, testBlob("blob2", 300), []string{"device1"}, maxBlobs, maxBytes)
+	if err != nil {
+		t.Fatalf("CreateBlobWithQuota() error = %v", err)
+	}
+	if len(stored) != 0 || len(over) != 1 || over[0] != "device1" {
+		t.Errorf("over-quota upload: stored=%v over=%v, want [] / [device1]", stored, over)
+	}
+	// The refused upload leaves no blob row -- the file would be unreachable.
+	exists, err := BlobIDExists(db, "blob2")
+	if err != nil {
+		t.Fatalf("BlobIDExists() error = %v", err)
+	}
+	if exists {
+		t.Error("refused blob2 row exists, want it never created")
+	}
+}
+
+// TestCreateBlobWithQuotaRefusesOverCountQuota checks the count cap is enforced
+// in the same transactional re-check, not just the byte cap.
+func TestCreateBlobWithQuotaRefusesOverCountQuota(t *testing.T) {
+	db := blobTestDB(t)
+	const maxBytes = 1 << 30
+
+	if stored, _, err := CreateBlobWithQuota(db, testBlob("blob1", 1), []string{"device1"}, 1, maxBytes); err != nil || len(stored) != 1 {
+		t.Fatalf("first upload: stored=%v err=%v, want [device1]", stored, err)
+	}
+	stored, over, err := CreateBlobWithQuota(db, testBlob("blob2", 1), []string{"device1"}, 1, maxBytes)
+	if err != nil {
+		t.Fatalf("CreateBlobWithQuota() error = %v", err)
+	}
+	if len(stored) != 0 || len(over) != 1 || over[0] != "device1" {
+		t.Errorf("over-count upload: stored=%v over=%v, want [] / [device1]", stored, over)
+	}
+}
+
+// TestCreateBlobWithQuotaMixedRecipients verifies the re-check is per recipient:
+// a full recipient is refused while a co-recipient with room in the same upload
+// is still stored, and the blob is fetchable only by the one that fit.
+func TestCreateBlobWithQuotaMixedRecipients(t *testing.T) {
+	db := blobTestDB(t)
+	if err := CreateDevice(db, testDevice("acct1", "device2")); err != nil {
+		t.Fatalf("CreateDevice() error = %v", err)
+	}
+	const maxBlobs = 100
+	const maxBytes = 1000
+
+	// Fill device1 to the brim.
+	if _, _, err := CreateBlobWithQuota(db, testBlob("pre", 1000), []string{"device1"}, maxBlobs, maxBytes); err != nil {
+		t.Fatalf("prefill error = %v", err)
+	}
+
+	stored, over, err := CreateBlobWithQuota(db, testBlob("blob1", 500), []string{"device1", "device2"}, maxBlobs, maxBytes)
+	if err != nil {
+		t.Fatalf("CreateBlobWithQuota() error = %v", err)
+	}
+	if len(stored) != 1 || stored[0] != "device2" {
+		t.Errorf("stored = %v, want [device2]", stored)
+	}
+	if len(over) != 1 || over[0] != "device1" {
+		t.Errorf("over = %v, want [device1]", over)
+	}
+	if _, err := GetBlobForDevice(db, "blob1", "device2"); err != nil {
+		t.Errorf("device2 should hold blob1: %v", err)
+	}
+	if _, err := GetBlobForDevice(db, "blob1", "device1"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("device1 must not hold blob1: %v", err)
+	}
+}
+
 func TestCreateAndGetBlob(t *testing.T) {
 	db := blobTestDB(t)
 

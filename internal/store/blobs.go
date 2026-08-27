@@ -63,6 +63,46 @@ func CreateBlob(db DBTX, b Blob, recipientDeviceIDs []string) error {
 	return nil
 }
 
+// CreateBlobWithQuota records an uploaded blob for those of candidateDeviceIDs
+// that still fit their per-device quota, re-checking that quota *inside* db's
+// transaction. It returns the device ids actually stored and those refused for
+// quota (count would reach maxBlobs, or bytes would exceed maxBytesPerDevice).
+//
+// This exists to close a TOCTOU window (security audit H3): the caller does a
+// pre-flight quota check to size the upload, then streams the body -- which can
+// take minutes -- and only then commits. Several uploads racing to the same
+// device could each pass the pre-flight and all commit, blowing past the quota.
+// Re-checking here, under the store's single-writer transaction (which
+// serializes check-and-insert against every other upload), makes the decision
+// authoritative at commit time.
+//
+// If no candidate fits, no blob row is written (a blob row with no recipients
+// is unreachable) and stored is empty -- the caller removes the file it wrote.
+// db must be a transaction.
+func CreateBlobWithQuota(db DBTX, b Blob, candidateDeviceIDs []string, maxBlobs int, maxBytesPerDevice int64) (stored, quotaExceeded []string, err error) {
+	for _, deviceID := range candidateDeviceIDs {
+		count, totalBytes, err := BlobUsage(db, deviceID)
+		if err != nil {
+			return nil, nil, err
+		}
+		// Mirrors the pre-flight test in checkBlobRecipient exactly: a device
+		// at its count cap, or one this blob would push over its byte cap, is
+		// refused. totalBytes+size > limit is the headroom check restated.
+		if count >= maxBlobs || totalBytes+b.SizeBytes > maxBytesPerDevice {
+			quotaExceeded = append(quotaExceeded, deviceID)
+			continue
+		}
+		stored = append(stored, deviceID)
+	}
+	if len(stored) == 0 {
+		return nil, quotaExceeded, nil
+	}
+	if err := CreateBlob(db, b, stored); err != nil {
+		return nil, nil, err
+	}
+	return stored, quotaExceeded, nil
+}
+
 // GetBlobForDevice looks up a blob, but only if it was addressed to
 // recipientDeviceID -- returning ErrNotFound both for "no such blob" and
 // "not yours", so a caller cannot probe which blob ids exist.

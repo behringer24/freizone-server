@@ -122,11 +122,19 @@ func ListDevicesByAccount(db DBTX, accountID string) ([]Device, error) {
 }
 
 // RevokeDevice marks an active device as revoked. It returns ErrNotFound if
-// the device doesn't exist or is already revoked.
-func RevokeDevice(db DBTX, deviceID string, revokedAt time.Time) error {
+// the device doesn't exist, is already revoked, or does not belong to
+// accountID.
+//
+// The accountID scope is load-bearing, not cosmetic: a device revocation is
+// authorized by the account's root key, and device ids are public (listed by
+// GET /v1/accounts/{id}), so without binding the UPDATE to the caller's own
+// account any authenticated account could revoke an arbitrary device belonging
+// to another account and lock it out. The row is only touched when the device
+// id and the account both match.
+func RevokeDevice(db DBTX, accountID, deviceID string, revokedAt time.Time) error {
 	res, err := db.Exec(
-		`UPDATE devices SET status = ?, revoked_at = ? WHERE device_id = ? AND status = ?`,
-		DeviceStatusRevoked, formatTime(revokedAt), deviceID, DeviceStatusActive,
+		`UPDATE devices SET status = ?, revoked_at = ? WHERE device_id = ? AND account_id = ? AND status = ?`,
+		DeviceStatusRevoked, formatTime(revokedAt), deviceID, accountID, DeviceStatusActive,
 	)
 	if err != nil {
 		return fmt.Errorf("store: revoking device: %w", err)

@@ -60,6 +60,18 @@ func (a *API) verifyFederatedSender(w http.ResponseWriter, r *http.Request, clai
 		writeError(w, http.StatusBadRequest, "invalid_request", "sender_account_id does not match sender_root_pub_key")
 		return federatedSender{}, false
 	}
+	// Canonicalize the id before it is used for anything but the certificate
+	// (which is verified against the exact string the sender signed). The
+	// blocklist match below is an exact string compare, so a blocked sender
+	// could otherwise slip past it by re-spelling their id -- hyphens, case,
+	// whitespace -- while address.Verify still accepts it (it normalizes
+	// internally). Verify succeeded, so Normalize cannot fail here; the guard
+	// is defensive.
+	canonicalAccountID, err := address.Normalize(claim.AccountID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "sender_account_id does not match sender_root_pub_key")
+		return federatedSender{}, false
+	}
 
 	senderDevicePub, err := decodeBase64Key(claim.DeviceCert.DevicePubKey, ed25519.PublicKeySize)
 	if err != nil {
@@ -88,7 +100,7 @@ func (a *API) verifyFederatedSender(w http.ResponseWriter, r *http.Request, clai
 		return federatedSender{}, false
 	}
 
-	blocked, err := store.IsFederationBlocked(a.DB, claim.AccountID)
+	blocked, err := store.IsFederationBlocked(a.DB, canonicalAccountID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
 		return federatedSender{}, false
@@ -149,7 +161,7 @@ func (a *API) verifyFederatedSender(w http.ResponseWriter, r *http.Request, clai
 	}
 
 	return federatedSender{
-		AccountID:    claim.AccountID,
+		AccountID:    canonicalAccountID,
 		DeviceID:     claim.DeviceCert.DeviceID,
 		DevicePubKey: senderDevicePub,
 	}, true

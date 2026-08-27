@@ -153,7 +153,12 @@ func (a *API) handleRevokeDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := store.RevokeDevice(a.DB, req.DeviceID, revokedAt); err != nil {
+	// Scope the revocation to the caller's own account (== req.AccountID,
+	// checked above). Device ids are public, so a device-id-only revocation
+	// would let any account revoke another account's devices; binding it to
+	// the authenticated identity is what keeps "a request signed by account A
+	// can never act on account B" true here too.
+	if err := store.RevokeDevice(a.DB, identity.AccountID, req.DeviceID, revokedAt); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", "unknown or already-revoked device")
 			return
