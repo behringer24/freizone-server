@@ -93,9 +93,9 @@ func TestIsStreamedBodyRequestMatchesExactRoute(t *testing.T) {
 		want         bool
 	}{
 		{http.MethodPost, "/v1/blobs", true},
-		{http.MethodPost, "/v1/blobs/extra", false},  // prefix, not exact
-		{http.MethodPost, "/v1/blobs/", false},       // trailing slash is a different path
-		{http.MethodGet, "/v1/blobs", false},         // wrong method
+		{http.MethodPost, "/v1/blobs/extra", false},   // prefix, not exact
+		{http.MethodPost, "/v1/blobs/", false},        // trailing slash is a different path
+		{http.MethodGet, "/v1/blobs", false},          // wrong method
 		{http.MethodPost, "/v1/blobsomething", false}, // prefix-of-string, not a subpath
 		{http.MethodPost, "/v1/messages", false},
 	}
