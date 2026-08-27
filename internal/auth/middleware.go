@@ -30,11 +30,11 @@ type Middleware struct {
 	// nonces are purely ephemeral (5-min TTL) and need not survive a restart.
 	nonces *nonceCache
 	// StreamedBodyPaths are routes whose bodies are too large to buffer for
-	// authentication (the blob upload), written as "METHOD /path/prefix".
-	// On these, and ONLY these, the canonical string's body hash is taken
-	// from the client's Blob-Digest header instead of from the body itself,
-	// so the signature can be checked before reading anything -- see
-	// authenticate.
+	// authentication (the blob upload), written as "METHOD /exact/path" and
+	// matched EXACTLY (see isStreamedBodyRequest, audit L4). On these, and
+	// ONLY these, the canonical string's body hash is taken from the client's
+	// Blob-Digest header instead of from the body itself, so the signature can
+	// be checked before reading anything -- see authenticate.
 	//
 	// Deliberately an explicit allowlist rather than "honour the header
 	// whenever it appears": on a normal route, trusting a claimed digest
@@ -44,8 +44,8 @@ type Middleware struct {
 	// reads it (blobstore.Put does).
 	//
 	// The method is part of the entry because it is specifically the upload
-	// that streams: a GET or DELETE under the same path prefix has no body
-	// and must keep authenticating the ordinary way.
+	// that streams: a GET or DELETE on the same path has no body and must
+	// keep authenticating the ordinary way.
 	StreamedBodyPaths []string
 }
 
@@ -179,17 +179,26 @@ func (m *Middleware) authenticate(r *http.Request) (Identity, error) {
 
 // isStreamedBodyRequest reports whether r is one of the routes whose body is
 // authenticated by digest rather than by reading it (see StreamedBodyPaths).
-// Entries are "METHOD /path/prefix"; an entry without a method matches any.
+// Entries are "METHOD /exact/path"; an entry without a method matches any.
+//
+// The path is matched EXACTLY, not by prefix (audit L4). Streamed-body routes
+// skip reading and hashing the body, verifying the signature against the
+// client-stated digest instead -- safe only because POST /v1/blobs
+// re-verifies the streamed bytes against that digest itself. A prefix match
+// would silently extend that treatment to any future POST /v1/blobs/... route
+// registered behind Require; if such a handler did not re-verify, its body
+// would be effectively unsigned (forgeable). Exact matching means a new route
+// is authenticated normally until it is deliberately added here.
 func (m *Middleware) isStreamedBodyRequest(r *http.Request) bool {
 	for _, entry := range m.StreamedBodyPaths {
-		method, prefix, hasMethod := strings.Cut(entry, " ")
+		method, path, hasMethod := strings.Cut(entry, " ")
 		if !hasMethod {
-			if strings.HasPrefix(r.URL.Path, entry) {
+			if r.URL.Path == entry {
 				return true
 			}
 			continue
 		}
-		if r.Method == method && strings.HasPrefix(r.URL.Path, prefix) {
+		if r.Method == method && r.URL.Path == path {
 			return true
 		}
 	}

@@ -83,6 +83,21 @@ func TestVerifyRejectsMalformedSignature(t *testing.T) {
 	}
 }
 
+// TestVerifyRejectsWrongLengthKeyWithoutPanic guards the defense-in-depth
+// length check (audit L2): ed25519.Verify panics on a non-32-byte public key,
+// so Verify must reject one with an error rather than let it reach the panic.
+func TestVerifyRejectsWrongLengthKeyWithoutPanic(t *testing.T) {
+	_, priv := mustKeyPair(t)
+	ts := time.Unix(1_700_000_000, 0)
+	body := []byte("x")
+	canonical := CanonicalString(http.MethodGet, "/v1/x", "", FormatTimestamp(ts), "nonce", "device1", body)
+	sig := Sign(http.MethodGet, "/v1/x", "", body, "device1", ts, "nonce", priv)
+
+	if err := Verify(canonical, sig, make(ed25519.PublicKey, 10)); err == nil {
+		t.Error("Verify() with a 10-byte public key = nil, want an error (not a panic)")
+	}
+}
+
 func TestParseRequestHeaders(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/devices", strings.NewReader("body"))
 	req.Header.Set(HeaderKeyID, "device1")

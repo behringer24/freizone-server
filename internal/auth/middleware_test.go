@@ -79,6 +79,34 @@ func newSignedRequest(method, path string, body []byte, deviceID string, priv ed
 	return req
 }
 
+// TestIsStreamedBodyRequestMatchesExactRoute is the regression guard for the
+// prefix-vs-exact route matching (audit L4): only the exact "POST /v1/blobs"
+// route may skip body-reading authentication. A sibling path under the same
+// prefix, or another method on the same path, must NOT be treated as streamed
+// -- otherwise a future handler there would authenticate an unread (forgeable)
+// body.
+func TestIsStreamedBodyRequestMatchesExactRoute(t *testing.T) {
+	m := &Middleware{StreamedBodyPaths: []string{"POST /v1/blobs"}}
+
+	cases := []struct {
+		method, path string
+		want         bool
+	}{
+		{http.MethodPost, "/v1/blobs", true},
+		{http.MethodPost, "/v1/blobs/extra", false},  // prefix, not exact
+		{http.MethodPost, "/v1/blobs/", false},       // trailing slash is a different path
+		{http.MethodGet, "/v1/blobs", false},         // wrong method
+		{http.MethodPost, "/v1/blobsomething", false}, // prefix-of-string, not a subpath
+		{http.MethodPost, "/v1/messages", false},
+	}
+	for _, c := range cases {
+		req := httptest.NewRequest(c.method, c.path, nil)
+		if got := m.isStreamedBodyRequest(req); got != c.want {
+			t.Errorf("isStreamedBodyRequest(%s %s) = %v, want %v", c.method, c.path, got, c.want)
+		}
+	}
+}
+
 func TestRequireAcceptsValidRequest(t *testing.T) {
 	db := newTestDB(t)
 	accountID, deviceID, priv := setupAccountAndDevice(t, db, store.DeviceStatusActive)

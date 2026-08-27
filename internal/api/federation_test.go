@@ -395,6 +395,39 @@ func TestFederationBlocklistResistsRespelling(t *testing.T) {
 	}
 }
 
+// TestFederationBlocklistNotLeakedBeforeSignatureVerified is the regression
+// guard for the check-ordering finding (audit L7): the blocklist 403 must not
+// be reachable without a valid per-request signature, or a caller could probe
+// block status unauthenticated. A blocked sender whose request carries a
+// bad signature must get 401 (signature failure), not 403 (blocked).
+func TestFederationBlocklistNotLeakedBeforeSignatureVerified(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+	bob := registerAccount(t, a)
+	alice := newIdentityKeys(t) // foreign sender
+
+	if err := store.BlockFederationSender(a.DB, alice.accountID, "admin", nil, a.Now()); err != nil {
+		t.Fatalf("BlockFederationSender() error = %v", err)
+	}
+
+	// A well-formed body (valid cert + address for alice) but a bogus request
+	// signature. The KeyID is alice's device key and the timestamp is fresh, so
+	// everything up to the request-signature check passes.
+	body := federationRequestBody(t, alice, "fed-l7", bob.deviceID, `{}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/federation/messages", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(httpsig.HeaderKeyID, b64(alice.devicePub))
+	req.Header.Set(httpsig.HeaderTimestamp, httpsig.FormatTimestamp(time.Now()))
+	req.Header.Set(httpsig.HeaderNonce, "l7-nonce")
+	req.Header.Set(httpsig.HeaderSignature, b64(make([]byte, ed25519.SignatureSize))) // valid length, wrong signature
+
+	rec := httptest.NewRecorder()
+	a.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401 (block status must not be revealed before the signature is verified), body = %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestFederationBlocklistAdminEndpoints(t *testing.T) {
 	a, _ := newTestAPI(t, config.PolicyOpen)
 	admin := registerAccount(t, a)

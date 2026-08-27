@@ -39,6 +39,25 @@ func CreateMessage(db DBTX, m Message) error {
 	return nil
 }
 
+// CreateMessageUnderCap enqueues a message only if the recipient device is
+// still below maxQueued queued messages, checking the count and inserting in
+// the same call so the two cannot race. db must be a transaction: with the
+// store's single-writer connection, holding it serializes this
+// count-and-insert against every other enqueue, closing the TOCTOU window that
+// CountPendingMessages-then-CreateMessage otherwise had (audit L1, same class
+// as H3). Returns ErrQueueFull if the cap is already reached, or ErrConflict
+// if MessageID is already in use.
+func CreateMessageUnderCap(db DBTX, m Message, maxQueued int) error {
+	count, err := CountPendingMessages(db, m.RecipientDeviceID)
+	if err != nil {
+		return err
+	}
+	if count >= maxQueued {
+		return ErrQueueFull
+	}
+	return CreateMessage(db, m)
+}
+
 // CountPendingMessages reports how many messages are currently queued for
 // recipientDeviceID -- checked against Config.MaxQueuedMessagesPerDevice
 // before enqueuing another (see internal/api/messages.go's

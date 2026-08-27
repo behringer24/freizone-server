@@ -54,6 +54,9 @@ func (c *DHIdentityCertificate) Verify(devicePubKey ed25519.PublicKey) error {
 	if len(c.Signature) != ed25519.SignatureSize {
 		return fmt.Errorf("devicecert: signature must be %d bytes, got %d", ed25519.SignatureSize, len(c.Signature))
 	}
+	if len(devicePubKey) != ed25519.PublicKeySize {
+		return fmt.Errorf("devicecert: device public key must be %d bytes, got %d", ed25519.PublicKeySize, len(devicePubKey))
+	}
 	if !ed25519.Verify(devicePubKey, buf, c.Signature) {
 		return errors.New("devicecert: dh identity signature verification failed")
 	}
@@ -119,6 +122,9 @@ func (c *SignedPrekeyCertificate) Verify(devicePubKey ed25519.PublicKey) error {
 	}
 	if len(c.Signature) != ed25519.SignatureSize {
 		return fmt.Errorf("devicecert: signature must be %d bytes, got %d", ed25519.SignatureSize, len(c.Signature))
+	}
+	if len(devicePubKey) != ed25519.PublicKeySize {
+		return fmt.Errorf("devicecert: device public key must be %d bytes, got %d", ed25519.PublicKeySize, len(devicePubKey))
 	}
 	if !ed25519.Verify(devicePubKey, buf, c.Signature) {
 		return errors.New("devicecert: signed prekey signature verification failed")
