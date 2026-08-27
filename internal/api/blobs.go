@@ -124,6 +124,22 @@ func (a *API) storeUploadedBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Whole-server disk cap (audit M2): if the aggregate is already at or over
+	// the ceiling, refuse before reading a single body byte. 0 disables it.
+	// The exact-fit decision at the boundary is made authoritatively in the
+	// write transaction below, against the real stored size.
+	if a.Config.MaxBlobBytesTotal > 0 {
+		total, err := store.TotalBlobBytes(a.DB)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+			return
+		}
+		if total >= a.Config.MaxBlobBytesTotal {
+			writeError(w, http.StatusInsufficientStorage, "storage_full", "server blob storage is full")
+			return
+		}
+	}
+
 	digest, ok := parseBlobDigest(w, r)
 	if !ok {
 		return
@@ -196,37 +212,62 @@ func (a *API) storeUploadedBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Now that the size is known, drop the recipients it does not actually
-	// fit -- a per-recipient failure like any other. At least one always
-	// survives: the stream was capped at the largest headroom, so whoever
-	// had it can hold whatever was written. A size that fits nobody was
-	// therefore already refused above, as a 413, without writing the body.
-	stored := make([]string, 0, len(accepted))
-	for _, rcpt := range accepted {
-		if written > rcpt.headroom {
-			outcomes[rcpt.index] = blobQuotaExceeded
-			continue
-		}
-		stored = append(stored, rcpt.deviceID)
-	}
-
 	now := a.Now()
 	expiresAt := now.AddDate(0, 0, a.Config.BlobRetentionDays)
-	// One transaction for the blob and its recipients: a blob row without
-	// them is unreachable, and a recipient row without it references nothing.
-	if err := a.recordBlob(store.Blob{
+
+	// Decide the final recipient set inside the write transaction, re-checking
+	// each device's quota against the now-known stored size. The pre-flight
+	// check above raced the (possibly slow) upload stream: several concurrent
+	// uploads to the same device could each have seen room and all committed,
+	// blowing past the per-device quota. The single-writer transaction
+	// serializes this check-and-insert, so the quota holds. (Security audit H3.)
+	candidates := make([]string, len(accepted))
+	for i, rcpt := range accepted {
+		candidates[i] = rcpt.deviceID
+	}
+	storedIDs, quotaExceeded, err := a.recordBlobWithQuota(store.Blob{
 		BlobID:    blobID,
 		SizeBytes: written,
 		CreatedAt: now,
 		ExpiresAt: expiresAt,
-	}, stored); err != nil {
+	}, candidates)
+	if err != nil {
 		// The file is already on disk; without rows it is unreachable, so
 		// drop it rather than leave it for the orphan sweep.
 		_ = a.Blobs.Remove(blobID)
+		// A full server is a whole-upload condition the sender cannot work
+		// around by dropping a recipient -- answer 507, not a per-recipient
+		// outcome, and not a 500.
+		if errors.Is(err, errBlobStorageFull) {
+			writeError(w, http.StatusInsufficientStorage, "storage_full", "server blob storage is full")
+			return
+		}
 		if a.Logger != nil {
 			a.Logger.Warn("blob: recording upload failed", "error", err, "blob_id", blobID)
 		}
 		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+		return
+	}
+
+	// Reflect the transaction's authoritative decision in the per-recipient
+	// outcomes: whoever no longer fit is a per-recipient quota failure, exactly
+	// as the stale-headroom filter used to report but now race-free.
+	overQuota := make(map[string]struct{}, len(quotaExceeded))
+	for _, id := range quotaExceeded {
+		overQuota[id] = struct{}{}
+	}
+	for _, rcpt := range accepted {
+		if _, over := overQuota[rcpt.deviceID]; over {
+			outcomes[rcpt.index] = blobQuotaExceeded
+		}
+	}
+
+	// Nothing fit after the re-check: the file has no recipient rows and is
+	// unreachable, so drop it and report the per-recipient failures (a single
+	// recipient still surfaces its 429, as before).
+	if len(storedIDs) == 0 {
+		_ = a.Blobs.Remove(blobID)
+		a.writeBlobUploadFailure(w, single, recipients, outcomes)
 		return
 	}
 
@@ -327,18 +368,44 @@ func (a *API) checkBlobRecipient(deviceID string) (blobRecipientOutcome, int64) 
 	return blobStored, a.Config.MaxBlobBytesPerDevice - totalBytes
 }
 
-// recordBlob writes the blob and its recipient rows in one transaction.
-func (a *API) recordBlob(blob store.Blob, recipients []string) error {
+// errBlobStorageFull is returned by recordBlobWithQuota when accepting this
+// blob would push the server past its aggregate disk cap
+// (config.MaxBlobBytesTotal, audit M2). Distinct from an internal error so the
+// handler can answer 507 rather than 500.
+var errBlobStorageFull = errors.New("blob: server storage is full")
+
+// recordBlobWithQuota writes the blob and the recipient rows that still fit
+// their per-device quota, in one transaction. Two checks happen inside that
+// transaction so both hold under concurrent uploads (the single-writer
+// connection serializes them): the aggregate server-wide disk cap (audit M2)
+// and the per-device quota re-check (audit H3, see store.CreateBlobWithQuota).
+// Returns the device ids actually stored and those refused for quota, or
+// errBlobStorageFull if the whole upload is refused for the disk cap.
+func (a *API) recordBlobWithQuota(blob store.Blob, candidates []string) (stored, quotaExceeded []string, err error) {
 	tx, err := a.DB.Begin()
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op after a successful Commit
 
-	if err := store.CreateBlob(tx, blob, recipients); err != nil {
-		return err
+	if a.Config.MaxBlobBytesTotal > 0 {
+		total, err := store.TotalBlobBytes(tx)
+		if err != nil {
+			return nil, nil, err
+		}
+		if total+blob.SizeBytes > a.Config.MaxBlobBytesTotal {
+			return nil, nil, errBlobStorageFull
+		}
 	}
-	return tx.Commit()
+
+	stored, quotaExceeded, err = store.CreateBlobWithQuota(tx, blob, candidates, a.Config.MaxBlobsPerDevice, a.Config.MaxBlobBytesPerDevice)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, nil, err
+	}
+	return stored, quotaExceeded, nil
 }
 
 // blobRecipientResults pairs each named recipient with its outcome, in the

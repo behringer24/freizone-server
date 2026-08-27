@@ -16,6 +16,31 @@ func mustRootKey(t *testing.T, seed byte) (ed25519.PublicKey, ed25519.PrivateKey
 	return priv.Public().(ed25519.PublicKey), priv
 }
 
+// TestVerifyRejectsWrongLengthRootKeyWithoutPanic guards the defense-in-depth
+// length check (audit L2): a non-32-byte verifier key must be a returned error,
+// not an ed25519.Verify panic.
+func TestVerifyRejectsWrongLengthRootKeyWithoutPanic(t *testing.T) {
+	_, rootPriv := mustRootKey(t, 1)
+	devicePub, _, _ := ed25519.GenerateKey(nil)
+	deviceID, _ := NewDeviceID()
+
+	cert, err := SignDeviceCertificate("account123", deviceID, devicePub, time.Now(), rootPriv)
+	if err != nil {
+		t.Fatalf("SignDeviceCertificate() error = %v", err)
+	}
+	if err := cert.Verify(make(ed25519.PublicKey, 10)); err == nil {
+		t.Error("DeviceCertificate.Verify() with a 10-byte root key = nil, want an error (not a panic)")
+	}
+
+	rev, err := SignDeviceRevocation("account123", deviceID, time.Now(), rootPriv)
+	if err != nil {
+		t.Fatalf("SignDeviceRevocation() error = %v", err)
+	}
+	if err := rev.Verify(make(ed25519.PublicKey, 10)); err == nil {
+		t.Error("DeviceRevocation.Verify() with a 10-byte root key = nil, want an error (not a panic)")
+	}
+}
+
 func TestNewDeviceIDFormat(t *testing.T) {
 	id, err := NewDeviceID()
 	if err != nil {

@@ -46,6 +46,44 @@ func TestCreateAndListPendingMessages(t *testing.T) {
 	}
 }
 
+// TestCreateMessageUnderCap is the regression guard for the message-queue cap
+// TOCTOU (audit L1): the atomic count-and-insert stores while below the cap,
+// refuses with ErrQueueFull at the cap without inserting, and still reports
+// ErrConflict for a duplicate id.
+func TestCreateMessageUnderCap(t *testing.T) {
+	db := newTestDB(t)
+	mustCreateAccount(t, db, "acct1")
+	if err := CreateDevice(db, testDevice("acct1", "device1")); err != nil {
+		t.Fatalf("CreateDevice() error = %v", err)
+	}
+
+	const maxQueued = 2
+	if err := CreateMessageUnderCap(db, testMessage("m1", "device1"), maxQueued); err != nil {
+		t.Fatalf("first CreateMessageUnderCap() error = %v", err)
+	}
+	if err := CreateMessageUnderCap(db, testMessage("m2", "device1"), maxQueued); err != nil {
+		t.Fatalf("second CreateMessageUnderCap() error = %v", err)
+	}
+
+	// At the cap now: a third must be refused, and must not be inserted.
+	if err := CreateMessageUnderCap(db, testMessage("m3", "device1"), maxQueued); !errors.Is(err, ErrQueueFull) {
+		t.Errorf("third CreateMessageUnderCap() error = %v, want ErrQueueFull", err)
+	}
+	count, err := CountPendingMessages(db, "device1")
+	if err != nil {
+		t.Fatalf("CountPendingMessages() error = %v", err)
+	}
+	if count != maxQueued {
+		t.Errorf("queued = %d, want %d (the refused message must not have been stored)", count, maxQueued)
+	}
+
+	// A duplicate id (while below a higher cap) still surfaces as ErrConflict,
+	// not silently as room.
+	if err := CreateMessageUnderCap(db, testMessage("m1", "device1"), 10); !errors.Is(err, ErrConflict) {
+		t.Errorf("duplicate CreateMessageUnderCap() error = %v, want ErrConflict", err)
+	}
+}
+
 func TestCountPendingMessages(t *testing.T) {
 	db := newTestDB(t)
 	mustCreateAccount(t, db, "acct1")

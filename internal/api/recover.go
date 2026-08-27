@@ -154,7 +154,7 @@ func (a *API) handleRecoverAccount(w http.ResponseWriter, r *http.Request) {
 		if d.DeviceID == req.DeviceID || d.Status != store.DeviceStatusActive {
 			continue
 		}
-		if err := store.RevokeDevice(tx, d.DeviceID, now); err != nil && !errors.Is(err, store.ErrNotFound) {
+		if err := store.RevokeDevice(tx, account.ID, d.DeviceID, now); err != nil && !errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusInternalServerError, "internal", "internal server error")
 			return
 		}

@@ -129,3 +129,61 @@ func TestMigration0013CarriesExistingBlobsToTheirRecipients(t *testing.T) {
 		t.Error("a migrated claim survived the removal of its device")
 	}
 }
+
+// TestMigration0015UpgradesPopulatedSetupTokens exercises 0015's rebuild on the
+// real upgrade path (audit L3): a database that already has a *claimed* setup
+// token row -- the bootstrap admin's -- must carry that row across the table
+// rebuild intact, and afterwards deleting the claimant must succeed with the
+// reference cleared to NULL (the whole point of the migration). A fresh-install
+// test can't catch a rebuild that drops or mangles existing data.
+func TestMigration0015UpgradesPopulatedSetupTokens(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer db.Close()
+
+	// Stand the DB up in its pre-0015 shape and populate a claimed token.
+	migrateUpTo(t, db, 14)
+	token, created, err := InitSetupToken(db, time.Now())
+	if err != nil || !created {
+		t.Fatalf("InitSetupToken() = %q, created=%v, err=%v", token, created, err)
+	}
+	mustCreateAccount(t, db, "admin")
+	if err := ClaimSetupToken(db, token, "admin", time.Now()); err != nil {
+		t.Fatalf("ClaimSetupToken() error = %v", err)
+	}
+
+	// Apply 0015 (the rebuild) on top of the populated table.
+	if err := Migrate(db); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+
+	// The claimed row survived the rebuild with its data intact.
+	claimed, err := SetupTokenClaimed(db)
+	if err != nil {
+		t.Fatalf("SetupTokenClaimed() error = %v", err)
+	}
+	if !claimed {
+		t.Fatal("setup token lost its claimed state across the rebuild")
+	}
+	var claimant sql.NullString
+	if err := db.QueryRow(`SELECT used_by_account_id FROM setup_tokens WHERE id = 1`).Scan(&claimant); err != nil {
+		t.Fatalf("querying setup_tokens after migrate: %v", err)
+	}
+	if !claimant.Valid || claimant.String != "admin" {
+		t.Errorf("used_by_account_id = %v after rebuild, want \"admin\"", claimant)
+	}
+
+	// And the new ON DELETE SET NULL behaviour holds on the upgraded DB.
+	if err := DeleteAccount(db, "admin"); err != nil {
+		t.Fatalf("DeleteAccount() on upgraded DB error = %v (0015's FK clause did not take)", err)
+	}
+	if err := db.QueryRow(`SELECT used_by_account_id FROM setup_tokens WHERE id = 1`).Scan(&claimant); err != nil {
+		t.Fatalf("re-querying setup_tokens: %v", err)
+	}
+	if claimant.Valid {
+		t.Errorf("used_by_account_id = %q after claimant delete, want NULL", claimant.String)
+	}
+}

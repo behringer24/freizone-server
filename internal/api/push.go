@@ -152,7 +152,7 @@ func (a *API) notifyPushViaGateway(deviceID string, target store.PushTarget) {
 	req.Header.Set(httpsig.HeaderNonce, nonce)
 	req.Header.Set(httpsig.HeaderSignature, sig)
 
-	resp, err := a.PushClient.Do(req)
+	resp, err := a.GatewayClient.Do(req)
 	if err != nil {
 		if a.Logger != nil {
 			a.Logger.Debug("push: gateway request failed", "error", err)

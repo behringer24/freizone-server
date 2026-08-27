@@ -24,4 +24,7 @@ var (
 	// ErrInviteExpired is returned by ConsumeInviteCode for a code past its
 	// expiry time.
 	ErrInviteExpired = errors.New("store: invite code expired")
+	// ErrQueueFull is returned by CreateMessageUnderCap when the recipient
+	// device already holds the maximum number of queued messages.
+	ErrQueueFull = errors.New("store: recipient message queue is full")
 )

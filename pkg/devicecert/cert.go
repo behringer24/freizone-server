@@ -66,6 +66,9 @@ func (c *DeviceCertificate) Verify(rootPubKey ed25519.PublicKey) error {
 	if len(c.Signature) != ed25519.SignatureSize {
 		return fmt.Errorf("devicecert: signature must be %d bytes, got %d", ed25519.SignatureSize, len(c.Signature))
 	}
+	if len(rootPubKey) != ed25519.PublicKeySize {
+		return fmt.Errorf("devicecert: root public key must be %d bytes, got %d", ed25519.PublicKeySize, len(rootPubKey))
+	}
 	if !ed25519.Verify(rootPubKey, buf, c.Signature) {
 		return errors.New("devicecert: signature verification failed")
 	}
@@ -123,6 +126,9 @@ func (r *DeviceRevocation) Verify(rootPubKey ed25519.PublicKey) error {
 	}
 	if len(r.Signature) != ed25519.SignatureSize {
 		return fmt.Errorf("devicecert: signature must be %d bytes, got %d", ed25519.SignatureSize, len(r.Signature))
+	}
+	if len(rootPubKey) != ed25519.PublicKeySize {
+		return fmt.Errorf("devicecert: root public key must be %d bytes, got %d", ed25519.PublicKeySize, len(rootPubKey))
 	}
 	if !ed25519.Verify(rootPubKey, buf, r.Signature) {
 		return errors.New("devicecert: revocation signature verification failed")

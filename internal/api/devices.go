@@ -153,7 +153,12 @@ func (a *API) handleRevokeDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := store.RevokeDevice(a.DB, req.DeviceID, revokedAt); err != nil {
+	// Scope the revocation to the caller's own account (== req.AccountID,
+	// checked above). Device ids are public, so a device-id-only revocation
+	// would let any account revoke another account's devices; binding it to
+	// the authenticated identity is what keeps "a request signed by account A
+	// can never act on account B" true here too.
+	if err := store.RevokeDevice(a.DB, identity.AccountID, req.DeviceID, revokedAt); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", "unknown or already-revoked device")
 			return
@@ -170,12 +175,13 @@ func (a *API) handleRevokeDevice(w http.ResponseWriter, r *http.Request) {
 // push section. Only a device can manage its own subscription.
 //
 // The server later makes outbound requests to whatever endpoint URL is
-// registered here, which is a minor SSRF surface (a malicious device
-// could point it at an internal address); requiring https strips the
-// cheapest attack (plain-HTTP internal services) without building out
-// full IP-allowlist/DNS-rebinding defenses, which don't fit this
-// project's scale -- the residual risk is accepted, same as the
-// unauthenticated prekey-bundle claim endpoint.
+// registered here, which is an SSRF surface (a malicious device could
+// point it at an internal address). Two layers guard it: this handler
+// requires an https URL, and the client that actually sends the wake
+// (newUnifiedPushClient, see pushclient.go) refuses redirects and refuses
+// to connect to any resolved loopback/link-local/private/ULA/unspecified/
+// multicast address -- so neither a direct internal endpoint nor a public
+// endpoint that 302-redirects to one gets through (security audit M1).
 func (a *API) handleSetPushEndpoint(w http.ResponseWriter, r *http.Request) {
 	identity, ok := auth.IdentityFromContext(r.Context())
 	if !ok {

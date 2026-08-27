@@ -116,6 +116,13 @@ func Verify(canonical string, signatureB64 string, pubKey ed25519.PublicKey) err
 	if len(sig) != ed25519.SignatureSize {
 		return fmt.Errorf("auth: signature must be %d bytes, got %d", ed25519.SignatureSize, len(sig))
 	}
+	// ed25519.Verify panics on a wrong-length public key. Every current caller
+	// already hands it a validated 32-byte key, so this never fires today --
+	// but a future caller that doesn't must get an error, not a panic that a
+	// withRecover would turn into a 500 (defense-in-depth, audit L2).
+	if len(pubKey) != ed25519.PublicKeySize {
+		return fmt.Errorf("auth: public key must be %d bytes, got %d", ed25519.PublicKeySize, len(pubKey))
+	}
 	if !ed25519.Verify(pubKey, []byte(canonical), sig) {
 		return errors.New("auth: signature verification failed")
 	}

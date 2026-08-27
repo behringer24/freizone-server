@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
 	"strings"
 	"testing"
@@ -8,6 +9,37 @@ import (
 
 	"github.com/behringer24/freizone-server/pkg/humancode"
 )
+
+// TestDeleteAccountClearsSetupTokenClaimant is the regression guard for the
+// undeletable-bootstrap-admin bug (audit L3): the setup_tokens FK on the
+// claimant account must SET NULL on delete, not block it. Before migration
+// 0015 this DeleteAccount failed the foreign-key constraint.
+func TestDeleteAccountClearsSetupTokenClaimant(t *testing.T) {
+	db := newTestDB(t)
+
+	token, created, err := InitSetupToken(db, time.Now())
+	if err != nil || !created {
+		t.Fatalf("InitSetupToken() = %q, created=%v, err=%v", token, created, err)
+	}
+	mustCreateAccount(t, db, "admin")
+	if err := ClaimSetupToken(db, token, "admin", time.Now()); err != nil {
+		t.Fatalf("ClaimSetupToken() error = %v", err)
+	}
+
+	// The claimant account must be deletable despite the setup_tokens reference.
+	if err := DeleteAccount(db, "admin"); err != nil {
+		t.Fatalf("DeleteAccount() error = %v (setup_tokens FK must not block it)", err)
+	}
+
+	// The historical token row survives, with the claimant cleared to NULL.
+	var claimant sql.NullString
+	if err := db.QueryRow(`SELECT used_by_account_id FROM setup_tokens WHERE id = 1`).Scan(&claimant); err != nil {
+		t.Fatalf("querying setup_tokens after delete: %v", err)
+	}
+	if claimant.Valid {
+		t.Errorf("used_by_account_id = %q after claimant deleted, want NULL", claimant.String)
+	}
+}
 
 func TestInitSetupTokenGeneratesOnce(t *testing.T) {
 	db := newTestDB(t)

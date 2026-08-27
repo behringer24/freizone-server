@@ -100,7 +100,7 @@ func TestRevokeDevice(t *testing.T) {
 		t.Fatalf("CreateDevice() error = %v", err)
 	}
 
-	if err := RevokeDevice(db, "device1", time.Now()); err != nil {
+	if err := RevokeDevice(db, "acct1", "device1", time.Now()); err != nil {
 		t.Fatalf("RevokeDevice() error = %v", err)
 	}
 
@@ -123,15 +123,43 @@ func TestRevokeDeviceNotFoundOrAlreadyRevoked(t *testing.T) {
 		t.Fatalf("CreateDevice() error = %v", err)
 	}
 
-	if err := RevokeDevice(db, "does-not-exist", time.Now()); !errors.Is(err, ErrNotFound) {
+	if err := RevokeDevice(db, "acct1", "does-not-exist", time.Now()); !errors.Is(err, ErrNotFound) {
 		t.Errorf("RevokeDevice() on unknown device error = %v, want ErrNotFound", err)
 	}
 
-	if err := RevokeDevice(db, "device1", time.Now()); err != nil {
+	if err := RevokeDevice(db, "acct1", "device1", time.Now()); err != nil {
 		t.Fatalf("first RevokeDevice() error = %v", err)
 	}
-	if err := RevokeDevice(db, "device1", time.Now()); !errors.Is(err, ErrNotFound) {
+	if err := RevokeDevice(db, "acct1", "device1", time.Now()); !errors.Is(err, ErrNotFound) {
 		t.Errorf("RevokeDevice() on already-revoked device error = %v, want ErrNotFound", err)
+	}
+}
+
+// TestRevokeDeviceWrongAccount is the store-level regression guard for the
+// cross-account revocation IDOR (security audit H1): a revocation naming a
+// different account than the device belongs to must not touch the row, even
+// though the device id itself is valid.
+func TestRevokeDeviceWrongAccount(t *testing.T) {
+	db := newTestDB(t)
+	mustCreateAccount(t, db, "victim")
+	mustCreateAccount(t, db, "attacker")
+	if err := CreateDevice(db, testDevice("victim", "victimdev")); err != nil {
+		t.Fatalf("CreateDevice() error = %v", err)
+	}
+
+	// The attacker names the victim's (valid, public) device id but their own
+	// account id -- which is exactly what the handler passes after verifying
+	// the revocation against the attacker's own root key.
+	if err := RevokeDevice(db, "attacker", "victimdev", time.Now()); !errors.Is(err, ErrNotFound) {
+		t.Errorf("RevokeDevice() across accounts error = %v, want ErrNotFound", err)
+	}
+
+	got, err := GetDevice(db, "victimdev")
+	if err != nil {
+		t.Fatalf("GetDevice() error = %v", err)
+	}
+	if got.Status != DeviceStatusActive {
+		t.Errorf("victim device Status = %q, want %q (must survive a cross-account revoke)", got.Status, DeviceStatusActive)
 	}
 }
 

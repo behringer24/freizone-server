@@ -11,6 +11,8 @@ import (
 
 	"github.com/behringer24/freizone-server/internal/config"
 	"github.com/behringer24/freizone-server/internal/store"
+	"github.com/behringer24/freizone-server/pkg/address"
+	"github.com/behringer24/freizone-server/pkg/devicecert"
 	"github.com/behringer24/freizone-server/pkg/httpsig"
 )
 
@@ -185,7 +187,7 @@ func TestHandleReceiveFederatedMessageInactiveRecipientDevice(t *testing.T) {
 	bob := registerAccount(t, a)
 	alice := newIdentityKeys(t)
 
-	if err := store.RevokeDevice(db, bob.deviceID, time.Now()); err != nil {
+	if err := store.RevokeDevice(db, bob.accountID, bob.deviceID, time.Now()); err != nil {
 		t.Fatalf("RevokeDevice() error = %v", err)
 	}
 
@@ -327,6 +329,102 @@ func TestHandleReceiveFederatedMessageDisabledBySetting(t *testing.T) {
 		federationRequestBody(t, alice, "fed-disabled-server", bob.deviceID, `{}`), alice)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestFederationBlocklistResistsRespelling is the regression guard for the
+// blocklist-evasion finding (security audit H2). The blocklist is an exact
+// string match, but address.Verify accepts any cosmetic spelling of an id.
+// Both the block (admin handler) and the check (verifyFederatedSender) must
+// normalize to the canonical form, so a block written in one spelling still
+// catches a delivery made in another.
+func TestFederationBlocklistResistsRespelling(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+	admin := registerAccount(t, a)
+	if err := store.SetAccountRole(a.DB, admin.accountID, store.RoleAdmin); err != nil {
+		t.Fatalf("SetAccountRole() error = %v", err)
+	}
+	bob := registerAccount(t, a)
+	alice := newIdentityKeys(t) // foreign sender, never registered here
+
+	// Admin blocks alice using the hyphenated DISPLAY form of her id.
+	blockBody, err := json.Marshal(blockFederationSenderRequest{AccountID: address.FormatForDisplay(alice.accountID)})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	blockRec := doSignedRequest(t, a.Router(), http.MethodPost, "/v1/admin/federation-blocklist", blockBody, admin.deviceID, admin.devicePriv)
+	if blockRec.Code != http.StatusOK {
+		t.Fatalf("block status = %d, want 200, body = %s", blockRec.Code, blockRec.Body.String())
+	}
+
+	// Delivery under the CANONICAL id (a different spelling than the block used)
+	// must still be refused.
+	rec := doFederatedSignedRequest(t, a.Router(), "/v1/federation/messages",
+		federationRequestBody(t, alice, "fed-respell-canonical", bob.deviceID, `{}`), alice)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("canonical delivery after display-form block: status = %d, want 403, body = %s", rec.Code, rec.Body.String())
+	}
+
+	// And the reverse: a delivery that re-spells the id (cert signed over the
+	// same re-spelled string, so the chain still verifies) must not dodge the
+	// canonical block either.
+	respelled := address.FormatForDisplay(alice.accountID)
+	cert, err := devicecert.SignDeviceCertificate(respelled, alice.deviceID, alice.devicePub, alice.issuedAt, alice.rootPriv)
+	if err != nil {
+		t.Fatalf("SignDeviceCertificate() error = %v", err)
+	}
+	respellBody, err := json.Marshal(federationMessageRequest{
+		SenderAccountID:  respelled,
+		SenderRootPubKey: b64(alice.rootPub),
+		SenderDeviceCert: federationDeviceCertDTO{
+			DeviceID:     alice.deviceID,
+			DevicePubKey: b64(alice.devicePub),
+			IssuedAt:     alice.issuedAt.UTC().Format(time.RFC3339),
+			Signature:    b64(cert.Signature),
+		},
+		RecipientDeviceID: bob.deviceID,
+		MessageID:         "fed-respell-delivery",
+		Payload:           json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	respellRec := doFederatedSignedRequest(t, a.Router(), "/v1/federation/messages", respellBody, alice)
+	if respellRec.Code != http.StatusForbidden {
+		t.Errorf("re-spelled delivery status = %d, want 403 (blocklist must survive re-spelling), body = %s", respellRec.Code, respellRec.Body.String())
+	}
+}
+
+// TestFederationBlocklistNotLeakedBeforeSignatureVerified is the regression
+// guard for the check-ordering finding (audit L7): the blocklist 403 must not
+// be reachable without a valid per-request signature, or a caller could probe
+// block status unauthenticated. A blocked sender whose request carries a
+// bad signature must get 401 (signature failure), not 403 (blocked).
+func TestFederationBlocklistNotLeakedBeforeSignatureVerified(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+	bob := registerAccount(t, a)
+	alice := newIdentityKeys(t) // foreign sender
+
+	if err := store.BlockFederationSender(a.DB, alice.accountID, "admin", nil, a.Now()); err != nil {
+		t.Fatalf("BlockFederationSender() error = %v", err)
+	}
+
+	// A well-formed body (valid cert + address for alice) but a bogus request
+	// signature. The KeyID is alice's device key and the timestamp is fresh, so
+	// everything up to the request-signature check passes.
+	body := federationRequestBody(t, alice, "fed-l7", bob.deviceID, `{}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/federation/messages", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(httpsig.HeaderKeyID, b64(alice.devicePub))
+	req.Header.Set(httpsig.HeaderTimestamp, httpsig.FormatTimestamp(time.Now()))
+	req.Header.Set(httpsig.HeaderNonce, "l7-nonce")
+	req.Header.Set(httpsig.HeaderSignature, b64(make([]byte, ed25519.SignatureSize))) // valid length, wrong signature
+
+	rec := httptest.NewRecorder()
+	a.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401 (block status must not be revealed before the signature is verified), body = %s", rec.Code, rec.Body.String())
 	}
 }
 

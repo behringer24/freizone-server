@@ -60,6 +60,18 @@ func (a *API) verifyFederatedSender(w http.ResponseWriter, r *http.Request, clai
 		writeError(w, http.StatusBadRequest, "invalid_request", "sender_account_id does not match sender_root_pub_key")
 		return federatedSender{}, false
 	}
+	// Canonicalize the id before it is used for anything but the certificate
+	// (which is verified against the exact string the sender signed). The
+	// blocklist match below is an exact string compare, so a blocked sender
+	// could otherwise slip past it by re-spelling their id -- hyphens, case,
+	// whitespace -- while address.Verify still accepts it (it normalizes
+	// internally). Verify succeeded, so Normalize cannot fail here; the guard
+	// is defensive.
+	canonicalAccountID, err := address.Normalize(claim.AccountID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "sender_account_id does not match sender_root_pub_key")
+		return federatedSender{}, false
+	}
 
 	senderDevicePub, err := decodeBase64Key(claim.DeviceCert.DevicePubKey, ed25519.PublicKeySize)
 	if err != nil {
@@ -83,21 +95,14 @@ func (a *API) verifyFederatedSender(w http.ResponseWriter, r *http.Request, clai
 		IssuedAt:     certIssuedAt,
 		Signature:    certSig,
 	}
-	if err := cert.Verify(senderRootPub); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_certificate", "sender device certificate signature is invalid")
-		return federatedSender{}, false
-	}
 
-	blocked, err := store.IsFederationBlocked(a.DB, claim.AccountID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
-		return federatedSender{}, false
-	}
-	if blocked {
-		writeError(w, http.StatusForbidden, "forbidden", "sender is blocked on this server")
-		return federatedSender{}, false
-	}
-
+	// Order of the remaining checks matters (audit L7): the two Ed25519
+	// verifications below (the certificate and the request signature) are the
+	// expensive part, so the cheap request-header/timestamp checks run first --
+	// a stale or malformed request is rejected without paying for crypto. And
+	// the blocklist check runs only AFTER the request signature is verified, so
+	// an unauthenticated caller cannot probe whether a given account is blocked
+	// here by watching for a 403.
 	headers, err := httpsig.ParseRequestHeaders(r)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "authentication failed")
@@ -122,6 +127,15 @@ func (a *API) verifyFederatedSender(w http.ResponseWriter, r *http.Request, clai
 		return federatedSender{}, false
 	}
 
+	// Certificate signature (Ed25519 #1): the device key is certified under the
+	// account's root key.
+	if err := cert.Verify(senderRootPub); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_certificate", "sender device certificate signature is invalid")
+		return federatedSender{}, false
+	}
+
+	// Request signature (Ed25519 #2): this exact request was signed by that
+	// certified device key.
 	var canonical string
 	if claim.BodyDigest != "" {
 		canonical = httpsig.CanonicalStringWithBodyDigest(
@@ -131,6 +145,18 @@ func (a *API) verifyFederatedSender(w http.ResponseWriter, r *http.Request, clai
 	}
 	if err := httpsig.Verify(canonical, headers.Signature, senderDevicePub); err != nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "authentication failed")
+		return federatedSender{}, false
+	}
+
+	// Only now, with the caller's identity and this request proven, is it safe
+	// to reveal (via a 403) whether the sender is blocked.
+	blocked, err := store.IsFederationBlocked(a.DB, canonicalAccountID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+		return federatedSender{}, false
+	}
+	if blocked {
+		writeError(w, http.StatusForbidden, "forbidden", "sender is blocked on this server")
 		return federatedSender{}, false
 	}
 
@@ -149,7 +175,7 @@ func (a *API) verifyFederatedSender(w http.ResponseWriter, r *http.Request, clai
 	}
 
 	return federatedSender{
-		AccountID:    claim.AccountID,
+		AccountID:    canonicalAccountID,
 		DeviceID:     claim.DeviceCert.DeviceID,
 		DevicePubKey: senderDevicePub,
 	}, true

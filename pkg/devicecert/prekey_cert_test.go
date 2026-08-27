@@ -27,6 +27,31 @@ func mustX25519PubKey(t *testing.T) []byte {
 	return key.PublicKey().Bytes()
 }
 
+// TestPrekeyVerifyRejectsWrongLengthKeyWithoutPanic guards the defense-in-depth
+// length check (audit L2) on both prekey certificate verifiers: a non-32-byte
+// verifier key must be a returned error, not an ed25519.Verify panic.
+func TestPrekeyVerifyRejectsWrongLengthKeyWithoutPanic(t *testing.T) {
+	_, devicePriv := mustDeviceKey(t, 1)
+	deviceID, _ := NewDeviceID()
+	dhPub := mustX25519PubKey(t)
+
+	dhCert, err := SignDHIdentityCertificate("account123", deviceID, dhPub, time.Now(), devicePriv)
+	if err != nil {
+		t.Fatalf("SignDHIdentityCertificate() error = %v", err)
+	}
+	if err := dhCert.Verify(make(ed25519.PublicKey, 10)); err == nil {
+		t.Error("DHIdentityCertificate.Verify() with a 10-byte device key = nil, want an error (not a panic)")
+	}
+
+	spCert, err := SignSignedPrekeyCertificate("account123", deviceID, 1, dhPub, mustX25519PubKey(t), time.Now(), devicePriv)
+	if err != nil {
+		t.Fatalf("SignSignedPrekeyCertificate() error = %v", err)
+	}
+	if err := spCert.Verify(make(ed25519.PublicKey, 10)); err == nil {
+		t.Error("SignedPrekeyCertificate.Verify() with a 10-byte device key = nil, want an error (not a panic)")
+	}
+}
+
 func TestSignAndVerifyDHIdentityCertificate(t *testing.T) {
 	devicePub, devicePriv := mustDeviceKey(t, 1)
 	dhPub := mustX25519PubKey(t)

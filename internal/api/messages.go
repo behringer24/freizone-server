@@ -188,14 +188,6 @@ func (a *API) enqueueMessage(req enqueueRequest) enqueueOutcome {
 		return enqueueUnknownRecipient
 	}
 
-	count, err := store.CountPendingMessages(a.DB, req.RecipientDeviceID)
-	if err != nil {
-		return enqueueInternalError
-	}
-	if count >= a.Config.MaxQueuedMessagesPerDevice {
-		return enqueueQueueFull
-	}
-
 	now := a.Now()
 	msg := store.Message{
 		MessageID:          req.MessageID,
@@ -207,15 +199,37 @@ func (a *API) enqueueMessage(req enqueueRequest) enqueueOutcome {
 		SentAt:             now,
 		ExpiresAt:          now.AddDate(0, 0, a.Config.MessageRetentionDays),
 	}
-	if err := store.CreateMessage(a.DB, msg); err != nil {
-		if errors.Is(err, store.ErrConflict) {
+	// Count-and-insert in one transaction so concurrent enqueues to the same
+	// device cannot both pass the cap check and both insert (audit L1, same
+	// TOCTOU class as H3). The single-writer connection serializes the tx.
+	if err := a.createMessageUnderCap(msg); err != nil {
+		switch {
+		case errors.Is(err, store.ErrQueueFull):
+			return enqueueQueueFull
+		case errors.Is(err, store.ErrConflict):
 			return enqueueDuplicate
+		default:
+			return enqueueInternalError
 		}
-		return enqueueInternalError
 	}
 
 	a.queueAndNotify(msg, recipientDevice)
 	return enqueueQueued
+}
+
+// createMessageUnderCap runs the cap check and the insert in one transaction
+// (see store.CreateMessageUnderCap for why they must not be separate).
+func (a *API) createMessageUnderCap(msg store.Message) error {
+	tx, err := a.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after a successful Commit
+
+	if err := store.CreateMessageUnderCap(tx, msg, a.Config.MaxQueuedMessagesPerDevice); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // checkBatchSize rejects an empty or oversized batch. The cap is a bound on

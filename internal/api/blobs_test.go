@@ -78,6 +78,36 @@ func TestBlobUploadDownloadRoundTrip(t *testing.T) {
 	}
 }
 
+// TestBlobUploadRejectedWhenServerStorageFull is the regression guard for the
+// missing server-wide disk cap (audit M2). With an aggregate ceiling set, an
+// upload that fits is stored, and one that would push the total over the cap is
+// refused with 507 -- exercising both the cheap pre-flight and the
+// authoritative in-transaction check (here the second upload passes the
+// pre-flight but is refused inside the write transaction).
+func TestBlobUploadRejectedWhenServerStorageFull(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+	k := registerAccount(t, a)
+
+	payload := bytes.Repeat([]byte("x"), 4096)
+	// Room for one 4096-byte blob but not two: the first fits, the second
+	// clears the pre-flight (4096 < 6000) yet is refused in the transaction
+	// (4096 + 4096 > 6000).
+	a.Config.MaxBlobBytesTotal = 6000
+
+	uploadBlobOK(t, a, k, payload)
+
+	rec := doBlobUpload(t, a.Router(), "/v1/blobs?recipient_device_id="+k.deviceID, payload, hexDigest(payload), k.deviceID, k.devicePriv)
+	if rec.Code != http.StatusInsufficientStorage {
+		t.Fatalf("over-cap upload status = %d, want 507, body = %s", rec.Code, rec.Body.String())
+	}
+
+	// Once full, a further upload is refused cheaply by the pre-flight too.
+	rec = doBlobUpload(t, a.Router(), "/v1/blobs?recipient_device_id="+k.deviceID, payload, hexDigest(payload), k.deviceID, k.devicePriv)
+	if rec.Code != http.StatusInsufficientStorage {
+		t.Errorf("second over-cap upload status = %d, want 507, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestBlobUploadRejectsBodyThatDoesNotMatchSignedDigest(t *testing.T) {
 	a, _ := newTestAPI(t, config.PolicyOpen)
 	k := registerAccount(t, a)

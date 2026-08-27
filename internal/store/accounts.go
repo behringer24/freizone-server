@@ -206,7 +206,9 @@ func SetAccountStatus(db DBTX, id, status string) error {
 // keys) through its devices to their prekeys and queued messages-as-
 // recipient, and through invite_codes it created (deleted) or used
 // (used_by_account_id cleared) -- see migrations/0005 for the FK clauses
-// that make this safe.
+// that make this safe. The setup_tokens row that recorded this account as the
+// bootstrap claimant likewise has its used_by_account_id cleared rather than
+// blocking the delete (migrations/0015, audit L3).
 func DeleteAccount(db DBTX, id string) error {
 	res, err := db.Exec(`DELETE FROM accounts WHERE id = ?`, id)
 	if err != nil {
