@@ -14,6 +14,69 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+A security-hardening pass from an internal pre-release audit of the server:
+fixes and defensive changes across authentication, federation, the blob
+transport, and the toolchain. Nothing here changes the wire protocol for a
+client that was already behaving — the one new response (`507`) and the one new
+setting are noted below.
+
+### Security
+
+* **Device revocation is scoped to the requesting account.** `POST
+  /v1/devices/{id}/revoke` acted on the device id alone, and device ids are
+  public — so a request signed by one account could revoke another account's
+  device and lock it out. Revocation now only touches a device that belongs to
+  the signing account.
+* **The federation blocklist matches the canonical address form.** A blocked
+  remote sender could slip past the exact-string blocklist by re-spelling their
+  id (hyphens, case, whitespace), which the address check still accepts. Both
+  the block (admin) and the inbound check now normalise first.
+* **Per-device blob and message-queue caps are enforced inside the write
+  transaction.** The count/quota was read and then written non-atomically, so
+  concurrent uploads or sends to one device could each pass the check and all
+  commit, overshooting the cap. The check-and-insert is now one transaction.
+* **Push-wake requests to device-registered endpoints are hardened against
+  SSRF.** The wake client no longer follows redirects and refuses to connect to
+  loopback, link-local (including cloud-metadata), private, or ULA addresses,
+  checked against the resolved IP. The gateway path (operator-configured, often
+  internal) uses a separate client and is unaffected.
+* **The ratchet's skipped-message-key buffer is bounded in aggregate**
+  (`pkg/ratchet`, client-side). The per-run cap did not bound the buffer across
+  a long-lived session, so a peer leaving unfilled gaps could grow it without
+  limit; it now evicts the oldest keys past an aggregate ceiling. The on-disk
+  session format stays backward-compatible.
+* **Signature verification rejects a wrong-length public key** instead of
+  risking a panic (`ed25519.Verify` panics on a non-32-byte key). Defensive — no
+  current caller can trigger it.
+* **The inbound-federation check order was tightened** so a caller cannot probe
+  whether an account is blocked without first presenting a valid request
+  signature, and the cheap timestamp/skew check runs before the expensive
+  signature verifications.
+* **The streamed-body (blob upload) authentication path matches its route
+  exactly** rather than by prefix, so a future `POST /v1/blobs/...` route cannot
+  silently inherit digest-only body authentication.
+* **Added [`SECURITY.md`](../SECURITY.md)** with a private
+  vulnerability-reporting process, so GitHub offers a "Report a vulnerability"
+  flow.
+* **Toolchain bumped to Go 1.26.6**, closing six standard-library advisories
+  that affected 1.26.4; `golang-jwt/jwt/v5` bumped to 5.2.2. Building from
+  source now needs Go 1.26.6+ (the toolchain auto-upgrades via `GOTOOLCHAIN`).
+
+### Added
+
+* **`FREIZONE_MAX_BLOB_BYTES_TOTAL`** — an optional whole-server cap on the
+  combined size of all stored attachment ciphertext (default `0`, disabled). The
+  per-device quotas only bound what one recipient holds; this bounds the total.
+  An upload that would exceed it is refused with `507`.
+
+### Fixed
+
+* **The bootstrap admin account can be deleted.** `setup_tokens` referenced the
+  claiming account with no `ON DELETE` rule, so with foreign keys enforced,
+  deleting the first admin failed the constraint (surfacing as a generic `500`).
+  A migration rebuilds the table with `ON DELETE SET NULL`; the reference now
+  clears on delete, applied automatically on upgrade.
+
 ## [0.24.0] — 2026-08-23
 
 One addition to `pkg/address`, needed by anything that accepts the short address

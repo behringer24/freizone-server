@@ -1717,6 +1717,12 @@ Each recipient is charged the full size, not a share of it: the quota measures
 what that device may still fetch, and charging a fraction would let a sender
 multiply one device's allowance by naming co-recipients.
 
+Separately from the per-recipient quotas, an operator may set a whole-server
+cap on the combined size of all stored blobs (`FREIZONE_MAX_BLOB_BYTES_TOTAL`,
+off by default). Unlike a per-recipient `quota_exceeded`, reaching it rejects
+the **entire** upload with `507` regardless of form — a full disk is not
+something the sender can work around by dropping a recipient.
+
 A `DELETE` removes only the calling device's own claim. The ciphertext is
 removed when the **last** claim goes, so one group member deleting their copy
 cannot take the attachment away from the rest.
@@ -1736,15 +1742,20 @@ device both answer `404`, so the endpoint cannot be used to discover blob ids.
 | `404` | blobs disabled, unknown/inactive recipient device, or unknown/not-yours blob |
 | `413 payload_too_large` | over `FREIZONE_MAX_BLOB_BYTES`, or over every named recipient's remaining quota |
 | `429 blob_quota_exceeded` | recipient device is at its blob count or byte quota |
+| `507 storage_full` | the server-wide blob cap (`FREIZONE_MAX_BLOB_BYTES_TOTAL`, off by default) is reached — refuses the whole upload, both forms |
 
 The `404` and `429` rows are the **single-recipient** answers. With several,
-the same two conditions are reported per recipient inside a `200` instead.
+the same two conditions are reported per recipient inside a `200` instead. The
+`507` is request-level, not per recipient: it applies to both forms alike,
+since a full server has no room for the blob at all.
 
 ### Limits and lifetime
 
 Operator-configurable: `FREIZONE_MAX_BLOB_BYTES` (default 8 MiB),
 `FREIZONE_MAX_BLOB_BYTES_PER_DEVICE` (128 MiB), `FREIZONE_MAX_BLOBS_PER_DEVICE`
-(200), `FREIZONE_MAX_BLOB_RECIPIENTS` (100, matching
+(200), `FREIZONE_MAX_BLOB_BYTES_TOTAL` (a whole-server ceiling on all stored
+blob bytes, default `0` = off — see `507 storage_full` above),
+`FREIZONE_MAX_BLOB_RECIPIENTS` (100, matching
 `FREIZONE_MAX_BATCH_MESSAGES` — the recipients of one upload are the members
 whose message copies the same fan-out then batches to the same server),
 `FREIZONE_BLOB_RETENTION_DAYS` (defaults to the message retention

@@ -11,7 +11,7 @@ This guide assumes no prior experience running a server. If you just want the qu
 - A machine (VPS, home server, Raspberry Pi, ...) that can stay online and is reachable from the internet.
 - A domain name (e.g. `chat.example.org`) with a DNS **A record** (and **AAAA record** if you have an IPv6 address) pointing at that machine's public IP address. A plain domain is enough — no special DNS entries (no SRV, no TXT records) are required.
 - Ports **80** and **443** open and reachable from the internet (used for automatic TLS certificate issuance and for the API itself). If you're behind a home router, this means forwarding those two ports to the machine.
-- Either **Docker**, or a **Go 1.26+** toolchain if you'd rather build from source.
+- Either **Docker**, or a **Go 1.26.6+** toolchain if you'd rather build from source.
 
 If you're just trying this out locally and don't have a domain yet, skip straight to the [local trial run](#local-trial-run-no-domain-needed) below.
 
