@@ -14,6 +14,12 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+## [0.25.1] — 2026-08-27
+
+A build fix for 0.25.0: that release raised the minimum Go version, which the
+floating builder image could not satisfy from cache, so `docker build` failed
+for anyone who had an older base image. No change to the server itself.
+
 ### Fixed
 
 * **The Docker build pins an exact Go patch release** (`golang:1.26.7-alpine`)
