@@ -14,6 +14,8 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+## [0.25.0] — 2026-08-27
+
 A security-hardening pass from an internal pre-release audit of the server:
 fixes and defensive changes across authentication, federation, the blob
 transport, and the toolchain. Nothing here changes the wire protocol for a
