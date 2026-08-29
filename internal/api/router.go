@@ -24,6 +24,10 @@ type API struct {
 	Now func() time.Time
 	// broker fans out newly-queued messages to connected SSE streams.
 	broker *messageBroker
+	// wakes collapses repeated push wakes for the same device into at most
+	// one per Config.PushCoalesceWindow (see wakecoalesce.go). Every wake
+	// goes through it; a window of 0 makes it a pass-through.
+	wakes *wakeCoalescer
 	// PushClient sends push-wake requests to device-registered UnifiedPush
 	// endpoints (see push.go's notifyPush). It is hardened against SSRF
 	// (newUnifiedPushClient: no redirects, hard timeout, internal-address
@@ -53,11 +57,38 @@ type API struct {
 
 // New builds an API with the given dependencies.
 func New(db *sql.DB, cfg *config.Config, authMW *auth.Middleware, logger *slog.Logger) *API {
-	return &API{
+	a := &API{
 		DB: db, Config: cfg, Auth: authMW, Logger: logger, Now: time.Now,
 		broker:        newMessageBroker(),
 		PushClient:    newUnifiedPushClient(),
 		GatewayClient: newGatewayClient(),
+	}
+	// Each emitted wake gets its own goroutine, exactly as wakeDevice used
+	// to start one per call: dispatchWake reads the device and then makes a
+	// network call, and neither belongs on a request path that has already
+	// answered.
+	a.wakes = newWakeCoalescer(cfg.PushCoalesceWindow, func(deviceID string) {
+		go a.dispatchWake(deviceID)
+	})
+	return a
+}
+
+// FlushPendingWakes emits any wake still held by the coalescing window.
+// main.go calls this during shutdown, after the listener has stopped, so a
+// restart does not swallow the notification for messages that arrived in
+// the last window.
+func (a *API) FlushPendingWakes() {
+	if a.wakes != nil {
+		a.wakes.flush()
+	}
+}
+
+// EvictIdleWakeState drops coalescing state for devices whose window has
+// closed. main.go calls this periodically; nothing breaks if it never runs,
+// the map just keeps an entry per device ever woken.
+func (a *API) EvictIdleWakeState() {
+	if a.wakes != nil {
+		a.wakes.evictIdle()
 	}
 }
 
