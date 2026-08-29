@@ -2,9 +2,11 @@ package api
 
 import (
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 )
 
@@ -79,5 +81,73 @@ func TestPushClientsDoNotFollowRedirects(t *testing.T) {
 	}
 	if reachedFinal {
 		t.Error("client followed the redirect to /final; it must not")
+	}
+}
+
+// TestGatewayClientReusesConnectionsAcrossAFanout is the behavioural guard
+// for gatewayMaxIdleConnsPerHost. wakeDevice starts one goroutine per
+// recipient device, so a group message puts a burst of concurrent requests
+// to the same host in flight. With net/http's default of 2 idle connections
+// per host, only two of them survive the burst and every later request
+// re-dials -- each new connection then sitting in TIME_WAIT, which is the
+// binding ceiling on this path.
+//
+// Two bursts are used rather than one: the first necessarily opens fresh
+// connections, and what matters is whether the second can reuse them.
+func TestGatewayClientReusesConnectionsAcrossAFanout(t *testing.T) {
+	const burst = 20
+
+	var mu sync.Mutex
+	conns := map[net.Conn]bool{}
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	srv.Config.ConnState = func(c net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			mu.Lock()
+			conns[c] = true
+			mu.Unlock()
+		}
+	}
+	srv.Start()
+	defer srv.Close()
+
+	client := newGatewayClient()
+	fire := func() {
+		var wg sync.WaitGroup
+		for i := 0; i < burst; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				resp, err := client.Get(srv.URL + "/v1/push/send")
+				if err != nil {
+					return
+				}
+				io.Copy(io.Discard, resp.Body) //nolint:errcheck // draining is what enables reuse
+				resp.Body.Close()
+			}()
+		}
+		wg.Wait()
+	}
+
+	fire()
+	mu.Lock()
+	afterFirst := len(conns)
+	mu.Unlock()
+
+	fire()
+	mu.Lock()
+	afterSecond := len(conns)
+	mu.Unlock()
+
+	// The second burst should be served almost entirely from the pool. A
+	// couple of extra dials are tolerated: how many of the first burst's
+	// connections are idle and drained by the time the second starts is a
+	// scheduling detail. Anything approaching a second full burst means
+	// the pool is capped near the default and the fix is not in effect.
+	if newDials := afterSecond - afterFirst; newDials > burst/4 {
+		t.Errorf("second burst opened %d new connections (first opened %d); "+
+			"with a per-host pool of %d it should reuse nearly all of them",
+			newDials, afterFirst, gatewayMaxIdleConnsPerHost)
 	}
 }
