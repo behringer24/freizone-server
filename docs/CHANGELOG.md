@@ -14,6 +14,16 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+## [0.26.0] — 2026-08-29
+
+A push-load release. A wake says nothing beyond "go sync", so several of them
+to one device in quick succession carry no more information than one — and until
+now every message in a lively group produced its own push to every member. That
+is now collapsed into at most one wake per device per window, and the client that
+carries those wakes to a gateway stopped re-dialling for all but two of them.
+Nothing changes for a client except that it must not assume one wake per message,
+which it never could anyway.
+
 ### Added
 
 * **Push wakes are coalesced per device** (`FREIZONE_PUSH_COALESCE_WINDOW`,
