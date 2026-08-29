@@ -14,6 +14,20 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+### Fixed
+
+* **The push-gateway client keeps a real connection pool.** It had no
+  `Transport` of its own, which meant `http.DefaultTransport` and its
+  `MaxIdleConnsPerHost` of 2. Every gateway request in the process goes to the
+  same single host, and `wakeDevice` starts a goroutine per recipient device,
+  so one group message puts a burst of requests in flight at once — of which
+  all but two got a fresh TCP connection that was closed again immediately and
+  left in `TIME_WAIT`. Over plain `http://` to a sibling container that is the
+  lowest ceiling on this path, bounded by ephemeral ports rather than by any
+  amount of processing power. The pool is now sized for a fan-out. The
+  UnifiedPush client, which spreads over many distributor hosts, gets a
+  smaller explicit per-host figure for the same reason.
+
 ## [0.25.1] — 2026-08-27
 
 A build fix for 0.25.0: that release raised the minimum Go version, which the

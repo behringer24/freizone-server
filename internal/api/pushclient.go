@@ -54,15 +54,35 @@ func newUnifiedPushClient() *http.Client {
 		Timeout:       pushNotifyTimeout,
 		CheckRedirect: noRedirect,
 		Transport: &http.Transport{
-			DialContext:           dialer.DialContext,
-			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          10,
+			DialContext:       dialer.DialContext,
+			ForceAttemptHTTP2: true,
+			// Spread over many distributor hosts, so the total matters
+			// more than the per-host figure -- but the per-host one must
+			// still be set, because it otherwise defaults to 2 and a
+			// distributor that many of this server's devices share would
+			// re-dial for all but two of them.
+			MaxIdleConns:          100,
+			MaxIdleConnsPerHost:   10,
 			IdleConnTimeout:       30 * time.Second,
 			TLSHandshakeTimeout:   pushNotifyTimeout,
 			ExpectContinueTimeout: 1 * time.Second,
 		},
 	}
 }
+
+// gatewayMaxIdleConnsPerHost is how many idle connections to keep to the
+// gateway. Unusually high for a per-host figure because every gateway
+// request in the process goes to that one host, so this is effectively a
+// total, and it has to cover a fan-out rather than a single request:
+// wakeDevice starts a goroutine per recipient device, so one group message
+// can put dozens of requests in flight at once.
+//
+// net/http's default is 2. Everything above that number in a burst gets a
+// fresh TCP connection that is closed again on completion and then sits in
+// TIME_WAIT -- which, over plain http:// to a sibling container, is the
+// lowest ceiling this path has: it is bounded by ephemeral ports rather
+// than by any amount of CPU.
+const gatewayMaxIdleConnsPerHost = 100
 
 // newGatewayClient builds the HTTP client for the operator-configured
 // freizone-gateway (see push.go's notifyPushViaGateway). The gateway URL comes
@@ -71,10 +91,27 @@ func newUnifiedPushClient() *http.Client {
 // so this client keeps the redirect and timeout hardening but NOT the
 // internal-address denylist -- which would otherwise block the operator's own
 // gateway.
+//
+// It does carry its own Transport, which the SSRF-hardened client above got
+// for free and this one previously did without: leaving Transport nil means
+// http.DefaultTransport, whose MaxIdleConnsPerHost is 2. Since every gateway
+// request in the process goes to the same single host, that default made a
+// fan-out re-dial for all but two of its devices -- see
+// gatewayMaxIdleConnsPerHost. Proxy is carried over explicitly, because
+// dropping DefaultTransport also drops its ProxyFromEnvironment.
 func newGatewayClient() *http.Client {
 	return &http.Client{
 		Timeout:       pushNotifyTimeout,
 		CheckRedirect: noRedirect,
+		Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          gatewayMaxIdleConnsPerHost,
+			MaxIdleConnsPerHost:   gatewayMaxIdleConnsPerHost,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   pushNotifyTimeout,
+			ExpectContinueTimeout: 1 * time.Second,
+		},
 	}
 }
 
