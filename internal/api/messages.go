@@ -269,19 +269,48 @@ func (a *API) queueAndNotify(msg store.Message, recipientDevice *store.Device) {
 	}
 }
 
-// wakeDevice dispatches a content-free push wake via whichever mechanism
-// (Web Push, or FCM/APNs via a freizone-gateway) device has registered --
-// a no-op if it has registered neither. Shared by queueAndNotify (a new
-// message arrived) and handleClaimPrekeyBundle (the device's one-time-
-// prekey pool just ran low) -- both are just "go sync" nudges,
-// indistinguishable on the wire (see docs/PROTOCOL.md's push-wake
+// wakeDevice requests a content-free push wake for device. Shared by
+// queueAndNotify (a new message arrived) and handleClaimPrekeyBundle (the
+// device's one-time-prekey pool just ran low) -- both are just "go sync"
+// nudges, indistinguishable on the wire (see docs/PROTOCOL.md's push-wake
 // section), so one wake mechanism serves every reason to wake a device.
+//
+// The request goes through the coalescing window rather than straight out:
+// an idle device is woken immediately, further wakes inside the window are
+// merged into one at its end (see wakecoalesce.go). Because that defers the
+// send, the device is deliberately not carried along -- dispatchWake reads
+// it again at the moment it actually sends.
 func (a *API) wakeDevice(device *store.Device) {
+	a.wakes.wake(device.DeviceID)
+}
+
+// dispatchWake sends one wake via whichever mechanism (Web Push, or
+// FCM/APNs via a freizone-gateway) the device has registered -- a no-op if
+// it has registered neither.
+//
+// It re-reads the device rather than taking one passed in, because a
+// coalesced wake fires up to a window after the message that asked for it,
+// and the registration can have changed in between: dropDeadPushTarget may
+// have cleared a target the gateway reported dead, or the device may have
+// switched mechanisms. Acting on the snapshot would send to an address
+// already known to be gone.
+func (a *API) dispatchWake(deviceID string) {
+	device, err := store.GetDevice(a.DB, deviceID)
+	if err != nil {
+		// Including ErrNotFound: a device deleted between the wake being
+		// queued and it firing simply has nothing to wake. Debug, like
+		// every other failure on this best-effort path.
+		if a.Logger != nil {
+			a.Logger.Debug("push: looking up device to wake failed", "device_id", deviceID, "error", err)
+		}
+		return
+	}
+
 	switch {
 	case device.Push != nil:
-		go a.notifyPush(device.DeviceID, *device.Push)
+		a.notifyPush(device.DeviceID, *device.Push)
 	case device.PushTarget != nil && a.Config.PushGatewayURL != "":
-		go a.notifyPushViaGateway(device.DeviceID, *device.PushTarget)
+		a.notifyPushViaGateway(device.DeviceID, *device.PushTarget)
 	case device.PushTarget != nil:
 		// The device asked to be woken through a gateway, but this server
 		// has none configured (FREIZONE_PUSH_GATEWAY_URL), so the wake is

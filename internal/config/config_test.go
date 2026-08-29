@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func envMap(m map[string]string) func(string) string {
 	return func(k string) string { return m[k] }
@@ -130,5 +133,61 @@ func TestLoadRejectsNonPositiveMessageRetentionDays(t *testing.T) {
 	}
 	if _, err := Load(envMap(map[string]string{envMessageRetentionDays: "-5"})); err == nil {
 		t.Error("expected error for negative message retention days")
+	}
+}
+
+func TestLoadDefaultPushCoalesceWindow(t *testing.T) {
+	cfg, err := Load(envMap(nil))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.PushCoalesceWindow != defaultPushCoalesceWindow {
+		t.Errorf("PushCoalesceWindow = %s, want %s", cfg.PushCoalesceWindow, defaultPushCoalesceWindow)
+	}
+}
+
+func TestLoadExplicitPushCoalesceWindow(t *testing.T) {
+	cfg, err := Load(envMap(map[string]string{envPushCoalesceWindow: "750ms"}))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.PushCoalesceWindow != 750*time.Millisecond {
+		t.Errorf("PushCoalesceWindow = %s, want 750ms", cfg.PushCoalesceWindow)
+	}
+}
+
+// TestLoadPushCoalesceWindowZeroDisables pins the escape hatch: an operator
+// who wants one push per message back must be able to say so.
+func TestLoadPushCoalesceWindowZeroDisables(t *testing.T) {
+	cfg, err := Load(envMap(map[string]string{envPushCoalesceWindow: "0"}))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.PushCoalesceWindow != 0 {
+		t.Errorf("PushCoalesceWindow = %s, want 0", cfg.PushCoalesceWindow)
+	}
+}
+
+func TestLoadRejectsUnparsablePushCoalesceWindow(t *testing.T) {
+	if _, err := Load(envMap(map[string]string{envPushCoalesceWindow: "3"})); err == nil {
+		t.Error("expected an error for a bare number without a unit")
+	}
+	if _, err := Load(envMap(map[string]string{envPushCoalesceWindow: "soon"})); err == nil {
+		t.Error("expected an error for a non-duration value")
+	}
+}
+
+func TestLoadRejectsNegativePushCoalesceWindow(t *testing.T) {
+	if _, err := Load(envMap(map[string]string{envPushCoalesceWindow: "-1s"})); err == nil {
+		t.Error("expected an error for a negative window")
+	}
+}
+
+// TestLoadRejectsOverlongPushCoalesceWindow guards the typo this bound
+// exists for: "3m" parses as readily as "3s" and would silently delay every
+// follow-up notification by three minutes.
+func TestLoadRejectsOverlongPushCoalesceWindow(t *testing.T) {
+	if _, err := Load(envMap(map[string]string{envPushCoalesceWindow: "3m"})); err == nil {
+		t.Error("expected an error for a window beyond the sanity bound")
 	}
 }

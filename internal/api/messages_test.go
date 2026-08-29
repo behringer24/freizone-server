@@ -9,10 +9,12 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -763,3 +765,52 @@ func TestWebPushGoneDropsDeadSubscription(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+// TestPushWakesAreCoalescedOnTheRealPath proves the coalescer is actually
+// wired into the wake path, not just correct in isolation -- five messages
+// in quick succession must not become five gateway calls. The exact
+// leading/trailing semantics are pinned deterministically by the fake-clock
+// tests in wakecoalesce_test.go; this one deliberately asserts only the
+// coarse property, so it cannot go flaky on a loaded machine.
+func TestPushWakesAreCoalescedOnTheRealPath(t *testing.T) {
+	a, _ := newTestAPI(t, config.PolicyOpen)
+	alice := registerAccount(t, a)
+	bob := registerAccount(t, a)
+
+	var hits int32
+	fakeGateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer fakeGateway.Close()
+	a.GatewayClient = fakeGateway.Client()
+	a.Config.PushGatewayURL = fakeGateway.URL
+
+	const window = 1 * time.Second
+	a.wakes = newWakeCoalescer(window, func(deviceID string) { go a.dispatchWake(deviceID) })
+
+	setTargetBody, _ := json.Marshal(setPushTargetRequest{Platform: strPtr("fcm"), Token: strPtr("live-token")})
+	if rec := doSignedRequest(t, a.Router(), http.MethodPut, "/v1/devices/"+bob.deviceID+"/push-target", setTargetBody, bob.deviceID, bob.devicePriv); rec.Code != http.StatusOK {
+		t.Fatalf("set push target status = %d, want 200", rec.Code)
+	}
+
+	const messages = 5
+	for i := 0; i < messages; i++ {
+		body := sendMessageBody(t, fmt.Sprintf("msg%d", i), bob.deviceID, `{}`)
+		if rec := doSignedRequest(t, a.Router(), http.MethodPost, "/v1/messages", body, alice.deviceID, alice.devicePriv); rec.Code != http.StatusAccepted {
+			t.Fatalf("send %d status = %d, want 202", i, rec.Code)
+		}
+	}
+
+	// Long enough for the leading wake, the trailing wake, and anything
+	// that would wrongly follow them.
+	time.Sleep(window * 3)
+
+	got := atomic.LoadInt32(&hits)
+	if got < 1 {
+		t.Fatalf("gateway calls = %d, want at least the leading wake", got)
+	}
+	if got >= messages {
+		t.Errorf("gateway calls = %d for %d messages -- no coalescing happened on the real path", got, messages)
+	}
+}

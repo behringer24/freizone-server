@@ -14,6 +14,28 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+### Added
+
+* **Push wakes are coalesced per device** (`FREIZONE_PUSH_COALESCE_WINDOW`,
+  default `3s`, `0` disables). A wake carries no content, no sender and not even
+  a reason — it means "go sync" and nothing else — so for one device, several in
+  quick succession say exactly what one says. Until now a lively group cost one
+  push per message per member, which was the largest avoidable component of push
+  load and, on the device, of radio wake-ups.
+
+  The first wake to an idle device is sent immediately and is never delayed;
+  further wakes inside the window are merged into a single one at its end. The
+  trailing wake is what makes this safe rather than merely cheaper: suppressing
+  wakes without it would let a message arriving just after a sync go unannounced
+  until the device reconnected on its own — the same failure SRV-27 already
+  produced once. Every wake request either sends now or guarantees a later send.
+  Pending wakes are flushed on shutdown.
+
+  Clients must not assume one wake per message — they never could, since a wake
+  never said which message or which of its two reasons triggered it, but
+  coalescing makes the consequence visible. See docs/PROTOCOL.md's push-wake
+  section.
+
 ## [0.25.1] — 2026-08-27
 
 A build fix for 0.25.0: that release raised the minimum Go version, which the

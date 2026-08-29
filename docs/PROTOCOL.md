@@ -1287,6 +1287,18 @@ Delivery of the wake itself is not guaranteed (no retry, short timeout) —
 the durable queue and the client's own reconnect/poll remain the actual
 delivery guarantee, same as before push existed.
 
+**Wakes are coalesced per device**, so a client must not assume one wake
+per message. Because a wake says nothing beyond "go sync", several of them
+in quick succession carry no more information than one, and the server
+collapses them: the first wake to an idle device is sent immediately, and
+any further wake within `FREIZONE_PUSH_COALESCE_WINDOW` (3 s by default,
+0 to disable) is merged into a single one at the window's end. A device is
+therefore woken at most once per window, no matter how many messages
+arrive — which is exactly why the reaction to a wake has to be a full sync
+rather than a fetch of one message. That was already required, since a
+wake never said which message or even which of the two reasons triggered
+it; coalescing only makes the consequence more visible.
+
 ### `POST /v1/messages/batch` (signed)
 Enqueues several envelopes in one request. Introduced for group fan-out
 (SRV-01), where one author sends N separately encrypted copies: batching

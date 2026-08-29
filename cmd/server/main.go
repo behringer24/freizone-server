@@ -25,8 +25,14 @@ import (
 )
 
 const (
-	nonceCleanupInterval   = 10 * time.Minute
-	messageCleanupInterval = 1 * time.Hour
+	nonceCleanupInterval = 10 * time.Minute
+
+	// wakeStateCleanupInterval drops push-coalescing state for devices that
+	// have gone quiet. Unhurried on purpose: the map holds one small entry
+	// per device woken since start, not one per request, so this is
+	// housekeeping rather than a bound that has to hold.
+	wakeStateCleanupInterval = 30 * time.Minute
+	messageCleanupInterval   = 1 * time.Hour
 	// inviteCleanupInterval is generous on purpose: invite expiry is measured
 	// in days, and nothing depends on an expired code disappearing promptly
 	// -- it is already unusable the moment it expires. This only reclaims the
@@ -195,6 +201,7 @@ func run() error {
 	blobCleanupDone := runBlobCleanup(ctx, db, blobs, logger)
 	inviteCleanupDone := runInviteCleanup(ctx, db, logger)
 	statsSnapshotDone := runStatsSnapshot(ctx, a, logger)
+	wakeStateCleanupDone := runWakeStateCleanup(ctx, a)
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.ListenAndServe() }()
@@ -216,12 +223,39 @@ func run() error {
 		return fmt.Errorf("shutting down server: %w", err)
 	}
 
+	// After the listener has stopped, so nothing new can arrive: emit any
+	// wake still held inside a coalescing window. Losing one here would look
+	// exactly like push being broken to whoever was mid-conversation, and it
+	// costs a few requests to avoid.
+	a.FlushPendingWakes()
+
 	<-nonceCleanupDone
 	<-messageCleanupDone
 	<-blobCleanupDone
 	<-inviteCleanupDone
 	<-statsSnapshotDone
+	<-wakeStateCleanupDone
 	return nil
+}
+
+// runWakeStateCleanup periodically drops push-coalescing state for devices
+// whose window has closed with nothing pending.
+func runWakeStateCleanup(ctx context.Context, a *api.API) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(wakeStateCleanupInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				a.EvictIdleWakeState()
+			}
+		}
+	}()
+	return done
 }
 
 // checkAttestation reports whether this server's configured attestation

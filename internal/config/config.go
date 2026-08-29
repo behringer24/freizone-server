@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // TLSMode selects how the server terminates TLS.
@@ -64,6 +65,19 @@ type Config struct {
 	// operated by this server's own operator or someone else's -- see
 	// https://github.com/behringer24/freizone-gateway.
 	PushGatewayURL string
+
+	// PushCoalesceWindow collapses repeated wakes for the same device into
+	// at most one per window (see internal/api/wakecoalesce.go). A wake
+	// carries no content and no reason, so for a given device N of them in
+	// quick succession say exactly what one says: go sync. A lively group
+	// otherwise turns one burst of messages into one push per message per
+	// member, which is the largest avoidable component of push load -- and,
+	// on the device, of radio wake-ups.
+	//
+	// The first wake to an idle device is never delayed; only follow-up
+	// wakes within the window are merged, into a single one at its end. 0
+	// disables coalescing entirely, restoring one push per message.
+	PushCoalesceWindow time.Duration
 
 	// FederationEnabled controls whether POST /v1/federation/messages
 	// (see internal/api/federation.go) accepts inbound cross-server
@@ -197,6 +211,7 @@ const (
 	envMessageRetentionDays = "FREIZONE_MESSAGE_RETENTION_DAYS"
 	envInviteExpiryDays     = "FREIZONE_INVITE_EXPIRY_DAYS"
 	envPushGatewayURL       = "FREIZONE_PUSH_GATEWAY_URL"
+	envPushCoalesceWindow   = "FREIZONE_PUSH_COALESCE_WINDOW"
 	envFederationEnabled    = "FREIZONE_FEDERATION_ENABLED"
 	envMaxRequestBodyBytes  = "FREIZONE_MAX_REQUEST_BODY_BYTES"
 	envMaxQueuedMessages    = "FREIZONE_MAX_QUEUED_MESSAGES_PER_DEVICE"
@@ -272,6 +287,20 @@ const (
 // only ever be confusing.
 const defaultMaxBlobRecipients = defaultMaxBatchMessages
 
+// defaultPushCoalesceWindow is short enough that a follow-up notification
+// still feels immediate to someone already looking at the device, and long
+// enough to collapse the burst a lively group produces. The wake that
+// actually competes for attention -- the first one, to an idle device -- is
+// never delayed by it, so the trade-off is one-sided in its favour.
+const defaultPushCoalesceWindow = 3 * time.Second
+
+// maxPushCoalesceWindow is a footgun bound rather than a technical one.
+// time.ParseDuration accepts "3m" as readily as "3s", and the difference
+// between them is a three-minute notification delay that nothing in the
+// system reports as wrong -- messages still arrive, just late enough to look
+// like push is broken.
+const maxPushCoalesceWindow = time.Minute
+
 // Load reads configuration from the process environment.
 func Load(getenv func(string) string) (*Config, error) {
 	cfg := &Config{
@@ -315,6 +344,16 @@ func Load(getenv func(string) string) (*Config, error) {
 		inviteExpiryDays = parsed
 	}
 	cfg.InviteExpiryDays = inviteExpiryDays
+
+	coalesceWindow := defaultPushCoalesceWindow
+	if v := getenv(envPushCoalesceWindow); v != "" {
+		parsed, err := time.ParseDuration(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: invalid value %q (must be a duration such as 3s or 500ms): %w", envPushCoalesceWindow, v, err)
+		}
+		coalesceWindow = parsed
+	}
+	cfg.PushCoalesceWindow = coalesceWindow
 
 	logLevel, err := parseLogLevel(getenv(envLogLevel))
 	if err != nil {
@@ -495,6 +534,15 @@ func (c *Config) validate() error {
 	// 0 is meaningful here (no default expiry), so only negatives are wrong.
 	if c.InviteExpiryDays < 0 {
 		return fmt.Errorf("%s must not be negative, got %d", envInviteExpiryDays, c.InviteExpiryDays)
+	}
+
+	// 0 is meaningful here too (coalescing off), so only negatives are wrong.
+	if c.PushCoalesceWindow < 0 {
+		return fmt.Errorf("%s must not be negative, got %s", envPushCoalesceWindow, c.PushCoalesceWindow)
+	}
+	if c.PushCoalesceWindow > maxPushCoalesceWindow {
+		return fmt.Errorf("%s (%s) must not exceed %s -- beyond that a device's follow-up notifications are delayed far enough to look like push is broken; set 0 to disable coalescing instead",
+			envPushCoalesceWindow, c.PushCoalesceWindow, maxPushCoalesceWindow)
 	}
 
 	if c.MaxRequestBodyBytes <= 0 {
