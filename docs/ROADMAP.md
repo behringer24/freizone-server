@@ -1619,3 +1619,17 @@ text, and no counter reset, only resolution that stays visible.
     and building a fresh struct for one of them silently cleared the others
     twice while this was being written -- the same shape of bug as
     `SetReceiptsEnabled`
+
+- 2026-08-30 — **the rename notice landed in the core, not the app**, reversing
+  what design/32 sketched. The re-key markers and `markPeerGone` already write
+  their own lines there, and for the reason that decides it: this happens on
+  receipt, which includes a background push wake with no UI running, so a line
+  the wake does not write is a line nobody ever sees.
+  - **no line on a first claim**, which the tests found rather than the plan: it
+    arrives before its conversation exists, and there was no earlier name for it
+    to be a change from. Explaining a change nobody saw is worse than saying
+    nothing, and the chat is simply labelled with the name from the start. The
+    same rule covers a group member with no one-to-one chat -- minting one to
+    hold a notice would put every member in the chat list
+  - no line for a blocked peer, whose name is still adopted so unblocking them
+    does not show a stale one

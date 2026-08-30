@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/behringer24/freizone-server/pkg/profileclaim"
 	"github.com/behringer24/freizone-server/pkg/ratchet"
 	"github.com/behringer24/freizone-server/pkg/wire"
 )
@@ -33,6 +34,27 @@ const (
 	SessionResetMarker   = "Secure session was reset"
 	AutomaticRekeyMarker = "Secure session was re-established automatically"
 )
+
+// ProfileRenamedMarker formats the line that says a peer changed the name they
+// assert about themselves (SRV-32), and ProfileNameClearedMarker the one for a
+// withdrawal.
+//
+// Written here rather than left to the app, for the same reason markPeerGone
+// and the re-key markers are: this happens on receipt, which includes a
+// background push wake with no UI running at all, and a line the wake does not
+// write is a line nobody ever sees. Frozen into the transcript when written,
+// on APP-18's precedent -- re-rendering it later from current state would let
+// a rename rewrite the history of the rename.
+//
+// The line appears **even when this device has its own name for them**, and
+// that is the case it matters most in: somebody the user called "Dad" starting
+// to call themselves something else is exactly what they should be told once.
+func ProfileRenamedMarker(name string) string {
+	return "This contact now calls themselves " + name
+}
+
+// ProfileNameClearedMarker is the withdrawal's line.
+const ProfileNameClearedMarker = "This contact no longer gives a name"
 
 // ErrNoSessionMaterial reports an envelope there is nothing to decrypt with:
 // no session with this sender, and no prekey block to build one from.
@@ -93,10 +115,13 @@ type ReceiveResult struct {
 	ReadUpTo *time.Time
 
 	// ProfileRenamed: this envelope carried a verified profile claim (SRV-32)
-	// that changed the name this peer asserts. The transcript line saying so is
-	// the caller's to write -- adopting the name silently is what makes an
-	// account renaming itself to something official-sounding worth noticing,
-	// and only the caller knows whether this peer is on screen or blocked.
+	// that changed the name this peer asserts.
+	//
+	// The transcript line saying so is already written (see
+	// markRenameInTranscript) -- this is reported for a caller that wants to
+	// refresh a label, not as an instruction to write anything. Writing it here
+	// rather than leaving it to the caller is what makes it survive a
+	// background push wake, where there is no UI to do it.
 	ProfileRenamed bool
 
 	// AdoptedPeerSession: the peer re-keyed, or won the tie-break, and their
@@ -317,6 +342,14 @@ func (c *Client) receive(msg IncomingMessage, opts ReceiveOptions, now time.Time
 		return res, err
 	}
 	res.ProfileRenamed = renamed
+	if renamed && !blocked {
+		// Not for a blocked peer: their messages are dropped, and a line about
+		// what they call themselves in a chat the user has cut off is noise
+		// about somebody they decided to stop hearing from.
+		if err := c.markRenameInTranscript(peer, dec.content.Profile, now); err != nil {
+			return res, err
+		}
+	}
 
 	res.Content = dec.content
 	switch dec.content.Kind {
@@ -884,4 +917,45 @@ func newMessageID() (string, error) {
 		return "", fmt.Errorf("client: generating a message id: %w", err)
 	}
 	return hex.EncodeToString(b[:]), nil
+}
+
+// markRenameInTranscript writes the one line that says a peer changed the name
+// they assert (SRV-32).
+//
+// Adopting a new name silently was rejected: a contact renaming itself to
+// something official-sounding is exactly what this feature could be misused
+// for, and the person reading the chat is the only one positioned to notice.
+// Not adopting at all was rejected too -- then every name ages out and the
+// reset entry becomes required knowledge.
+//
+// No conversation, no line, and that covers two cases which both want it that
+// way. A group member this account has never had a one-to-one chat with has
+// nowhere to put it, and minting a chat to hold a notice would put every group
+// member in the chat list -- the very thing PeerEndpoint was split out of
+// Conversation to avoid. And a stranger's *first* message arrives before its
+// conversation exists, where "now calls themselves Anna" would be explaining a
+// change nobody saw: there was an id and nothing else a moment ago, and the
+// name is simply what the chat is labelled with from the start.
+//
+// Their name is adopted either way. Only the notice is skipped.
+func (c *Client) markRenameInTranscript(peer string, claim *profileclaim.Claim, now time.Time) error {
+	convo, err := c.Conversation(peer)
+	if err != nil || convo == nil {
+		return err
+	}
+	marker := ProfileNameClearedMarker
+	if claim != nil && !claim.IsWithdrawal() {
+		marker = ProfileRenamedMarker(claim.Name)
+	}
+	id, err := newMessageID()
+	if err != nil {
+		return err
+	}
+	return c.AppendMessage(peer, Message{
+		ID:        id,
+		Text:      marker,
+		Timestamp: now,
+		Kind:      MessageSystemInfo,
+		SendState: SendSent,
+	})
 }
