@@ -14,6 +14,7 @@ package client
 //	    session.json               the ratchet session sent on
 //	    inbound.json               the read-only one, when there is one
 //	    health.json                desync evidence, only when something is wrong
+//	    profile.json               the name they assert, and the one we sent them
 //	  chats/<chat-id>/
 //	    meta.json                  conversation metadata
 //	    log.jsonl                  the transcript, append-only
@@ -83,6 +84,12 @@ const (
 	fileDevice  = "device.json"
 	fileInbound = "inbound.json"
 	fileHealth  = "health.json"
+
+	// fileProfile holds both directions of the profile name for one peer
+	// (SRV-32): the claims they have made about themselves, verified, and the
+	// timestamp of the last one we sent them about ourselves. One file rather
+	// than two because they are read and written on the same paths.
+	fileProfile = "profile.json"
 	fileMeta    = "meta.json"
 	fileLog     = "log.jsonl"
 )
