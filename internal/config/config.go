@@ -143,6 +143,19 @@ type Config struct {
 	// have Freizone explain itself at the root.
 	LandingPageEnabled bool
 
+	// ReportsEnabled controls whether this server accepts abuse reports
+	// (internal/api/reports.go, SRV-33) -- the same operator kill switch shape
+	// as FederationEnabled and BlobsEnabled, and discoverable the same way on
+	// GET /v1/server-status, so a client can tell "switched off here" from
+	// "too old to know about it". Defaults to true: a server whose operator
+	// rarely looks is still a better home for a complaint than nowhere.
+	ReportsEnabled bool
+
+	// ReportRetentionDays is how long a report is kept, resolved or not. A
+	// counter that never falls becomes a criminal record for something that
+	// was never proven, and the evidence it carries goes with the row.
+	ReportRetentionDays int
+
 	// BlobDir is where blob ciphertext files live, defaulting to a "blobs"
 	// subdirectory of DataDir. Deliberately the filesystem rather than a
 	// SQLite column: the driver has no incremental blob I/O, so storing
@@ -220,6 +233,8 @@ const (
 	envLogLevel             = "FREIZONE_LOG_LEVEL"
 
 	envBlobsEnabled          = "FREIZONE_BLOBS_ENABLED"
+	envReportsEnabled        = "FREIZONE_REPORTS_ENABLED"
+	envReportRetentionDays   = "FREIZONE_REPORT_RETENTION_DAYS"
 	envBlobDir               = "FREIZONE_BLOB_DIR"
 	envMaxBlobBytes          = "FREIZONE_MAX_BLOB_BYTES"
 	envMaxBlobBytesPerDevice = "FREIZONE_MAX_BLOB_BYTES_PER_DEVICE"
@@ -265,6 +280,11 @@ const defaultMaxBatchMessages = 100
 // old one has not yet noticed it is gone. Four leaves room for that to happen
 // twice over before anything is refused.
 const defaultMaxStreamsPerDevice = 4
+
+// defaultReportRetentionDays is a quarter: long enough that a pattern across
+// several complaints is still visible, short enough that a single incident
+// does not follow somebody around indefinitely.
+const defaultReportRetentionDays = 90
 
 // defaultMaxBlobBytes (8 MiB) comfortably fits a client-compressed photo
 // (clients downscale to roughly 1600px before uploading, landing well under
@@ -420,6 +440,26 @@ func Load(getenv func(string) string) (*Config, error) {
 		blobsEnabled = parsed
 	}
 	cfg.BlobsEnabled = blobsEnabled
+
+	reportsEnabled := true
+	if v := getenv(envReportsEnabled); v != "" {
+		parsed, err := strconv.ParseBool(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: invalid value %q (must be true or false)", envReportsEnabled, v)
+		}
+		reportsEnabled = parsed
+	}
+	cfg.ReportsEnabled = reportsEnabled
+
+	reportRetentionDays := defaultReportRetentionDays
+	if v := getenv(envReportRetentionDays); v != "" {
+		parsed, err := strconv.Atoi(v)
+		if err != nil || parsed < 1 {
+			return nil, fmt.Errorf("%s: invalid value %q (must be a positive number of days)", envReportRetentionDays, v)
+		}
+		reportRetentionDays = parsed
+	}
+	cfg.ReportRetentionDays = reportRetentionDays
 
 	blobDir := getenv(envBlobDir)
 	if blobDir == "" {

@@ -221,7 +221,14 @@ func DeleteAccount(db DBTX, id string) error {
 	if n == 0 {
 		return ErrNotFound
 	}
-	return nil
+	// Reports name accounts by address rather than by foreign key -- either
+	// side may live on another server, so there is nothing to point at in half
+	// the cases (see the 0016 migration). They are therefore cleared here, not
+	// by a cascade: a report about somebody who no longer exists is a claim
+	// nobody can answer, and one *by* them is an accusation nobody can be
+	// asked about. Done here rather than at the two call sites so it cannot be
+	// forgotten by a third.
+	return DeleteReportsForAccount(db, id)
 }
 
 // CountActiveAdmins reports how many accounts currently have RoleAdmin and

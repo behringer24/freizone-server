@@ -142,6 +142,13 @@ func (a *API) Router() http.Handler {
 	mux.Handle("GET /v1/admin/stats", a.Auth.Require(http.HandlerFunc(a.handleGetServerStats)))
 	mux.Handle("GET /v1/admin/stats/history", a.Auth.Require(http.HandlerFunc(a.handleGetServerStatsHistory)))
 
+	// Reports (SRV-33). Filing and withdrawing are ordinary member actions;
+	// reading and resolving are staff ones.
+	mux.Handle("POST /v1/reports", a.Auth.Require(http.HandlerFunc(a.handleCreateReport)))
+	mux.Handle("DELETE /v1/reports/{reported}", a.Auth.Require(http.HandlerFunc(a.handleWithdrawReport)))
+	mux.Handle("GET /v1/admin/reports", a.Auth.Require(http.HandlerFunc(a.handleListReports)))
+	mux.Handle("POST /v1/admin/reports/{id}/resolve", a.Auth.Require(http.HandlerFunc(a.handleResolveReport)))
+
 	mux.Handle("GET /v1/admin/federation-blocklist", a.Auth.Require(http.HandlerFunc(a.handleListFederationBlocklist)))
 	mux.Handle("POST /v1/admin/federation-blocklist", a.Auth.Require(http.HandlerFunc(a.handleBlockFederationSender)))
 	mux.Handle("DELETE /v1/admin/federation-blocklist/{account_id}", a.Auth.Require(http.HandlerFunc(a.handleUnblockFederationSender)))
@@ -163,6 +170,11 @@ func (a *API) Router() http.Handler {
 	// performs -- a foreign sender has no local device row to look up.
 	mux.HandleFunc("POST /v1/federation/messages", a.handleReceiveFederatedMessage)
 	mux.HandleFunc("POST /v1/federation/messages/batch", a.handleReceiveFederatedMessageBatch)
+	// Public for the same reason, and the route a reporter on another server
+	// uses to tell *this* operator about one of its own accounts (SRV-33).
+	// There is no server-to-server relay: the reporter posts here itself.
+	mux.HandleFunc("POST /v1/federation/reports", a.handleCreateFederatedReport)
+	mux.HandleFunc("DELETE /v1/federation/reports/{reported}", a.handleWithdrawFederatedReport)
 	// Blob transport (SRV-07). The upload's body is raw ciphertext, far over
 	// the global body cap -- see the per-path override in cmd/server/main.go
 	// and the streamed-body authentication in internal/auth.

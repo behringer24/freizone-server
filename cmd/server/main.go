@@ -38,6 +38,7 @@ const (
 	// -- it is already unusable the moment it expires. This only reclaims the
 	// row.
 	inviteCleanupInterval = 6 * time.Hour
+	reportCleanupInterval = 6 * time.Hour
 
 	blobCleanupInterval = 1 * time.Hour
 	// blobCleanupBatchSize bounds one expiry pass: each blob costs a file
@@ -200,6 +201,7 @@ func run() error {
 	messageCleanupDone := runMessageCleanup(ctx, db, logger)
 	blobCleanupDone := runBlobCleanup(ctx, db, blobs, logger)
 	inviteCleanupDone := runInviteCleanup(ctx, db, logger)
+	reportCleanupDone := runReportCleanup(ctx, db, cfg.ReportRetentionDays, logger)
 	statsSnapshotDone := runStatsSnapshot(ctx, a, logger)
 	wakeStateCleanupDone := runWakeStateCleanup(ctx, a)
 
@@ -233,6 +235,7 @@ func run() error {
 	<-messageCleanupDone
 	<-blobCleanupDone
 	<-inviteCleanupDone
+	<-reportCleanupDone
 	<-statsSnapshotDone
 	<-wakeStateCleanupDone
 	return nil
@@ -594,6 +597,40 @@ func runMessageCleanup(ctx context.Context, db *sql.DB, logger *slog.Logger) <-c
 				}
 				if n > 0 {
 					logger.Info("purged expired messages", "count", n)
+				}
+			}
+		}
+	}()
+	return done
+}
+
+// runReportCleanup starts a background goroutine that periodically removes
+// reports past their retention window, resolved and open alike (SRV-33).
+//
+// Both, deliberately: a counter that never falls becomes a criminal record for
+// something that was never proven, and an open report nobody acted on in three
+// months is not going to be acted on now. The profile-claim evidence a report
+// carries goes with the row, which is what keeps this server's holdings
+// minimal by construction rather than by anybody remembering to tidy up.
+func runReportCleanup(ctx context.Context, db *sql.DB, retentionDays int, logger *slog.Logger) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(reportCleanupInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays)
+				n, err := store.PurgeReportsBefore(db, cutoff)
+				if err != nil {
+					logger.Warn("report cleanup failed", "error", err)
+					continue
+				}
+				if n > 0 {
+					logger.Info("purged expired reports", "count", n)
 				}
 			}
 		}

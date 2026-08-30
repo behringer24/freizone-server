@@ -93,12 +93,29 @@ func (a *API) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Report counters (SRV-33), and the same rule as invited_by applies at the
+	// staff rows: a moderator does not see counters for a moderator or an
+	// admin, because they are not the one to act on them. Withheld by not
+	// copying them across rather than by a second query, since the aggregate
+	// is one query for the whole server either way.
+	var reports map[string]store.ReportCounts
+	if a.Config.ReportsEnabled {
+		if reports, err = store.ReportCountsByAccount(a.DB); err != nil {
+			writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+			return
+		}
+	}
+
 	resp := make([]adminAccountResponse, 0, len(accounts))
 	for _, acc := range accounts {
+		counts := reports[acc.ID]
+		if caller.Role != store.RoleAdmin && (acc.Role == store.RoleAdmin || acc.Role == store.RoleModerator) {
+			counts = store.ReportCounts{}
+		}
 		// A missing entry is the zero value: an account with nothing queued,
 		// nothing stored and no devices yet.
 		resp = append(resp, adminAccountResponseFrom(
-			acc, activity[acc.ID], a.Config.MaxBlobBytesPerDevice, inviters[acc.ID],
+			acc, activity[acc.ID], a.Config.MaxBlobBytesPerDevice, inviters[acc.ID], counts,
 		))
 	}
 	writeJSON(w, http.StatusOK, resp)

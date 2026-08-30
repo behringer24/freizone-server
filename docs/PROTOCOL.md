@@ -1218,8 +1218,8 @@ Receiving rules, in order:
    sender's own clock; equal timestamps do not supersede, so a replay cannot
    displace the stored copy.
 3. Store it with its signature, keeping a bounded history of previous claims —
-   what a rename notice is drawn from, and what an abuse report (SRV-33) will
-   forward.
+   what a rename notice is drawn from, and what an abuse report (§12)
+   forwards.
 
 `name` is at most **64 bytes** of UTF-8, carries no leading or trailing
 whitespace, and must contain no control characters, line breaks, or Unicode
@@ -1906,3 +1906,154 @@ to reading the address off a screen and typing it in by hand — the
 actual identity verification happens the same way it would for a
 manually-typed address, via the existing account/prekey lookup and
 device-certificate checks (§2, §9), not anything carried by this URI.
+
+## 12. Reporting an account to its operator
+
+Blocking is what a user does about somebody; reporting is how an operator
+learns that `block` or `delete` is warranted at all. The content is
+end-to-end encrypted and nothing else is a signal, so without this an
+operator has the powers and none of the information.
+
+A report is an assertion with no proof behind it — the server cannot see
+what was said, and never will. So the counter is a **reason to talk to
+someone**, never a finding: nothing acts on a threshold, and none of these
+endpoints does anything on its own.
+
+**Reports are named.** The reporter is stored, and shown to staff, with
+their address. Accusation carries responsibility, and an operator who
+cannot ask "what happened?" can do nothing useful with a number. Named
+reporting is also what makes brigading visible — two hundred reports from
+one account read as exactly that. Consequences a client must honour: it
+says so *before* sending, the reported account is never told who reported
+it, and withdrawal is always available.
+
+Availability is discovered, not assumed: `reports_enabled` on `GET
+/v1/server-status` (§4), **absent meaning off**, on `blobs_enabled`'s rule.
+A client checks its own server before offering to report at all, and the
+*target's* server before offering to forward — two separate questions.
+
+### `POST /v1/reports` (signed)
+
+A member of this server reports any address, local or federated.
+
+```json
+{
+  "reported": "q2xjx*chat.example.org",
+  "category": "spam | harassment | fraud | other",
+  "evidence": [ { "name": "...", "device_id": "...", "issued_at": "...", "signature": "base64" } ]
+}
+```
+
+`201`, or `200` when it updated a report this reporter already had against
+that address — **one reporter counts once**. Re-reporting refreshes the
+category and evidence and reopens a resolved case; it never adds a row and
+never raises a count.
+
+`category` is a fixed set and there is deliberately **no free-text field**:
+free text on a server is a store of personal allegations, and a channel for
+writing at the operator that nothing moderates.
+
+`evidence` is the §6 profile claims the reporter holds for that account —
+the name it asserted about *itself*, never the reporter's private name for
+it. Verified here when the target is local, since this server holds its root
+key and device certificates; stored unverified for a federated target rather
+than fetching a stranger's key material on a complainant's say-so. A claim
+that does not verify is dropped, not refused: a report is worth having
+without its evidence.
+
+`400` unparseable address, unknown category, oversized evidence · `403`
+reporting yourself · `404` unknown local account, or reporting switched off ·
+`409 report_limit` past the per-reporter cap on open reports.
+
+**No server-to-server relay**, per §9. This endpoint never forwards
+anything. A reporter who also wants the target's operator to know posts to
+that server's `POST /v1/federation/reports` itself, exactly as it delivers a
+federated message itself — and whether to do so is the reporter's decision,
+because handing your identity to an operator you do not know is not always
+the right move. Filing with your *own* server always happens: it is the
+operator who knows you, and the one who can act via the federation
+blocklist.
+
+### `DELETE /v1/reports/{reported}` (signed)
+
+Withdrawal by the reporter, where `{reported}` is the canonical address in
+one path segment (`*` is a legal sub-delimiter). Somebody who bears
+responsibility for an accusation has to be able to change their mind.
+
+Deletes rather than resolves: keeping it as a resolved case would leave the
+accusation on the record, which is what withdrawing is meant to undo.
+`404` if this reporter has no report on that address.
+
+### `POST /v1/federation/reports` (public — does its own authentication)
+
+A reporter on another server, about an account on **this** one. Body and
+authentication exactly as `POST /v1/federation/messages` (§9) — sender
+account id, root public key, device certificate, signed with the
+self-describing-key variant — plus the report fields above and one more:
+
+- `sender_server` (required): the reporter's home server. It has no
+  counterpart in §9, where the home server travels inside the encrypted
+  payload; a report has no such channel and needs the address anyway, since
+  the whole point of naming a reporter is that the operator can go and ask
+  them. It is **not** verifiable and does not need to be — the id is proven
+  cryptographically, and naming the wrong server only makes the reporter
+  unreachable. A reporter this server recognises as one of its own is filed
+  as local whatever this field claims.
+
+`404 federation_disabled`, `403` for a sender on the federation blocklist,
+`400` for a certificate that does not verify — the same three answers as a
+federated message, for the same reasons. Withdrawal is `DELETE
+/v1/federation/reports/{reported}` with the same authentication.
+
+### `GET /v1/admin/reports` (signed, admin or moderator)
+
+The moderation queue, newest first; `?state=open` for open cases only. Each
+entry carries both addresses, category, state, timestamps, the resolver, and
+the evidence with `evidence_verified`.
+
+A moderator sees reports whose target is a `user`. Ones targeting a
+moderator or an admin are **admin-only**, and the query does not ask for
+them rather than filtering them out afterwards (§4's `invited_by`
+precedent): a moderator investigating a colleague is not a moderation case
+any more, it is the operator's. The same rule blanks the per-account
+counters on staff rows in `GET /v1/admin/accounts`.
+
+**Anyone may report anyone, staff included.** The server does not look at
+the target's role when accepting one — an admin who cannot be reported is an
+admin nobody can raise a problem about. The limit is on acting, not on
+saying.
+
+One limit that cannot be designed away: when the reported account is the
+server's only admin, the report reaches the person it is about. Nothing sits
+above one's own operator in a federated system, and a client should say so
+at the moment it applies rather than let a reporter find out afterwards.
+
+### `POST /v1/admin/reports/{id}/resolve` (signed, admin or moderator)
+
+`{"outcome": "actioned" | "dismissed" | "abusive"}`.
+
+Resolving is **not** deleting, and there is deliberately no counter reset:
+the value of a report a year later is that the next moderator can see there
+was one and how it went. `abusive` counts against the **reporter**, on their
+own row — the counterweight to named reporting, without which responsibility
+costs nothing. A moderator may not apply it to a report by staff, the mirror
+of the rule above.
+
+`400` unknown outcome · `403` a moderator acting on a staff-targeted case,
+or marking a staff member's report abusive · `404` unknown report.
+
+### Counters and retention
+
+`GET /v1/admin/accounts` (§4) carries four figures per account, `0` rather
+than absent so "none" is distinguishable from an older server:
+`reports_local` and `reports_federated` (open reports **about** it, never
+summed — anybody on any server can raise the second, so a combined figure is
+one a stranger can inflate and an operator cannot act on), `reports_filed`
+and `reports_abusive` (the mirror, about reports it **made**).
+
+Reports expire, resolved and open alike, after
+`FREIZONE_REPORT_RETENTION_DAYS` (default 90). A counter that never falls
+becomes a criminal record for something that was never proven, and the
+evidence goes with the row. They are also cleared when either account is
+deleted — a report about somebody who no longer exists is a claim nobody can
+answer.
