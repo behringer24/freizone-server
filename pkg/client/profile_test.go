@@ -392,3 +392,134 @@ func TestPeerProfileNamesListsOnlyAssertedNames(t *testing.T) {
 		t.Errorf("names = %v after a withdrawal, want none", names)
 	}
 }
+
+// The user is told once, in the transcript, on the precedent SRV-29 set for a
+// fact about the other side.
+func TestRenameWritesATranscriptLine(t *testing.T) {
+	c, p := newFixture(t, "me", "them", nil)
+	deviceID, priv := knownDevice(t, c, "them")
+	if err := c.MarkPeerKnown("them"); err != nil {
+		t.Fatalf("MarkPeerKnown: %v", err)
+	}
+
+	base := time.Now().UTC()
+	first, err := profileclaim.Sign("them", deviceID, "Anna", base, priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	mustHandle(t, c, p.msg("m1", p.send(claimPayload(t, "id-1", "hello", first))), ReceiveOptions{})
+
+	// The first claim writes nothing: it arrives before the conversation
+	// exists, and there was no earlier name for it to be a change from -- the
+	// chat is simply labelled with it from the start.
+	if lines := systemLines(t, c, "them"); len(lines) != 0 {
+		t.Fatalf("system lines after the first claim = %v, want none", lines)
+	}
+
+	p.settled()
+	renamed, err := profileclaim.Sign("them", deviceID, "Bank Support", base.Add(time.Minute), priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	mustHandle(t, c, p.msg("m2", p.send(claimPayload(t, "id-2", "hi again", renamed))), ReceiveOptions{})
+
+	// The rename does, because now there is something it changed.
+	lines := systemLines(t, c, "them")
+	if len(lines) != 1 || lines[0] != ProfileRenamedMarker("Bank Support") {
+		t.Fatalf("system lines after the rename = %v", lines)
+	}
+}
+
+func TestWithdrawalWritesItsOwnLine(t *testing.T) {
+	c, p := newFixture(t, "me", "them", nil)
+	deviceID, priv := knownDevice(t, c, "them")
+	if err := c.MarkPeerKnown("them"); err != nil {
+		t.Fatalf("MarkPeerKnown: %v", err)
+	}
+
+	base := time.Now().UTC()
+	named, err := profileclaim.Sign("them", deviceID, "Anna", base, priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	mustHandle(t, c, p.msg("m1", p.send(claimPayload(t, "id-1", "hello", named))), ReceiveOptions{})
+	p.settled()
+
+	withdrawn, err := profileclaim.Sign("them", deviceID, "", base.Add(time.Minute), priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	mustHandle(t, c, p.msg("m2", p.send(claimPayload(t, "id-2", "bye", withdrawn))), ReceiveOptions{})
+
+	lines := systemLines(t, c, "them")
+	if len(lines) != 1 || lines[0] != ProfileNameClearedMarker {
+		t.Fatalf("system lines = %v, want the withdrawal to say so in its own words", lines)
+	}
+}
+
+// Re-sending the same claim must not add a line each time: the notice is for a
+// change somebody made, and one per message would be noise.
+func TestRepeatedClaimWritesNoFurtherLine(t *testing.T) {
+	c, p := newFixture(t, "me", "them", nil)
+	deviceID, priv := knownDevice(t, c, "them")
+	if err := c.MarkPeerKnown("them"); err != nil {
+		t.Fatalf("MarkPeerKnown: %v", err)
+	}
+
+	claim, err := profileclaim.Sign("them", deviceID, "Anna", time.Now(), priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	mustHandle(t, c, p.msg("m1", p.send(claimPayload(t, "id-1", "one", claim))), ReceiveOptions{})
+	p.settled()
+	mustHandle(t, c, p.msg("m2", p.send(claimPayload(t, "id-2", "two", claim))), ReceiveOptions{})
+
+	// Neither copy writes one: the first because it is not a change, the second
+	// because it is not new.
+	if lines := systemLines(t, c, "them"); len(lines) != 0 {
+		t.Errorf("system lines = %v, want none", lines)
+	}
+}
+
+// A blocked peer's messages are dropped, and a notice about what they call
+// themselves in a chat the user has cut off is noise about somebody they
+// decided to stop hearing from.
+func TestBlockedPeersRenameWritesNoLine(t *testing.T) {
+	c, p := newFixture(t, "me", "them", nil)
+	deviceID, priv := knownDevice(t, c, "them")
+	if err := c.MarkPeerKnown("them"); err != nil {
+		t.Fatalf("MarkPeerKnown: %v", err)
+	}
+	if err := c.BlockPeer("them", ""); err != nil {
+		t.Fatalf("BlockPeer: %v", err)
+	}
+
+	claim, err := profileclaim.Sign("them", deviceID, "Anna", time.Now(), priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	mustHandle(t, c, p.msg("m1", p.send(claimPayload(t, "id-1", "hello", claim))), ReceiveOptions{})
+
+	if lines := systemLines(t, c, "them"); len(lines) != 0 {
+		t.Errorf("system lines = %v, want none for a blocked peer", lines)
+	}
+	// The name is still adopted: unblocking them should not show a stale one.
+	if name := nameOf(t, c, "them"); name != "Anna" {
+		t.Errorf("stored name = %q, want it adopted even while blocked", name)
+	}
+}
+
+func systemLines(t *testing.T, c *Client, chatID string) []string {
+	t.Helper()
+	msgs, err := c.Messages(chatID)
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+	var out []string
+	for _, m := range msgs {
+		if m.Kind == MessageSystemInfo {
+			out = append(out, m.Text)
+		}
+	}
+	return out
+}

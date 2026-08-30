@@ -1230,6 +1230,17 @@ Receiving rules, in order:
 3. Store it with its signature, keeping a bounded history of previous claims —
    what a rename notice is drawn from, and what an abuse report (§12)
    forwards.
+4. Where the name **changed** and a conversation with that peer already
+   exists, say so once in the transcript. Not on the first claim: it arrives
+   before the conversation does, and there was no earlier name for it to
+   differ from — the chat is simply labelled with it from the start. Not for a
+   blocked peer either. And not left to a UI: this runs on receipt, including
+   a background wake with nothing on screen, so a line the wake does not write
+   is a line nobody ever sees.
+
+   Adopting a new name silently was rejected. An account renaming itself to
+   something official-sounding is exactly what this could be misused for, and
+   the person reading the chat is the only one positioned to notice.
 
 `name` is at most **64 bytes** of UTF-8, carries no leading or trailing
 whitespace, and must contain no control characters, line breaks, or Unicode
