@@ -43,7 +43,7 @@ CREATE TABLE reports (
 );
 
 -- One reporter counts once per reported account. Reporting again updates the
--- category and evidence, and never adds a row or raises a count.
+-- category and evidence; it never adds a row and never raises a count.
 CREATE UNIQUE INDEX idx_reports_pair
     ON reports (reporter_id, reporter_server, reported_id, reported_server);
 
