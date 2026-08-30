@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/behringer24/freizone-server/pkg/group"
+	"github.com/behringer24/freizone-server/pkg/profileclaim"
 )
 
 // Plaintext content -- what is inside the ciphertext of a wire.Envelope, and
@@ -27,6 +28,12 @@ import (
 // legacy raw text: the oldest clients sent the message body as bare bytes.
 // That fallback stays because those envelopes may still be sitting in a queue,
 // and reading one as text is exactly right.
+//
+// The one thing that is *not* a version of its own is the profile claim
+// (SRV-32): it is an optional field on v1, v2 and v4, because the rule above
+// cuts the other way for something meant to be invisible. Reserving v6 for it
+// would make every older peer render a placeholder whenever somebody renames
+// themselves, while an unknown field costs nothing anywhere.
 
 // ContentKind is what a decrypted payload turned out to be.
 type ContentKind string
@@ -118,6 +125,13 @@ type Content struct {
 	ControlKind GroupControlKind
 	Events      []*group.Event
 
+	// Profile is the name the sender asserts about itself, if this envelope
+	// carried one (SRV-32). Present here exactly as it arrived and **not yet
+	// verified**: checking it needs the sender's device certificate, which
+	// decoding has no access to. [Client.applyProfileClaim] is what turns one
+	// into something worth showing.
+	Profile *profileclaim.Claim
+
 	// Raw is the undecoded plaintext, kept so a caller that owns a part of the
 	// protocol this package does not yet handle -- group control, today -- can
 	// act on it without decoding twice.
@@ -170,6 +184,14 @@ type contentWire struct {
 	GroupID   string         `json:"group_id"`
 	StateHash string         `json:"state_hash"`
 	Events    []*group.Event `json:"events"`
+
+	// Profile rides on v1, v2 and v4 rather than owning a version of its own
+	// (SRV-32). An unknown *version* renders as the "newer feature"
+	// placeholder, so a control envelope for a name would paint a ghost
+	// message into every older peer's transcript on every rename; an unknown
+	// *field* is ignored, which is what this struct's "every field any version
+	// uses" shape has always relied on and what §10's attachments established.
+	Profile *profileclaim.Claim `json:"profile"`
 }
 
 // DecodeContent interprets decrypted plaintext.
@@ -203,6 +225,7 @@ func DecodeContent(plaintext []byte) Content {
 		c.ReceiptStatus = ReceiptStatus(w.Status)
 		c.ReceiptUpTo = upTo.UTC()
 		c.ReceiptGroupID = w.GroupID
+		c.Profile = w.Profile
 		return c
 
 	case w.V == versionRekey && w.Kind == "rekey":
@@ -251,6 +274,7 @@ func DecodeContent(plaintext []byte) Content {
 
 	// Shared by the two text-carrying versions.
 	c.Text = w.Text
+	c.Profile = w.Profile
 	c.SenderServer = w.SenderServer
 	c.ReplyToID = w.ReplyTo
 	if w.ReplyPreview != nil {

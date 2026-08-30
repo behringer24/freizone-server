@@ -1157,6 +1157,87 @@ for one. That is the accepted cost of the scheme: an older peer displays a
 placeholder for a message that should have been invisible, rather than silently
 mishandling it.
 
+**Profile name (`profile`)** — an optional field on `v: 1`, `v: 2` and `v: 4`,
+carrying the name the sender asserts about itself:
+
+```json
+{
+  "profile": {
+    "name": "Anna",
+    "device_id": "16hexchars",
+    "issued_at": "2026-09-01T10:00:00Z",
+    "signature": "base64"
+  }
+}
+```
+
+A **field, not a version**, which is the one place the rule above is deliberately
+inverted. An unknown `v` renders as the "newer feature" placeholder, so a control
+envelope for a name would paint a visible ghost message into every older peer's
+transcript each time somebody renames themselves — for a payload whose entire
+purpose is to be invisible. An unknown *field* is ignored instead, exactly as an
+older client ignores anything else added to `v: 1` since (§10's attachments).
+"`v: 1` is frozen" is about its role, not about additive optional fields.
+
+Riding on envelopes that already fly is also what makes it cheap: a rename
+costs no delivery of its own, and putting it on receipts too means a peer who
+only ever reads still tells a peer who only ever writes what they are called.
+
+`signature` is Ed25519 by the **device identity key** named in `device_id` —
+not the root key, which never leaves the primary device (§2) and must not be
+required to correct a name from whichever device is in hand. The chain
+root → device certificate → claim is fully verifiable by the recipient from
+`GET /v1/accounts/{id}`, which it fetches anyway. Signing bytes:
+
+```
+uint16BE(len(account_id)) || account_id (UTF-8)
+|| device_id (8 raw bytes, decoded from hex)
+|| uint16BE(len(name))    || name (UTF-8)
+|| uint16BE(len(issued_at_str)) || issued_at_str
+```
+
+where `issued_at_str` is UTC RFC 3339 to **second** precision — the claim on
+the wire carries no finer value, or the signature would cover something other
+than what was sent.
+
+`account_id` is in the signing bytes but deliberately **not** on the wire: the
+recipient already knows whose envelope this is, so sending it would pay for the
+same string on every message, while covering it stops a claim being lifted out
+of one account's message and replayed under another's. The server half of the
+address is not covered at all, so a server move (SRV-24) leaves every claim in
+the field valid.
+
+Receiving rules, in order:
+
+1. Verify the signature against the device certificate for `device_id` on the
+   sender's account. A claim that does not verify — or whose `name` breaks the
+   rules below — is **dropped silently, and the envelope carrying it is
+   delivered normally**. A name is never worth failing a message over.
+2. Ignore a claim whose `issued_at` is not **strictly newer** than the newest
+   already stored for that account. Last writer wins, per account, by the
+   sender's own clock; equal timestamps do not supersede, so a replay cannot
+   displace the stored copy.
+3. Store it with its signature, keeping a bounded history of previous claims —
+   what a rename notice is drawn from, and what an abuse report (SRV-33) will
+   forward.
+
+`name` is at most **64 bytes** of UTF-8, carries no leading or trailing
+whitespace, and must contain no control characters, line breaks, or Unicode
+bidirectional formatting characters (U+200E, U+200F, U+202A–U+202E,
+U+2066–U+2069). The bidirectional rule is the one that matters: an override
+makes a name render as something other than what it says, which would defeat
+the point of ever showing an asserted name to a moderator. Zero-width joiners
+are allowed — composed emoji need them and they reorder nothing.
+
+An **empty `name` is a withdrawal**, not an empty name: it is a normal, signed
+claim that retracts the one before it. Without it there is no way back out of
+having stated a name.
+
+Nothing about this reaches a server, and no server-side support exists or is
+needed — there is no capability to discover and nothing an older server is
+missing. It is also **not** verification: anyone may call themselves anything,
+and all a signature proves is that this account said it.
+
 **Session re-key signal (`v: 3`)** — the invisible carrier for a re-key (§5):
 
 ```json

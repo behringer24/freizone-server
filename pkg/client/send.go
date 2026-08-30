@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/behringer24/freizone-server/pkg/devicecert"
+	"github.com/behringer24/freizone-server/pkg/profileclaim"
 	"github.com/behringer24/freizone-server/pkg/ratchet"
 	"github.com/behringer24/freizone-server/pkg/wire"
 )
@@ -175,7 +176,11 @@ func (c *Client) SendText(ctx context.Context, peerAccountID, text string, opts 
 		res.Message = line
 	}
 
-	plaintext, err := encodeText(line, id.Server, now)
+	claim, err := c.profileClaimFor(peerAccountID)
+	if err != nil {
+		return res, err
+	}
+	plaintext, err := encodeText(line, id.Server, now, claim)
 	if err != nil {
 		return res, err
 	}
@@ -184,6 +189,9 @@ func (c *Client) SendText(ctx context.Context, peerAccountID, text string, opts 
 		if markErr := c.SetMessageSendState(peerAccountID, messageID, SendFailed); markErr != nil {
 			return res, errors.Join(err, markErr)
 		}
+		return res, err
+	}
+	if err := c.profileClaimSent(peerAccountID, claim); err != nil {
 		return res, err
 	}
 	if err := c.SetMessageSendState(peerAccountID, messageID, SendSent); err != nil {
@@ -271,7 +279,11 @@ func (c *Client) RetryMessage(ctx context.Context, peerAccountID, messageID stri
 	}
 
 	res := SendResult{Message: *line}
-	plaintext, err := encodeText(*line, id.Server, line.Timestamp)
+	claim, err := c.profileClaimFor(peerAccountID)
+	if err != nil {
+		return res, err
+	}
+	plaintext, err := encodeText(*line, id.Server, line.Timestamp, claim)
 	if err != nil {
 		return res, err
 	}
@@ -280,6 +292,9 @@ func (c *Client) RetryMessage(ctx context.Context, peerAccountID, messageID stri
 		if markErr := c.SetMessageSendState(peerAccountID, messageID, SendFailed); markErr != nil {
 			return res, errors.Join(err, markErr)
 		}
+		return res, err
+	}
+	if err := c.profileClaimSent(peerAccountID, claim); err != nil {
 		return res, err
 	}
 	res.Message.SendState = SendSent
@@ -318,16 +333,28 @@ func (c *Client) SendReceipt(ctx context.Context, peerAccountID string, status R
 		return nil
 	}
 
-	plaintext, err := json.Marshal(map[string]any{
+	// A receipt is how a name reaches somebody this account only ever reads
+	// from: it flies on its own, so a peer who never writes still learns what
+	// a peer who never reads calls themselves.
+	claim, err := c.profileClaimFor(peerAccountID)
+	if err != nil {
+		return err
+	}
+	body := map[string]any{
 		"v":             versionReceipt,
 		"kind":          "receipt",
 		"status":        string(status),
 		"up_to_sent_at": upTo.Format(receiptTimeLayout),
-	})
+	}
+	attachProfile(body, claim)
+	plaintext, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("client: encoding receipt: %w", err)
 	}
 	if _, _, err := c.deliver(ctx, peerAccountID, plaintext, false); err != nil {
+		return err
+	}
+	if err := c.profileClaimSent(peerAccountID, claim); err != nil {
 		return err
 	}
 
@@ -782,13 +809,14 @@ func (c *Client) touchConversation(peer string, now time.Time) error {
 }
 
 // encodeText builds the v1 chat envelope for one of our own transcript lines.
-func encodeText(line Message, ownServer string, sentAt time.Time) ([]byte, error) {
+func encodeText(line Message, ownServer string, sentAt time.Time, claim *profileclaim.Claim) ([]byte, error) {
 	body := map[string]any{
 		"v":       versionText,
 		"id":      line.ID,
 		"text":    line.Text,
 		"sent_at": sentAt.UTC().Format(receiptTimeLayout),
 	}
+	attachProfile(body, claim)
 	// Sent with every message, not just the first, so a peer whose local state
 	// about us is lost can still find its way back to our server.
 	if ownServer != "" {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/behringer24/freizone-server/pkg/group"
+	"github.com/behringer24/freizone-server/pkg/profileclaim"
 	"github.com/behringer24/freizone-server/pkg/ratchet"
 	"github.com/behringer24/freizone-server/pkg/wire"
 )
@@ -123,13 +124,20 @@ func (c *Client) SendGroupText(ctx context.Context, groupID, text string, opts S
 		}
 	}
 
-	encode, err := groupPlaintextFor(line, groupID, membership.StateHash, now, references)
+	claim, err := c.profileClaimForAny(memberAccountIDs(recipients))
+	if err != nil {
+		return res, err
+	}
+	encode, err := groupPlaintextFor(line, groupID, membership.StateHash, now, references, claim)
 	if err != nil {
 		return res, err
 	}
 	// No prior wire ids: nothing has been posted for this message yet.
 	deliveries, err := c.fanOut(ctx, groupID, encode, recipients, nil)
 	if err != nil {
+		return res, err
+	}
+	if err := c.profileClaimDelivered(deliveries, claim); err != nil {
 		return res, err
 	}
 	markAttachmentSkipped(deliveries, opts.Media != nil, references)
@@ -308,7 +316,11 @@ func (c *Client) RetryGroupMessage(ctx context.Context, groupID, messageID strin
 	}
 	res := SendResult{Message: *line}
 
-	encode, err := groupPlaintextFor(*line, groupID, membership.StateHash, line.Timestamp, references)
+	claim, err := c.profileClaimForAny(memberAccountIDs(recipients))
+	if err != nil {
+		return res, err
+	}
+	encode, err := groupPlaintextFor(*line, groupID, membership.StateHash, line.Timestamp, references, claim)
 	if err != nil {
 		return res, err
 	}
@@ -326,6 +338,9 @@ func (c *Client) RetryGroupMessage(ctx context.Context, groupID, messageID strin
 		if markErr := c.SetMessageSendState(groupID, messageID, SendFailed); markErr != nil {
 			return res, errors.Join(err, markErr)
 		}
+		return res, err
+	}
+	if err := c.profileClaimDelivered(deliveries, claim); err != nil {
 		return res, err
 	}
 	markAttachmentSkipped(deliveries, references != nil, references)
@@ -405,9 +420,10 @@ func groupPlaintextFor(
 	groupID, stateHash string,
 	sentAt time.Time,
 	references map[string]Attachment,
+	claim *profileclaim.Claim,
 ) (plaintextFor, error) {
 	if references == nil {
-		plaintext, err := encodeGroupText(line, groupID, stateHash, sentAt)
+		plaintext, err := encodeGroupText(line, groupID, stateHash, sentAt, claim)
 		if err != nil {
 			return nil, err
 		}
@@ -428,7 +444,7 @@ func groupPlaintextFor(
 		} else {
 			theirs.Attachments = nil
 		}
-		plaintext, err := encodeGroupText(theirs, groupID, stateHash, sentAt)
+		plaintext, err := encodeGroupText(theirs, groupID, stateHash, sentAt, claim)
 		if err != nil {
 			return nil, err
 		}
@@ -1211,15 +1227,24 @@ func (c *Client) SendGroupReceipt(ctx context.Context, groupID, toAccountID stri
 		}
 	}
 
-	plaintext, err := json.Marshal(map[string]any{
+	claim, err := c.profileClaimFor(toAccountID)
+	if err != nil {
+		return err
+	}
+	body := map[string]any{
 		"v": versionReceipt, "kind": "receipt",
 		"status": string(status), "up_to_sent_at": upTo.Format(receiptTimeLayout),
 		"group_id": groupID,
-	})
+	}
+	attachProfile(body, claim)
+	plaintext, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("client: encoding group receipt: %w", err)
 	}
 	if err := c.sendGroupControl(ctx, *member, id.Server, plaintext); err != nil {
+		return err
+	}
+	if err := c.profileClaimSent(toAccountID, claim); err != nil {
 		return err
 	}
 
@@ -1525,12 +1550,15 @@ func joinedMembers(r *group.Resolved, except string) []group.Member {
 	return out
 }
 
-func encodeGroupText(line Message, groupID, stateHash string, sentAt time.Time) ([]byte, error) {
+func encodeGroupText(line Message, groupID, stateHash string, sentAt time.Time, claim *profileclaim.Claim) ([]byte, error) {
 	body := map[string]any{
 		"v": versionGroupText, "group_id": groupID, "state_hash": stateHash,
 		"id": line.ID, "text": line.Text,
 		"sent_at": sentAt.UTC().Format(receiptTimeLayout),
 	}
+	// The group is where this matters most: a member one has no one-to-one chat
+	// with is otherwise five characters of an account id (APP-18).
+	attachProfile(body, claim)
 	if line.ReplyToID != "" {
 		body["reply_to"] = line.ReplyToID
 		preview := map[string]any{"text": line.ReplyPreviewText}
@@ -1576,4 +1604,14 @@ func (c *Client) recordDeliveries(groupID, messageID string, deliveries []GroupD
 		}
 	}
 	return nil
+}
+
+// memberAccountIDs is the address list behind a member list, for the callers
+// that care who is being written to rather than what else is known about them.
+func memberAccountIDs(members []group.Member) []string {
+	out := make([]string, 0, len(members))
+	for _, m := range members {
+		out = append(out, m.AccountID)
+	}
+	return out
 }

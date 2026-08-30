@@ -1496,3 +1496,80 @@ remembered.
   equivalent, turning `https://` into the server `https:`, and not knowing the
   `local` form in `normalizeServerUrl` so that `sameServer('local', "")` is
   false there and true here. None had failed anything.
+
+### SRV-32 — Self-asserted profile name
+Status: `in progress` · Also affects: freizone-app (APP-27)
+Design: [design/32-profile-name.md](design/32-profile-name.md)
+
+An address says nothing about the person behind it, which is what makes it
+self-certifying — but every address people are used to carries a name, and a
+newcomer looking at two 21-character ids cannot tell two contacts apart. An
+account gets one optional name it asserts about itself, signed by a device key
+and carried as an optional `profile` field on envelopes that already fly
+(`v: 1`, `v: 2`, `v: 4`), so it reaches the people it already talks to and
+nobody else — the server included.
+
+**The server changes nothing**: a field inside ciphertext needs no endpoint,
+no column and no capability flag. The work here is PROTOCOL §6 and `pkg/client`
+(wire field, claim type, sign/verify, the newer-than rule, and when to attach
+one); the display half is APP-27.
+
+- A **server-side directory** was worked through first and rejected — the
+  5-character prefix form makes `GET /v1/accounts/{id}` enumerable, the route
+  is deliberately anonymous and so cannot scope a name to members, an unsigned
+  name would be the first thing a server could lie about, and signing bytes
+  over the full address would break every entry on an SRV-24 move. Recorded in
+  the design document because it will be proposed again otherwise.
+
+- 2026-08-30 — **the protocol and core half shipped.** `pkg/profileclaim` (its
+  own package, so the server can verify a report's evidence without importing
+  the client core), the `profile` field on `contentWire`, per-peer storage in
+  `peers/<id>/profile.json`, and the attach/verify paths through one-to-one
+  sends, retries, receipts and group fan-out. Four decisions worth recording:
+  - **a field, not `v: 6`**, reversing what the design document first sketched.
+    §6's own rule is that an unknown version renders a visible "newer feature"
+    placeholder -- so a control envelope for a name would have painted a ghost
+    message into every older peer's transcript on every rename. An unknown
+    field is ignored instead. It also removes the fan-out job entirely: the
+    claim rides on whatever is next sent to that peer, and riding on receipts
+    means a peer who only reads still learns what a peer who only writes calls
+    themselves
+  - **verified against the cached peer device**, never a fetch. The receive
+    path runs in the push isolate with no chance to go to the network, and the
+    device cache already holds the key every certificate from that peer is
+    checked against. A claim from a device we hold no key for is dropped, not
+    resolved: after a device change the cache is refreshed by the ordinary
+    unknown-recipient path and the next claim lands
+  - **`issued_at` is when the name was set, not when it was sent**, so
+    re-stating the same name produces the identical claim. A claim minted per
+    message would be newer than the copy a peer holds, so every message would
+    displace it and fill their history with duplicates
+  - two latent bugs found while writing it: `SetReceiptsEnabled` wrote a whole
+    fresh `settingsFile` and would have cleared the new name, and
+    `applyProfileClaim`'s first draft did the same to the send watermark in the
+    peer's own file. Both are now read-modify-write
+
+### SRV-33 — Reporting an account to its operator
+Status: `planned` · Also affects: freizone-app (APP-28) · Depends on: SRV-32
+Design: [design/33-abuse-reports.md](design/33-abuse-reports.md)
+
+An operator has `block` and `delete` but no way to learn either is warranted:
+the content is end-to-end encrypted and nothing else is a signal. A member can
+now report an account — to their own server always, and to a federated target's
+server at their own choice, since §9 has no server-to-server relay. Staff see a
+per-account counter and the individual cases behind it, and act with the powers
+they already have.
+
+Reports are **named**: the reporter is stored and shown to staff, because an
+operator who cannot ask "what happened?" can do nothing with a number, and
+because named reporting is itself the defence against brigading. Withdrawal and
+an `abusive` outcome are the counterweights. The counter is a reason to talk to
+someone, never a finding — there is no threshold that acts on its own, no free
+text, and no counter reset, only resolution that stays visible.
+
+- Anyone may report anyone, staff included; a moderator sees and resolves only
+  reports whose target is a `user`, with staff-targeted ones admin-only on
+  SRV-14's precedent. Acting stays under SRV-08's rules unchanged.
+- **Named limit**: where the reported account is the server's only admin, the
+  report reaches the person it is about. Nothing sits above one's own operator
+  in a federated system; the app says so at the moment it applies.

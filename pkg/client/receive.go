@@ -92,6 +92,13 @@ type ReceiveResult struct {
 	// the caller to infer it from ReceiveOptions.OpenChatID.
 	ReadUpTo *time.Time
 
+	// ProfileRenamed: this envelope carried a verified profile claim (SRV-32)
+	// that changed the name this peer asserts. The transcript line saying so is
+	// the caller's to write -- adopting the name silently is what makes an
+	// account renaming itself to something official-sounding worth noticing,
+	// and only the caller knows whether this peer is on screen or blocked.
+	ProfileRenamed bool
+
 	// AdoptedPeerSession: the peer re-keyed, or won the tie-break, and their
 	// session is now the one this side sends on.
 	AdoptedPeerSession bool
@@ -299,6 +306,17 @@ func (c *Client) receive(msg IncomingMessage, opts ReceiveOptions, now time.Time
 			return res, err
 		}
 	}
+
+	// Applied here rather than inside any one branch: a profile claim rides on
+	// a message, a receipt and a group line alike (SRV-32), so a single place
+	// covers every envelope that can carry one. A blocked peer is no exception,
+	// for the reason group facts are not either -- this is a fact about who
+	// they are, not a message from them, and the caller decides what to show.
+	renamed, err := c.applyProfileClaim(peer, dec.content.Profile)
+	if err != nil {
+		return res, err
+	}
+	res.ProfileRenamed = renamed
 
 	res.Content = dec.content
 	switch dec.content.Kind {
