@@ -130,15 +130,67 @@ func versionFromFilename(name string) (int, error) {
 }
 
 // splitStatements splits a SQL script into individual statements on ";",
-// dropping empty/whitespace-only fragments. Sufficient for our own
-// straightforward DDL (no semicolons embedded in string literals).
+// dropping empty/whitespace-only fragments.
+//
+// A semicolon inside a line comment, a block comment or a string literal does
+// **not** split, which a plain strings.Split got wrong in a way that only
+// showed up at runtime: migration 0016's comment read "...updates the category
+// and evidence; it never adds a row...", and the migration failed with a
+// syntax error pointing at the word "it". Prose is where a semicolon is most
+// likely to appear and least likely to be suspected, so this scans rather than
+// splits.
+//
+// Comments are kept in the statement they belong to. SQLite ignores them, and
+// dropping them would make an error message about a failing statement harder
+// to place in the file it came from.
 func splitStatements(script string) []string {
-	parts := strings.Split(script, ";")
-	statements := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if trimmed := strings.TrimSpace(p); trimmed != "" {
-			statements = append(statements, trimmed)
+	var statements []string
+	start := 0
+
+	for i := 0; i < len(script); i++ {
+		switch {
+		case strings.HasPrefix(script[i:], "--"):
+			// To end of line, or to the end of the script if the comment is
+			// the last thing in it.
+			if next := strings.IndexByte(script[i:], '\n'); next >= 0 {
+				i += next
+			} else {
+				i = len(script)
+			}
+
+		case strings.HasPrefix(script[i:], "/*"):
+			if next := strings.Index(script[i+2:], "*/"); next >= 0 {
+				i += 2 + next + 1
+			} else {
+				// Unterminated: the rest of the script is comment. Refusing
+				// here would be defensible too, but the statement handed to
+				// SQLite is then whatever came before, which fails with a
+				// message about the actual SQL rather than about our scanner.
+				i = len(script)
+			}
+
+		case script[i] == '\'':
+			// SQL escapes a quote by doubling it, which needs no special case:
+			// the closing quote of the first pair puts the scanner back
+			// outside, and the second pair opens and closes again.
+			if next := strings.IndexByte(script[i+1:], '\''); next >= 0 {
+				i += 1 + next
+			} else {
+				i = len(script)
+			}
+
+		case script[i] == ';':
+			if trimmed := strings.TrimSpace(script[start:i]); trimmed != "" {
+				statements = append(statements, trimmed)
+			}
+			start = i + 1
 		}
+	}
+
+	// Whatever follows the last semicolon, for a script that does not end with
+	// one.
+	if trimmed := strings.TrimSpace(script[start:]); trimmed != "" {
+		statements = append(statements, trimmed)
 	}
 	return statements
 }

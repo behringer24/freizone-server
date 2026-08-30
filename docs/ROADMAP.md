@@ -1591,9 +1591,10 @@ text, and no counter reset, only resolution that stays visible.
     double for the price of one lie the server can disprove by looking
   - found while writing the migration: `splitStatements` splits SQL on every
     `;`, **including one inside a `--` comment**, which turns the rest of the
-    sentence into a statement and fails the migration. Its doc comment warns
-    about string literals but not comments. Worked around by rewording; the
-    splitter itself is untouched
+    sentence into a statement and fails the migration. Its doc comment warned
+    about string literals but not comments. Worked around by rewording at the
+    time; **fixed properly on 2026-08-30** (below), and 0016's comment now
+    reads the way it was written
 
 - 2026-08-30 — **`pkg/client` closed the loop**: `Report`/`WithdrawReport`, the
   evidence taken from the claim store and nothing else, `reports_enabled` on
@@ -1633,3 +1634,13 @@ text, and no counter reset, only resolution that stays visible.
     hold a notice would put every member in the chat list
   - no line for a blocked peer, whose name is still adopted so unblocking them
     does not show a stale one
+
+- 2026-08-30 — **`splitStatements` now scans instead of splitting.** A `;` in a
+  line comment, a block comment or a string literal no longer ends a statement.
+  Prose is where a semicolon is most likely to appear and least likely to be
+  suspected -- it failed with a syntax error naming an English word -- so the
+  fix covers the whole class rather than the one case that bit. Comments stay
+  in the statement they belong to, since SQLite ignores them and dropping them
+  would make an error harder to place in the file it came from. Eleven cases in
+  `migrate_split_test.go`, including 0016's original sentence, which is now
+  back in the migration as written.
