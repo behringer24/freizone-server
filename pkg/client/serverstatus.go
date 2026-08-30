@@ -49,6 +49,16 @@ type ServerStatus struct {
 	// against the host actually being talked to, never the domain the token
 	// names.
 	Attestation string
+
+	// ReportsEnabled says whether this server accepts abuse reports (SRV-33).
+	// Absent means FALSE, unlike FederationEnabled: a server that does not say
+	// predates the endpoints and has none, so offering the action would produce
+	// a 404 the user has to interpret.
+	//
+	// Two separate questions in practice, and a caller has to ask both: its own
+	// server decides whether reporting is offered at all, the *reported*
+	// account's server decides whether it can additionally be told.
+	ReportsEnabled bool
 }
 
 // serverStatusWire mirrors the endpoint. Pointers wherever "absent" and the
@@ -64,6 +74,7 @@ type serverStatusWire struct {
 	BatchMessages      bool   `json:"batch_messages"`
 	MaxBatchMessages   int    `json:"max_batch_messages"`
 	Attestation        string `json:"attestation"`
+	ReportsEnabled     bool   `json:"reports_enabled"`
 }
 
 // ServerStatus fetches a server's capabilities. Pass an empty server for this
@@ -97,6 +108,7 @@ func (w serverStatusWire) resolve() ServerStatus {
 		BatchMessages:      w.BatchMessages,
 		MaxBatchMessages:   w.MaxBatchMessages,
 		Attestation:        w.Attestation,
+		ReportsEnabled:     w.ReportsEnabled,
 	}
 	if w.FederationEnabled != nil {
 		status.FederationEnabled = *w.FederationEnabled

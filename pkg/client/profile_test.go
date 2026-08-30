@@ -261,3 +261,91 @@ func TestProfileHistoryIsBounded(t *testing.T) {
 		t.Errorf("the newest claim is not first: %q", profile.Name())
 	}
 }
+
+// A stranger's opening message arrives before their device has ever been
+// resolved -- and that is exactly the message whose sender cannot be placed.
+// The claim is held, and adopted the moment their key is learned.
+func TestClaimFromAFirstMessageIsHeldUntilTheKeyArrives(t *testing.T) {
+	c, p := newFixture(t, "me", "them", nil)
+
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	raw := make([]byte, 8)
+	if _, err := rand.Read(raw); err != nil {
+		t.Fatalf("device id: %v", err)
+	}
+	deviceID := hex.EncodeToString(raw)
+
+	claim, err := profileclaim.Sign("them", deviceID, "Anna", time.Now(), priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	// No putPeerDevice yet: this is a first message from somebody unknown.
+	res := mustHandle(t, c, p.msg("m1", p.send(claimPayload(t, "id-1", "hello", claim))), ReceiveOptions{})
+	if res.ProfileRenamed {
+		t.Error("an unverified claim was reported as a rename")
+	}
+	if name := nameOf(t, c, "them"); name != "" {
+		t.Errorf("an unverified claim is showing as %q", name)
+	}
+
+	// Resolving them -- which a reply, or opening the request, does -- is what
+	// the held claim was waiting on.
+	if err := c.putPeerDevice(PeerEndpoint{AccountID: "them", DeviceID: deviceID, DevicePub: pub}); err != nil {
+		t.Fatalf("putPeerDevice: %v", err)
+	}
+	if name := nameOf(t, c, "them"); name != "Anna" {
+		t.Errorf("after learning their key the name is %q, want %q", name, "Anna")
+	}
+}
+
+// A held claim that turns out not to be theirs is discarded when the key
+// arrives, not kept for another try: the key was the answer it waited on.
+func TestHeldClaimSignedByAStrangerIsDiscarded(t *testing.T) {
+	c, p := newFixture(t, "me", "them", nil)
+
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	_, otherPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	raw := make([]byte, 8)
+	if _, err := rand.Read(raw); err != nil {
+		t.Fatalf("device id: %v", err)
+	}
+	deviceID := hex.EncodeToString(raw)
+
+	forged, err := profileclaim.Sign("them", deviceID, "Bank Support", time.Now(), otherPriv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	mustHandle(t, c, p.msg("m1", p.send(claimPayload(t, "id-1", "hello", forged))), ReceiveOptions{})
+
+	if err := c.putPeerDevice(PeerEndpoint{AccountID: "them", DeviceID: deviceID, DevicePub: pub}); err != nil {
+		t.Fatalf("putPeerDevice: %v", err)
+	}
+	if name := nameOf(t, c, "them"); name != "" {
+		t.Errorf("a forged held claim was promoted as %q", name)
+	}
+	file, _, err := c.readProfileLocked("them")
+	if err != nil {
+		t.Fatalf("readProfileLocked: %v", err)
+	}
+	if len(file.Pending) != 0 {
+		t.Error("the held claim was kept after the key had already answered it")
+	}
+}
+
+func nameOf(t *testing.T, c *Client, peer string) string {
+	t.Helper()
+	profile, err := c.PeerProfile(peer)
+	if err != nil {
+		t.Fatalf("PeerProfile: %v", err)
+	}
+	return profile.Name()
+}

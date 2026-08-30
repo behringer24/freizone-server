@@ -123,7 +123,21 @@ func (c *Client) SetProfileName(name string) error {
 		return nil
 	}
 	settings.ProfileName = name
-	now := time.Now().UTC()
+
+	// Truncated to the second, because that is the precision the claim's
+	// signing bytes carry (PROTOCOL §6) -- and then forced strictly forward of
+	// the previous stamp.
+	//
+	// Without that last step two renames inside one second produce the same
+	// timestamp, and since ordering is "strictly newer", the second one is
+	// never sent and never adopted: somebody who mistypes their name and
+	// corrects it immediately would be stuck with the typo for good, on every
+	// peer, with no way to dislodge it. The stamp is really a version number
+	// for the claim rather than a time, so stepping it is honest.
+	now := time.Now().UTC().Truncate(time.Second)
+	if previous, err := parseTime(settings.ProfileNameSetAt); err == nil && previous != nil && !now.After(*previous) {
+		now = previous.Add(time.Second)
+	}
 	settings.ProfileNameSetAt = formatTime(&now)
 
 	path, err := c.store.settingsPath()

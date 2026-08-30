@@ -20,6 +20,7 @@ import (
 	"github.com/behringer24/freizone-server/pkg/address"
 	"github.com/behringer24/freizone-server/pkg/devicecert"
 	"github.com/behringer24/freizone-server/pkg/httpsig"
+	"github.com/behringer24/freizone-server/pkg/profileclaim"
 )
 
 // Enough of a Freizone server for two real clients to hold a conversation
@@ -50,6 +51,14 @@ type fakeServer struct {
 
 	// federationEnabled is what /v1/server-status reports.
 	federationEnabled bool
+
+	// reportsEnabled is what /v1/server-status reports for SRV-33, and whether
+	// the report routes accept anything.
+	reportsEnabled bool
+
+	// reports and withdrawals record what the client actually sent.
+	reports     []recordedReport
+	withdrawals []string
 
 	// sendStatus, when set, is the status every message POST is answered with
 	// instead of accepting it -- how a test makes delivery fail on demand.
@@ -151,6 +160,7 @@ func newFakeServer(t *testing.T) *fakeServer {
 		blobs:             map[string][]byte{},
 		blobRecipients:    map[string][]string{},
 		federationEnabled: true,
+		reportsEnabled:    true,
 	}
 	srv := httptest.NewServer(http.HandlerFunc(s.serve))
 	t.Cleanup(srv.Close)
@@ -266,6 +276,7 @@ func (s *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 			"federation_enabled": s.federationEnabled,
 			"batch_messages":     true,
 			"max_batch_messages": 16,
+			"reports_enabled":    s.reportsEnabled,
 		})
 
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/v1/accounts/"):
@@ -283,6 +294,12 @@ func (s *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 			RootPubKey: base64.StdEncoding.EncodeToString(acc.rootPub),
 			Devices:    acc.devices,
 		})
+
+	case r.Method == http.MethodPost && (path == "/v1/reports" || path == "/v1/federation/reports"):
+		s.handleReport(w, r, path)
+
+	case r.Method == http.MethodDelete && strings.Contains(path, "/reports/"):
+		s.handleWithdraw(w, path)
 
 	case r.Method == http.MethodPost && (path == "/v1/accounts" || path == "/v1/bootstrap/claim"):
 		s.handleRegister(w, r, path == "/v1/bootstrap/claim")
@@ -846,4 +863,77 @@ func (s *fakeServer) writeError(w http.ResponseWriter, status int, code string) 
 	if err := json.NewEncoder(w).Encode(body); err != nil {
 		s.t.Errorf("encoding error response: %v", err)
 	}
+}
+
+// recordedReport is one report this fake server was sent, kept so a test can
+// assert on what actually went over the wire -- above all the evidence, which
+// is the field with a rule attached to it.
+type recordedReport struct {
+	path     string
+	reported string
+	category string
+	evidence []profileclaim.Claim
+	sender   string
+}
+
+// handleReport records a report POST, or refuses it the way a server with
+// reporting switched off does.
+func (s *fakeServer) handleReport(w http.ResponseWriter, r *http.Request, path string) {
+	if !s.reportsEnabled {
+		s.writeError(w, http.StatusNotFound, "reports_disabled")
+		return
+	}
+	var body struct {
+		Reported        string               `json:"reported"`
+		Category        string               `json:"category"`
+		Evidence        []profileclaim.Claim `json:"evidence"`
+		SenderAccountID string               `json:"sender_account_id"`
+		SenderServer    string               `json:"sender_server"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	s.reports = append(s.reports, recordedReport{
+		path: path, reported: body.Reported, category: body.Category,
+		evidence: body.Evidence, sender: body.SenderAccountID,
+	})
+	s.writeJSON(w, map[string]string{"status": "ok"})
+}
+
+// handleWithdraw records a withdrawal, answering 404 when there is nothing to
+// withdraw -- which the client must treat as the outcome, not as a failure.
+func (s *fakeServer) handleWithdraw(w http.ResponseWriter, path string) {
+	if !s.reportsEnabled {
+		s.writeError(w, http.StatusNotFound, "reports_disabled")
+		return
+	}
+	reported := path[strings.LastIndex(path, "/reports/")+len("/reports/"):]
+	for i, rep := range s.reports {
+		if rep.reported == reported {
+			s.reports = append(s.reports[:i], s.reports[i+1:]...)
+			s.withdrawals = append(s.withdrawals, reported)
+			s.writeJSON(w, map[string]string{"status": "ok"})
+			return
+		}
+	}
+	s.withdrawals = append(s.withdrawals, reported)
+	s.writeError(w, http.StatusNotFound, "not_found")
+}
+
+// recordedReports is what this server has been sent and not had withdrawn.
+func (s *fakeServer) recordedReports() []recordedReport {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]recordedReport, len(s.reports))
+	copy(out, s.reports)
+	return out
+}
+
+// setReportsEnabled flips the operator switch, for the tests that need a
+// server which refuses reports the way a real one does.
+func (s *fakeServer) setReportsEnabled(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reportsEnabled = enabled
 }
