@@ -351,3 +351,40 @@ func (c *Client) verifyPendingClaims(peer, deviceID string, devicePub []byte) er
 		f.Pending = nil
 	})
 }
+
+// PeerProfileNames is the asserted name of every peer this account holds one
+// for, keyed by account id. Peers with no claim, or whose claim was withdrawn,
+// are absent rather than present-and-empty.
+//
+// One call rather than one per peer, because the callers are lists: a chat
+// list, a group's member list, a contacts screen. Reading a small file per
+// peer is what the layout is built for (see layout.go), but doing it from a
+// widget rebuild would not be.
+func (c *Client) PeerProfileNames() (map[string]string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	dir, err := c.store.path(dirPeers)
+	if err != nil {
+		return nil, err
+	}
+	peers, err := listDirs(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	names := make(map[string]string, len(peers))
+	for _, peer := range peers {
+		stored, found, err := c.readProfileLocked(peer)
+		if err != nil {
+			return nil, err
+		}
+		if !found || len(stored.Claims) == 0 {
+			continue
+		}
+		if name := stored.Claims[0].Name; name != "" {
+			names[peer] = name
+		}
+	}
+	return names, nil
+}

@@ -349,3 +349,46 @@ func nameOf(t *testing.T, c *Client, peer string) string {
 	}
 	return profile.Name()
 }
+
+func TestPeerProfileNamesListsOnlyAssertedNames(t *testing.T) {
+	c, p := newFixture(t, "me", "them", nil)
+	deviceID, priv := knownDevice(t, c, "them")
+
+	// A peer with a session but no claim must not appear at all -- absent is
+	// how a caller tells "they have not said" from "they said nothing".
+	if err := c.putPeerDevice(PeerEndpoint{
+		AccountID: "silent", DeviceID: deviceID, DevicePub: []byte("x"),
+	}); err != nil {
+		t.Fatalf("putPeerDevice: %v", err)
+	}
+
+	claim, err := profileclaim.Sign("them", deviceID, "Anna", time.Now(), priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	mustHandle(t, c, p.msg("m1", p.send(claimPayload(t, "id-1", "hello", claim))), ReceiveOptions{})
+
+	names, err := c.PeerProfileNames()
+	if err != nil {
+		t.Fatalf("PeerProfileNames: %v", err)
+	}
+	if len(names) != 1 || names["them"] != "Anna" {
+		t.Fatalf("names = %v, want just them", names)
+	}
+
+	// A withdrawal removes them from the listing rather than listing an empty
+	// name, which every caller would have to special-case.
+	withdrawn, err := profileclaim.Sign("them", deviceID, "", time.Now().Add(time.Minute), priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	p.settled()
+	mustHandle(t, c, p.msg("m2", p.send(claimPayload(t, "id-2", "bye", withdrawn))), ReceiveOptions{})
+
+	if names, err = c.PeerProfileNames(); err != nil {
+		t.Fatalf("PeerProfileNames: %v", err)
+	}
+	if len(names) != 0 {
+		t.Errorf("names = %v after a withdrawal, want none", names)
+	}
+}
