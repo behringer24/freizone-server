@@ -114,19 +114,37 @@ type adminAccountResponse struct {
 	// cannot read its absence as "registered openly" -- only as "not known
 	// here".
 	InvitedBy *string `json:"invited_by,omitempty"`
+
+	// Open reports about this account, never summed (SRV-33): ReportsFederated
+	// can be raised by anybody on any server, so a combined figure is one a
+	// stranger can inflate and an operator therefore cannot act on. Always
+	// present and zero rather than absent, on the activity signals' rule, so
+	// "none" is distinguishable from a server too old to report them.
+	ReportsLocal     int `json:"reports_local"`
+	ReportsFederated int `json:"reports_federated"`
+
+	// The mirror, which is what makes brigading visible: how much this account
+	// has filed and still has open, and how often one of its reports was
+	// resolved as abusive.
+	ReportsFiled   int `json:"reports_filed"`
+	ReportsAbusive int `json:"reports_abusive"`
 }
 
-func adminAccountResponseFrom(acc store.Account, activity store.AccountActivity, maxBlobBytesPerDevice int64, invitedBy string) adminAccountResponse {
+func adminAccountResponseFrom(acc store.Account, activity store.AccountActivity, maxBlobBytesPerDevice int64, invitedBy string, reports store.ReportCounts) adminAccountResponse {
 	resp := adminAccountResponse{
-		ID:              acc.ID,
-		Role:            string(acc.Role),
-		Status:          acc.Status,
-		CreatedAt:       acc.CreatedAt.UTC().Format(time.RFC3339),
-		PendingMessages: activity.PendingMessages,
-		BlobCount:       activity.BlobCount,
-		BlobBytes:       activity.BlobBytes,
-		BlobBytesLimit:  maxBlobBytesPerDevice * int64(activity.DeviceCount),
-		DeviceCount:     activity.DeviceCount,
+		ID:               acc.ID,
+		Role:             string(acc.Role),
+		Status:           acc.Status,
+		CreatedAt:        acc.CreatedAt.UTC().Format(time.RFC3339),
+		PendingMessages:  activity.PendingMessages,
+		BlobCount:        activity.BlobCount,
+		BlobBytes:        activity.BlobBytes,
+		BlobBytesLimit:   maxBlobBytesPerDevice * int64(activity.DeviceCount),
+		DeviceCount:      activity.DeviceCount,
+		ReportsLocal:     reports.Local,
+		ReportsFederated: reports.Federated,
+		ReportsFiled:     reports.Filed,
+		ReportsAbusive:   reports.Abusive,
 	}
 	if !activity.OldestPendingAt.IsZero() {
 		oldest := activity.OldestPendingAt.UTC().Format(time.RFC3339)
@@ -209,6 +227,14 @@ type serverStatusResponse struct {
 	// from the domain binding a client checks after verifying it, not from
 	// being hidden.
 	Attestation string `json:"attestation,omitempty"`
+
+	// ReportsEnabled (SRV-33) says whether this server accepts abuse reports.
+	// Absence means **off**, on blobs_enabled's rule -- a server that omits it
+	// predates the endpoints and has none. A client checks its own server
+	// before offering the button at all, and checks the *target's* server
+	// before offering to forward a report about a federated account, which is
+	// a separate question with a separate answer.
+	ReportsEnabled bool `json:"reports_enabled"`
 }
 
 type federationEnabledResponse struct {
@@ -289,7 +315,7 @@ type prekeyBundleResponse struct {
 }
 
 const (
-	oneTimePrekeyOmittedPoolEmpty      = "pool_empty"
+	oneTimePrekeyOmittedPoolEmpty       = "pool_empty"
 	oneTimePrekeyOmittedUnauthenticated = "unauthenticated"
 )
 
@@ -483,7 +509,7 @@ type serverStatsResponse struct {
 	DiskFreeBytes  int64 `json:"disk_free_bytes"`
 	DiskTotalBytes int64 `json:"disk_total_bytes"`
 
-	FederationEnabled         bool `json:"federation_enabled"`
+	FederationEnabled        bool `json:"federation_enabled"`
 	FederationBlocklistCount int  `json:"federation_blocklist_count"`
 
 	// Forecast is how the stored attachments will drain and where they settle.
@@ -572,7 +598,7 @@ type serverStatsPointResponse struct {
 	DiskFreeBytes  int64 `json:"disk_free_bytes"`
 	DiskTotalBytes int64 `json:"disk_total_bytes"`
 
-	FederationEnabled         bool `json:"federation_enabled"`
+	FederationEnabled        bool `json:"federation_enabled"`
 	FederationBlocklistCount int  `json:"federation_blocklist_count"`
 }
 

@@ -57,6 +57,8 @@ func newTestAPI(t *testing.T, policy config.RegistrationPolicy) (*API, *sql.DB) 
 		MaxBlobRecipients:          100,
 		BlobRetentionDays:          14,
 		LandingPageEnabled:         true,
+		ReportsEnabled:             true,
+		ReportRetentionDays:        90,
 	}
 	authMW := auth.NewMiddleware(db, nil)
 	// Matches cmd/server: the blob upload authenticates against the client's

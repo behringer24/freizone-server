@@ -50,5 +50,6 @@ func (a *API) handleGetServerStatus(w http.ResponseWriter, r *http.Request) {
 		BatchMessages:    true,
 		MaxBatchMessages: a.Config.MaxBatchMessages,
 		Attestation:      a.Config.Attestation,
+		ReportsEnabled:   a.Config.ReportsEnabled,
 	})
 }

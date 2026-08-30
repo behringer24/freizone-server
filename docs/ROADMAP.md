@@ -1550,7 +1550,7 @@ one); the display half is APP-27.
     peer's own file. Both are now read-modify-write
 
 ### SRV-33 — Reporting an account to its operator
-Status: `planned` · Also affects: freizone-app (APP-28) · Depends on: SRV-32
+Status: `in progress` · Also affects: freizone-app (APP-28) · Depends on: SRV-32
 Design: [design/33-abuse-reports.md](design/33-abuse-reports.md)
 
 An operator has `block` and `delete` but no way to learn either is warranted:
@@ -1573,3 +1573,24 @@ text, and no counter reset, only resolution that stays visible.
 - **Named limit**: where the reported account is the server's only admin, the
   report reaches the person it is about. Nothing sits above one's own operator
   in a federated system; the app says so at the moment it applies.
+
+- 2026-08-30 — **the server half shipped**: migration 0016, `internal/store/
+  reports.go`, the four member/staff endpoints plus their two federated twins,
+  the counters on `GET /v1/admin/accounts`, `reports_enabled` on
+  `GET /v1/server-status`, the retention sweep, and PROTOCOL §12. Three things
+  worth recording:
+  - **addresses, not foreign keys.** Either side of a report may live on
+    another server, so there is no row to point at in half the cases. The
+    consequence is that account deletion clears reports naming it on either
+    side, and that lives inside `store.DeleteAccount` rather than at its two
+    call sites, so a third caller cannot forget it
+  - **a local reporter is filed as local whatever the request claims.** A
+    local account could otherwise come in through the federated route with a
+    made-up `sender_server` and land a *second* row against the same target --
+    the unique constraint is per (reporter, reported), so the counter would
+    double for the price of one lie the server can disprove by looking
+  - found while writing the migration: `splitStatements` splits SQL on every
+    `;`, **including one inside a `--` comment**, which turns the rest of the
+    sentence into a statement and fails the migration. Its doc comment warns
+    about string literals but not comments. Worked around by rewording; the
+    splitter itself is untouched
