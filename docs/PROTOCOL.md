@@ -1213,6 +1213,16 @@ Receiving rules, in order:
    sender's account. A claim that does not verify — or whose `name` breaks the
    rules below — is **dropped silently, and the envelope carrying it is
    delivered normally**. A name is never worth failing a message over.
+
+   A claim whose signing key is simply **not known yet** is a different case
+   and must be **held, not dropped**: a stranger's first message arrives before
+   their device has ever been resolved, and that is precisely the message whose
+   sender the recipient cannot place. Hold it (bounded, like the history), and
+   check it when that account's key material is next fetched — anything that
+   fails *then* is discarded, since the key is the answer it was waiting on.
+   Fetching one on the spot is the wrong fix: this runs wherever messages are
+   received, including a background push wake with no user and no guarantee of
+   a working network.
 2. Ignore a claim whose `issued_at` is not **strictly newer** than the newest
    already stored for that account. Last writer wins, per account, by the
    sender's own clock; equal timestamps do not supersede, so a replay cannot
@@ -1232,6 +1242,14 @@ are allowed — composed emoji need them and they reorder nothing.
 An **empty `name` is a withdrawal**, not an empty name: it is a normal, signed
 claim that retracts the one before it. Without it there is no way back out of
 having stated a name.
+
+A sender must also make each new claim's `issued_at` **strictly later than its
+own previous one**, stepping it forward when two changes fall in the same
+second. Ordering is strictly-newer, so two claims sharing a timestamp make the
+second unsendable and unadoptable — somebody who mistypes their name and
+corrects it a moment later would otherwise be stuck with the typo on every
+peer, permanently. The value is a version number for the claim more than it is
+a time.
 
 Nothing about this reaches a server, and no server-side support exists or is
 needed — there is no capability to discover and nothing an older server is

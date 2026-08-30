@@ -195,6 +195,18 @@ func (c *Client) peerDevice(peer string) (*peerDeviceFile, error) {
 }
 
 func (c *Client) putPeerDevice(endpoint PeerEndpoint) error {
+	if err := c.writePeerDevice(endpoint); err != nil {
+		return err
+	}
+	// Learning their key is what a claim held from a first message has been
+	// waiting on (SRV-32): a stranger's opening message arrives before their
+	// device has ever been resolved, which is exactly the message whose sender
+	// the user cannot place. Done after the write, and outside its lock, so
+	// the cache is in place before anything is checked against it.
+	return c.verifyPendingClaims(endpoint.AccountID, endpoint.DeviceID, endpoint.DevicePub)
+}
+
+func (c *Client) writePeerDevice(endpoint PeerEndpoint) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

@@ -1594,3 +1594,28 @@ text, and no counter reset, only resolution that stays visible.
     sentence into a statement and fails the migration. Its doc comment warns
     about string literals but not comments. Worked around by rewording; the
     splitter itself is untouched
+
+- 2026-08-30 — **`pkg/client` closed the loop**: `Report`/`WithdrawReport`, the
+  evidence taken from the claim store and nothing else, `reports_enabled` on
+  `ServerStatus` (absent means off), and the federated variants. Writing the
+  tests turned up two real defects in SRV-32, both now fixed and pinned:
+  - **a claim from a first message was thrown away.** It is verified against
+    the cached peer device, and that cache is only written when we first
+    *resolve* somebody -- so a stranger's opening message, which is exactly the
+    one whose sender cannot be placed, lost its name. Claims whose key is not
+    known yet are now **held** and promoted when `putPeerDevice` learns it;
+    anything that fails then is discarded, since the key was the answer it was
+    waiting on. Fetching on the spot was rejected: the receive path runs in the
+    push isolate with no network guarantee. PROTOCOL §6 says so now, since a
+    second implementation would otherwise repeat the bug
+  - **two renames in the same second were indistinguishable.** `issued_at` is
+    truncated to the second to match the signing bytes, and ordering is
+    strictly-newer, so the second change was never sent and never adopted --
+    mistype a name, correct it immediately, and the typo would stand on every
+    peer forever. `SetProfileName` now steps the stamp past the previous one;
+    it is a version number more than a time, and §6 states the rule
+  - one refactor came out of it: every write to a peer's profile file goes
+    through `updateProfileLocked` now. The file holds three independent things,
+    and building a fresh struct for one of them silently cleared the others
+    twice while this was being written -- the same shape of bug as
+    `SetReceiptsEnabled`

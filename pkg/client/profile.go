@@ -46,6 +46,16 @@ func (p *PeerProfile) Name() string {
 type profileFile struct {
 	Claims []profileclaim.Claim `json:"claims,omitempty"`
 
+	// Pending holds claims that arrived before this device had the sender's
+	// key to check them against -- which is the ordinary case for a first
+	// message from a stranger, since their device is only resolved when we
+	// first send to them. Held rather than dropped precisely because that is
+	// the moment a name is worth most: an incoming request from an id nobody
+	// recognises. Never read for display; [Client.verifyPendingClaims]
+	// promotes them once the key arrives, and anything that fails then is
+	// discarded.
+	Pending []profileclaim.Claim `json:"pending,omitempty"`
+
 	// SentAt is the IssuedAt of the last claim we sent *this* peer about
 	// ourselves -- the other direction, kept in the same file because both are
 	// touched on the same paths.
@@ -60,16 +70,45 @@ func (c *Client) PeerProfile(peer string) (*PeerProfile, error) {
 }
 
 func (c *Client) peerProfileLocked(peer string) (*PeerProfile, error) {
-	path, err := c.store.peerPath(peer, fileProfile)
-	if err != nil {
-		return nil, err
-	}
-	var stored profileFile
-	found, err := readJSON(path, &stored)
+	stored, found, err := c.readProfileLocked(peer)
 	if err != nil || !found {
 		return nil, err
 	}
+	// Pending is deliberately not carried into the public type: everything in
+	// a PeerProfile has been verified, and a caller must never have to ask
+	// which half of it was.
 	return &PeerProfile{Claims: stored.Claims, SentAt: stored.SentAt}, nil
+}
+
+func (c *Client) readProfileLocked(peer string) (profileFile, bool, error) {
+	path, err := c.store.peerPath(peer, fileProfile)
+	if err != nil {
+		return profileFile{}, false, err
+	}
+	var stored profileFile
+	found, err := readJSON(path, &stored)
+	return stored, found, err
+}
+
+// updateProfileLocked reads this peer's file, hands it to mutate, and writes
+// it back whole.
+//
+// Every write goes through here on purpose. The file holds three independent
+// things -- their claims, the ones still waiting on a key, and what we last
+// told them about ourselves -- and building a fresh struct for one of them
+// silently cleared the other two twice while this was being written.
+func (c *Client) updateProfileLocked(peer string, mutate func(*profileFile)) error {
+	stored, _, err := c.readProfileLocked(peer)
+	if err != nil {
+		return err
+	}
+	mutate(&stored)
+
+	path, err := c.store.peerPath(peer, fileProfile)
+	if err != nil {
+		return err
+	}
+	return writeJSON(path, stored)
 }
 
 // applyProfileClaim verifies a claim that arrived from peer and stores it when
@@ -97,7 +136,11 @@ func (c *Client) applyProfileClaim(peer string, claim *profileclaim.Claim) (chan
 		return false, err
 	}
 	if cached == nil || cached.DeviceID != claim.DeviceID || len(cached.DevicePub) == 0 {
-		return false, nil
+		// Held, not dropped: a first message from a stranger arrives before
+		// their device has ever been resolved, and that is exactly the message
+		// whose sender the user cannot place. verifyPendingClaims picks it up
+		// the moment the key lands.
+		return false, c.holdProfileClaim(peer, claim)
 	}
 	if err := claim.Verify(peer, cached.DevicePub); err != nil {
 		return false, nil
@@ -115,26 +158,20 @@ func (c *Client) applyProfileClaim(peer string, claim *profileclaim.Claim) (chan
 	}
 
 	before := stored.Name()
-	file := profileFile{Claims: []profileclaim.Claim{*claim}}
-	if stored != nil {
-		file.Claims = append(file.Claims, stored.Claims...)
-		// Carried over, not dropped: this file holds both directions, and
-		// forgetting what we last sent them would re-attach our own claim to
-		// the next envelope for no reason.
-		file.SentAt = stored.SentAt
-	}
-	if len(file.Claims) > maxProfileClaims {
-		file.Claims = file.Claims[:maxProfileClaims]
-	}
-
-	path, err := c.store.peerPath(peer, fileProfile)
-	if err != nil {
-		return false, err
-	}
-	if err := writeJSON(path, file); err != nil {
+	if err := c.updateProfileLocked(peer, func(f *profileFile) {
+		f.Claims = capClaims(append([]profileclaim.Claim{*claim}, f.Claims...))
+	}); err != nil {
 		return false, err
 	}
 	return claim.Name != before, nil
+}
+
+// capClaims keeps a history bounded, newest first.
+func capClaims(claims []profileclaim.Claim) []profileclaim.Claim {
+	if len(claims) > maxProfileClaims {
+		return claims[:maxProfileClaims]
+	}
+	return claims
 }
 
 // profileClaimFor mints the claim to attach to the next envelope for peer, or
@@ -175,22 +212,8 @@ func (c *Client) profileClaimSent(peer string, claim *profileclaim.Claim) error 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	stored, err := c.peerProfileLocked(peer)
-	if err != nil {
-		return err
-	}
-	file := profileFile{}
-	if stored != nil {
-		file.Claims = stored.Claims
-	}
 	sent := claim.IssuedAt
-	file.SentAt = &sent
-
-	path, err := c.store.peerPath(peer, fileProfile)
-	if err != nil {
-		return err
-	}
-	return writeJSON(path, file)
+	return c.updateProfileLocked(peer, func(f *profileFile) { f.SentAt = &sent })
 }
 
 // ownProfileClaimLocked signs this account's current name, or returns nil when
@@ -274,4 +297,57 @@ func (c *Client) profileClaimDelivered(deliveries []GroupDelivery, claim *profil
 		}
 	}
 	return nil
+}
+
+// holdProfileClaim parks a claim this device cannot check yet.
+//
+// Bounded like the verified history, and for a stronger reason: this is the
+// one path an unauthenticated stranger can write to, so it must not be a way
+// to grow a file on somebody else's disk.
+func (c *Client) holdProfileClaim(peer string, claim *profileclaim.Claim) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.updateProfileLocked(peer, func(f *profileFile) {
+		f.Pending = capClaims(append([]profileclaim.Claim{*claim}, f.Pending...))
+	})
+}
+
+// verifyPendingClaims promotes whatever was held for peer, now that their
+// device key is known. Called when that key is first cached.
+//
+// Anything that does not verify against it is discarded rather than kept for
+// another try: the key is the answer to the question the claim was waiting on.
+//
+// Deliberately reports nothing back. A promoted claim is the *first* name this
+// device has for that peer, not a rename, so there is no transcript line to
+// write -- and the screen that made the resolution happen is about to render
+// the label anyway.
+func (c *Client) verifyPendingClaims(peer, deviceID string, devicePub []byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	stored, found, err := c.readProfileLocked(peer)
+	if err != nil || !found || len(stored.Pending) == 0 {
+		return err
+	}
+
+	return c.updateProfileLocked(peer, func(f *profileFile) {
+		// Oldest first, so a held sequence of renames ends up ordered the same
+		// way as one that arrived with the key already known.
+		for i := len(f.Pending) - 1; i >= 0; i-- {
+			claim := f.Pending[i]
+			if claim.DeviceID != deviceID || claim.Verify(peer, devicePub) != nil {
+				continue
+			}
+			if current := (&PeerProfile{Claims: f.Claims}).Current(); current != nil &&
+				!claim.SupersedesTime(current.IssuedAt) {
+				continue
+			}
+			f.Claims = capClaims(append([]profileclaim.Claim{claim}, f.Claims...))
+		}
+		// Cleared wholesale: the key was the answer these were waiting on, so
+		// anything that did not verify against it never will.
+		f.Pending = nil
+	})
 }
