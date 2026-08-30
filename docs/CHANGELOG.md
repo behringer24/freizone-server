@@ -14,6 +14,100 @@ terser than what follows — the tag was the changelog at the time.
 
 ## [Unreleased]
 
+## [0.27.0] — 2026-08-30
+
+Two features that belong together: an account can say what it is called, and a
+member can tell an operator that an account is a problem. The first needs
+nothing from a server at all — the name travels inside the encrypted channel,
+so the server never sees it. The second is the operator's missing half:
+`block` and `delete` existed, with no way to learn either was warranted.
+
+The rule both follow is that a name is never evidence. Anyone may call
+themselves anything, a signature only proves that this account said it, and a
+report is somebody's account of a conversation the server cannot read. So the
+name is signed but never verified as true, and the report raises a counter for
+a person to look at rather than anything that acts on its own.
+
+### Added
+
+* **A self-asserted profile name** (`SRV-32`), carried as an optional
+  `profile` field on the `v: 1`, `v: 2` and `v: 4` client-to-client envelopes
+  — deliberately not a control envelope of its own, since §6 renders an
+  unknown version as a visible placeholder and a rename would then paint a
+  ghost message into every older peer's transcript. Signed by the sending
+  device's identity key over deterministic bytes (§6), so the chain root →
+  device certificate → claim is verifiable by any recipient from
+  `GET /v1/accounts/{id}`.
+
+  **No server-side support exists or is needed**: there is no endpoint, no
+  column and no capability flag, and nothing for an older server to be
+  missing. `pkg/profileclaim` is its own package so that a server can verify
+  the claims a report carries without importing the client core.
+
+  An empty name is a withdrawal, not an empty name. Names are bounded at 64
+  bytes and must carry no control characters, line breaks or Unicode
+  bidirectional formatting — the last of those is the one with teeth, since an
+  override renders a name as something other than what it says.
+
+  A rename that reaches an existing conversation is stated once in the
+  transcript. Adopting one silently was rejected: renaming to something
+  official-sounding is exactly what this could be misused for, and the person
+  reading the chat is the only one positioned to notice.
+
+* **Reporting an account to its operator** (`SRV-33`) — `POST /v1/reports`,
+  `DELETE /v1/reports/{reported}`, their federated twins under
+  `/v1/federation/reports`, plus `GET /v1/admin/reports` and
+  `POST /v1/admin/reports/{id}/resolve` for staff. `GET /v1/server-status`
+  gains `reports_enabled`, absent meaning **off** on `blobs_enabled`'s rule.
+
+  **Reports are named.** The reporter is stored and shown to staff, because an
+  operator who cannot ask "what happened?" can do nothing with a number — and
+  because named reporting is itself the defence against brigading. Withdrawal
+  is always available, and an `abusive` outcome counts against the reporter.
+
+  Anyone may report anyone, staff included; an admin nobody can raise a
+  problem about would not be one. The limit is on *acting*: a moderator sees
+  and resolves reports about regular members, and ones targeting staff are
+  admin-only — the query does not ask for them rather than filtering them out
+  (§4's `invited_by` precedent).
+
+  Four counters join `GET /v1/admin/accounts`: `reports_local` and
+  `reports_federated` about an account, never summed since anybody on any
+  server can raise the second, plus `reports_filed` and `reports_abusive`
+  about reports it made. Categories are a fixed set and there is **no free
+  text** — free text on a server is a store of personal allegations, and a
+  channel for writing at the operator that nothing moderates.
+
+  There is no server-to-server relay (§9): a reporter who also wants the
+  target's operator to know posts there itself, and whether to do so is their
+  decision, since it hands their address to an operator they do not know.
+
+* `FREIZONE_REPORTS_ENABLED` (default `true`) and
+  `FREIZONE_REPORT_RETENTION_DAYS` (default `90`). Reports expire, resolved and
+  open alike: a counter that never falls becomes a criminal record for
+  something that was never proven, and the evidence goes with the row. They are
+  also cleared when either account is deleted.
+
+### Fixed
+
+* **`splitStatements` split migrations on a semicolon inside a comment**, which
+  turned the rest of an English sentence into a statement and failed the
+  migration with a syntax error naming a word. It now scans instead of
+  splitting, so a `;` in a line comment, a block comment or a string literal no
+  longer ends a statement.
+
+* **`SetReceiptsEnabled` rewrote the whole per-account settings file**, so it
+  would have cleared any other value stored beside it. Read-modify-write now.
+
+* Two renames of a profile name inside the same second were indistinguishable,
+  since `issued_at` is second-precision and ordering is strictly-newer — a
+  mistyped name corrected immediately would have stood on every peer forever.
+
+* A profile claim arriving with a stranger's **first** message is held until
+  their key is known rather than dropped, which is precisely the message whose
+  sender cannot be placed.
+
+
 ## [0.26.0] — 2026-08-29
 
 A push-load release. A wake says nothing beyond "go sync", so several of them
